@@ -1,0 +1,30 @@
+{
+  "name": "llm-ops-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint \"src/**/*.{ts,vue}\"",
+    "test": "playwright test"
+  },
+  "dependencies": {
+    "vue": "^3.4.29",
+    "pinia": "^2.1.7",
+    "vue-router": "^4.3.0",
+    "axios": "^1.6.8"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.0.3",
+    "typescript": "^5.5.4",
+    "vite": "^5.2.10",
+    "eslint": "^8.57.0",
+    "eslint-plugin-vue": "^9.23.0",
+    "@typescript-eslint/parser": "^7.9.0",
+    "@typescript-eslint/eslint-plugin": "^7.9.0",
+    "@types/node": "^20.11.0",
+    "playwright": "^1.45.0"
+  }
+}
+

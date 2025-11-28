@@ -1,0 +1,228 @@
+openapi: 3.0.3
+info:
+  title: LLM Ops Serving & Prompt API
+  version: 0.1.0
+servers:
+  - url: https://{env}.llm-ops.local/llm-ops/v1
+    variables:
+      env:
+        default: dev
+        enum: [dev, stg, prod]
+paths:
+  /serving/endpoints:
+    get:
+      summary: List serving endpoints with optional filters
+      parameters:
+        - name: environment
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [dev, stg, prod]
+          description: Filter by deployment environment
+        - name: modelId
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by model catalog entry ID
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [deploying, healthy, degraded, failed]
+          description: Filter by endpoint status
+      responses:
+        "200":
+          description: List of serving endpoints
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnvelopeServingList"
+    post:
+      summary: Promote a model version to an environment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ServingPromotionRequest"
+      responses:
+        "200":
+          description: Deployment started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnvelopeServing"
+  /serving/endpoints/{endpointId}:
+    get:
+      summary: Inspect endpoint health/config
+      parameters:
+        - name: endpointId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Endpoint state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnvelopeServing"
+    patch:
+      summary: Update scaling or prompt routing policy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ServingPatch"
+      responses:
+        "200":
+          description: Update applied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnvelopeServing"
+  /prompts/templates:
+    post:
+      summary: Create/Update prompt template
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PromptTemplateInput"
+      responses:
+        "200":
+          description: Template stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnvelopePrompt"
+components:
+  schemas:
+    EnvelopeServing:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success, fail]
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ServingEndpoint"
+    EnvelopeServingList:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success, fail]
+        message:
+          type: string
+        data:
+          type: array
+          items:
+          $ref: "#/components/schemas/ServingEndpoint"
+    EnvelopePrompt:
+      type: object
+      properties:
+        status:
+          type: string
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/PromptTemplate"
+    ServingPromotionRequest:
+      type: object
+      required: [modelId, version, environment, minReplicas, maxReplicas, rollbackPlan]
+      properties:
+        modelId:
+          type: string
+        version:
+          type: string
+        environment:
+          type: string
+          enum: [dev, stg, prod]
+        minReplicas:
+          type: integer
+          minimum: 1
+        maxReplicas:
+          type: integer
+          minimum: 1
+        autoscalePolicy:
+          type: object
+          properties:
+            targetLatencyMs:
+              type: integer
+            gpuUtilization:
+              type: integer
+        promptPolicyId:
+          type: string
+        rollbackPlan:
+          type: string
+    ServingPatch:
+      type: object
+      properties:
+        autoscalePolicy:
+          $ref: "#/components/schemas/ServingPromotionRequest/properties/autoscalePolicy"
+        promptPolicyId:
+          type: string
+        status:
+          type: string
+          enum: [deploying, healthy, degraded, failed]
+    ServingEndpoint:
+      type: object
+      properties:
+        id:
+          type: string
+        modelId:
+          type: string
+        version:
+          type: string
+        environment:
+          type: string
+        route:
+          type: string
+        status:
+          type: string
+        minReplicas:
+          type: integer
+        maxReplicas:
+          type: integer
+        autoscalePolicy:
+          type: object
+        promptPolicyId:
+          type: string
+        lastHealthCheck:
+          type: string
+          format: date-time
+    PromptTemplateInput:
+      type: object
+      required: [name, version, content, status]
+      properties:
+        name:
+          type: string
+        version:
+          type: string
+        language:
+          type: string
+        content:
+          type: string
+        status:
+          type: string
+          enum: [draft, live, retired]
+        contextTags:
+          type: array
+          items:
+            type: string
+    PromptTemplate:
+      allOf:
+        - $ref: "#/components/schemas/PromptTemplateInput"
+        - type: object
+          properties:
+            id:
+              type: string
+

@@ -20,6 +20,11 @@
   - Demonstrated to users independently
 -->
 
+> Constitution alignment: Tie each user story back to the appropriate SDD
+> section (purpose/scope, functional design, or UI) and note any component,
+> data-flow, or API contract artifacts that must be updated to keep the feature
+> independently testable.
+
 ### User Story 1 - [Brief Title] (Priority: P1)
 
 [Describe this user journey in plain language]
@@ -74,6 +79,10 @@
 
 - What happens when [boundary condition]?
 - How does system handle [error scenario]?
+- How is the `{status,message,data}` contract honored when upstream/DB errors
+  occur?
+- What deployment or environment anomaly (e.g., DEV vs PROD config drift)
+  threatens the story’s independence?
 
 ## Requirements *(mandatory)*
 
@@ -89,6 +98,12 @@
 - **FR-003**: Users MUST be able to [key interaction, e.g., "reset their password"]
 - **FR-004**: System MUST [data requirement, e.g., "persist user preferences"]
 - **FR-005**: System MUST [behavior, e.g., "log all security events"]
+- **FR-006**: Every touched `/llm-ops/v1` endpoint MUST respond with HTTP 200 +
+  `{status,message,data}` body on success and map failures to the documented
+  4xx/5xx envelopes.
+- **FR-007**: All changes MUST cite the relevant deployment diagram,
+  component owner, and monitoring hook so reviewers can trace
+  architecture/operations impacts.
 
 *Example of marking unclear requirements:*
 
@@ -113,3 +128,5 @@
 - **SC-002**: [Measurable metric, e.g., "System handles 1000 concurrent users without degradation"]
 - **SC-003**: [User satisfaction metric, e.g., "90% of users successfully complete primary task on first attempt"]
 - **SC-004**: [Business metric, e.g., "Reduce support tickets related to [X] by 50%"]
+- **SC-005**: [Operational metric, e.g., "Deployment completes across DEV/STG/PROD with no manual edits"]
+- **SC-006**: [Reliability metric, e.g., "Error budget impact <1% thanks to logging + recovery plan"]

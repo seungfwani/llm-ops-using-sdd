@@ -1,0 +1,192 @@
+openapi: 3.0.3
+info:
+  title: LLM Ops Governance & Observability API
+  version: 0.1.0
+servers:
+  - url: https://{env}.llm-ops.local/llm-ops/v1
+    variables:
+      env:
+        default: dev
+        enum: [dev, stg, prod]
+paths:
+  /governance/policies:
+    get:
+      summary: List governance policies
+      responses:
+        "200":
+          description: Policies returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnvelopePolicyList"
+    post:
+      summary: Create or update a policy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GovernancePolicyInput"
+      responses:
+        "200":
+          description: Policy stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnvelopePolicy"
+  /observability/cost-profiles:
+    get:
+      summary: Retrieve cost breakdowns
+      parameters:
+        - in: query
+          name: resourceType
+          schema:
+            type: string
+            enum: [training, serving]
+        - in: query
+          name: timeWindow
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Cost profiles
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnvelopeCostList"
+  /audit/logs:
+    get:
+      summary: Filter audit log entries
+      parameters:
+        - in: query
+          name: actorId
+          schema:
+            type: string
+        - in: query
+          name: resourceType
+          schema:
+            type: string
+        - in: query
+          name: since
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Audit logs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnvelopeAuditList"
+components:
+  schemas:
+    EnvelopePolicyList:
+      type: object
+      properties:
+        status:
+          type: string
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/GovernancePolicy"
+    EnvelopePolicy:
+      type: object
+      properties:
+        status:
+          type: string
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/GovernancePolicy"
+    EnvelopeCostList:
+      type: object
+      properties:
+        status:
+          type: string
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/CostProfile"
+    EnvelopeAuditList:
+      type: object
+      properties:
+        status:
+          type: string
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditLog"
+    GovernancePolicyInput:
+      type: object
+      required: [name, scope, rules]
+      properties:
+        name:
+          type: string
+        scope:
+          type: string
+          enum: [model, dataset, user, project]
+        rules:
+          type: object
+        status:
+          type: string
+          enum: [draft, active, retired]
+    GovernancePolicy:
+      allOf:
+        - $ref: "#/components/schemas/GovernancePolicyInput"
+        - type: object
+          properties:
+            id:
+              type: string
+            lastReviewedAt:
+              type: string
+              format: date-time
+    CostProfile:
+      type: object
+      properties:
+        id:
+          type: string
+        resourceType:
+          type: string
+          enum: [training, serving]
+        resourceId:
+          type: string
+        timeWindow:
+          type: string
+        gpuHours:
+          type: number
+        tokenCount:
+          type: integer
+        costCurrency:
+          type: string
+        costAmount:
+          type: number
+        budgetVariance:
+          type: number
+    AuditLog:
+      type: object
+      properties:
+        id:
+          type: string
+        actorId:
+          type: string
+        action:
+          type: string
+        resourceType:
+          type: string
+        resourceId:
+          type: string
+        result:
+          type: string
+          enum: [allowed, denied]
+        metadata:
+          type: object
+        timestamp:
+          type: string
+          format: date-time
+

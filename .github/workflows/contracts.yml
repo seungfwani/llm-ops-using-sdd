@@ -1,0 +1,30 @@
+name: Contract Tests
+
+on:
+  pull_request:
+    paths:
+      - "specs/001-document-llm-ops/contracts/**"
+      - "backend/**"
+  push:
+    branches: [main]
+    paths:
+      - "specs/001-document-llm-ops/contracts/**"
+      - "backend/**"
+
+jobs:
+  schemathesis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install schemathesis
+        run: pip install schemathesis
+      - name: Validate contracts
+        run: |
+          for spec in specs/001-document-llm-ops/contracts/*.yaml; do
+            schemathesis run "$spec" --checks all --dry-run
+          done
+

@@ -1,0 +1,161 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-ops-dashboards
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  llm-ops-overview.json: |
+    {
+      "dashboard": {
+        "title": "LLM Ops Platform Overview",
+        "panels": [
+          {
+            "title": "API Request Rate",
+            "targets": [
+              {
+                "expr": "rate(http_requests_total[5m])",
+                "legendFormat": "{{endpoint}}"
+              }
+            ]
+          },
+          {
+            "title": "API Latency (p95)",
+            "targets": [
+              {
+                "expr": "histogram_quantile(0.95, http_request_duration_seconds_bucket)",
+                "legendFormat": "{{endpoint}}"
+              }
+            ]
+          },
+          {
+            "title": "Training Jobs by Status",
+            "targets": [
+              {
+                "expr": "count(training_jobs) by (status)",
+                "legendFormat": "{{status}}"
+              }
+            ]
+          },
+          {
+            "title": "Serving Endpoints Health",
+            "targets": [
+              {
+                "expr": "count(serving_endpoints) by (status)",
+                "legendFormat": "{{status}}"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  llm-ops-costs.json: |
+    {
+      "dashboard": {
+        "title": "LLM Ops Cost Analysis",
+        "panels": [
+          {
+            "title": "Total Cost (USD)",
+            "targets": [
+              {
+                "expr": "sum(cost_profiles_cost_amount)",
+                "legendFormat": "Total Cost"
+              }
+            ]
+          },
+          {
+            "title": "GPU Hours by Resource Type",
+            "targets": [
+              {
+                "expr": "sum(cost_profiles_gpu_hours) by (resource_type)",
+                "legendFormat": "{{resource_type}}"
+              }
+            ]
+          },
+          {
+            "title": "Token Consumption",
+            "targets": [
+              {
+                "expr": "sum(cost_profiles_token_count)",
+                "legendFormat": "Total Tokens"
+              }
+            ]
+          },
+          {
+            "title": "Cost by Resource Type",
+            "targets": [
+              {
+                "expr": "sum(cost_profiles_cost_amount) by (resource_type)",
+                "legendFormat": "{{resource_type}}"
+              }
+            ]
+          }
+        ]
+      }
+    }
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: llm-ops-alerts
+  namespace: monitoring
+spec:
+  groups:
+    - name: llm-ops-platform
+      interval: 30s
+      rules:
+        - alert: HighAPIErrorRate
+          expr: rate(http_requests_total{status_code=~"5.."}[5m]) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High API error rate detected"
+            description: "Error rate is {{ $value }} errors/sec"
+
+        - alert: HighAPILatency
+          expr: histogram_quantile(0.95, http_request_duration_seconds_bucket) > 2
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High API latency detected"
+            description: "p95 latency is {{ $value }} seconds"
+
+        - alert: CostAnomaly
+          expr: increase(cost_profiles_cost_amount[1h]) > 1000
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Cost anomaly detected"
+            description: "Cost increased by ${{ $value }} in the last hour"
+
+        - alert: PolicyViolation
+          expr: increase(audit_logs_total{result="denied"}[5m]) > 10
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Multiple policy violations detected"
+            description: "{{ $value }} policy violations in the last 5 minutes"
+
+        - alert: TrainingJobFailure
+          expr: count(training_jobs{status="failed"}) > 5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Multiple training job failures"
+            description: "{{ $value }} training jobs have failed"
+
+        - alert: ServingEndpointDegraded
+          expr: count(serving_endpoints{status="degraded"}) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Serving endpoint degraded"
+            description: "{{ $value }} serving endpoints are in degraded state"
+

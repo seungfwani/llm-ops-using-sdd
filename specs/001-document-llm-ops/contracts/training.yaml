@@ -1,0 +1,140 @@
+openapi: 3.0.3
+info:
+  title: LLM Ops Training API
+  version: 0.1.0
+servers:
+  - url: https://{env}.llm-ops.local/llm-ops/v1
+    variables:
+      env:
+        default: dev
+        enum: [dev, stg, prod]
+paths:
+  /training/jobs:
+    post:
+      summary: Submit a fine-tuning or distributed training job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrainingJobRequest"
+      responses:
+        "200":
+          description: Job accepted into scheduler
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnvelopeTrainingJob"
+  /training/jobs/{jobId}:
+    get:
+      summary: Retrieve training job status and experiment metadata
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Job status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnvelopeTrainingJob"
+    delete:
+      summary: Cancel a queued or running job
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Cancellation acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnvelopeTrainingJob"
+components:
+  schemas:
+    EnvelopeTrainingJob:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success, fail]
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/TrainingJob"
+    TrainingJobRequest:
+      type: object
+      required:
+        - modelId
+        - datasetId
+        - jobType
+        - resourceProfile
+      properties:
+        modelId:
+          type: string
+        datasetId:
+          type: string
+        jobType:
+          type: string
+          enum: [finetune, distributed]
+        hyperparameters:
+          type: object
+        resourceProfile:
+          type: object
+          required: [gpuCount, gpuType, maxDuration]
+          properties:
+            gpuCount:
+              type: integer
+              minimum: 1
+            gpuType:
+              type: string
+            maxDuration:
+              type: integer
+              description: Minutes before timeout
+        retryPolicy:
+          type: object
+          properties:
+            maxRetries:
+              type: integer
+              default: 3
+            backoffSeconds:
+              type: integer
+        notifications:
+          type: object
+          properties:
+            onStart:
+              type: array
+              items:
+                type: string
+            onCompletion:
+              type: array
+              items:
+                type: string
+    TrainingJob:
+      allOf:
+        - $ref: "#/components/schemas/TrainingJobRequest"
+        - type: object
+          properties:
+            id:
+              type: string
+            status:
+              type: string
+              enum: [queued, running, succeeded, failed, cancelled]
+            submittedAt:
+              type: string
+              format: date-time
+            startedAt:
+              type: string
+              format: date-time
+            completedAt:
+              type: string
+              format: date-time
+            experimentUrl:
+              type: string
+
