@@ -1,0 +1,198 @@
+openapi: 3.0.3
+info:
+  title: LLM Ops Catalog API
+  version: 0.1.0
+servers:
+  - url: https://{env}.llm-ops.local/llm-ops/v1
+    variables:
+      env:
+        default: dev
+        enum: [dev, stg, prod]
+paths:
+  /catalog/models:
+    get:
+      summary: List model catalog entries
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnvelopeListModel"
+    post:
+      summary: Create or update a model entry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ModelCatalogInput"
+      responses:
+        "200":
+          description: Entry accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnvelopeModel"
+  /catalog/models/{modelId}/upload:
+    post:
+      summary: Upload model files (weights, configs, tokenizers)
+      parameters:
+        - in: path
+          name: modelId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [files]
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+                  description: Model files (weights.bin, config.json, tokenizer.json, etc.)
+      responses:
+        "200":
+          description: Files uploaded successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnvelopeModelUpload"
+        "400":
+          description: Invalid file format or missing required files
+        "404":
+          description: Model not found
+  /catalog/models/{modelId}/versions/{version}/approve:
+    post:
+      summary: Submit review decision
+      parameters:
+        - in: path
+          name: modelId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: version
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision, notes]
+              properties:
+                decision:
+                  type: string
+                  enum: [approve, reject, request_changes]
+                notes:
+                  type: string
+      responses:
+        "200":
+          description: Decision recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnvelopeModel"
+components:
+  schemas:
+    EnvelopeListModel:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success, fail]
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModelCatalog"
+    EnvelopeModel:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success, fail]
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ModelCatalog"
+    ModelCatalogInput:
+      type: object
+      required:
+        - name
+        - version
+        - type
+        - ownerTeam
+        - metadata
+      properties:
+        name:
+          type: string
+        version:
+          type: string
+        type:
+          type: string
+          enum: [base, fine-tuned, external]
+        ownerTeam:
+          type: string
+        lineage:
+          type: object
+          properties:
+            datasetIds:
+              type: array
+              items:
+                type: string
+        metadata:
+          type: object
+    ModelCatalog:
+      allOf:
+        - $ref: "#/components/schemas/ModelCatalogInput"
+        - type: object
+          properties:
+            id:
+              type: string
+            status:
+              type: string
+              enum: [draft, under_review, approved, deprecated]
+            storageUri:
+              type: string
+              description: URI to model artifacts in object storage (e.g., s3://models/{modelId}/{version}/)
+            evaluationSummary:
+              type: object
+    EnvelopeModelUpload:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success, fail]
+        message:
+          type: string
+        data:
+          type: object
+          properties:
+            modelId:
+              type: string
+            storageUri:
+              type: string
+            uploadedFiles:
+              type: array
+              items:
+                type: object
+                properties:
+                  filename:
+                    type: string
+                  size:
+                    type: integer
+                  checksum:
+                    type: string
+

@@ -1,0 +1,41 @@
+# macOS / IDE
+.DS_Store
+.idea/
+# .vscode/settings.json is committed for project-specific Python interpreter settings
+.vscode/*
+!.vscode/settings.json
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+dist/
+*.egg-info/
+
+# Node / Frontend
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Env / Secrets
+.env
+.env.*
+backend/.env
+frontend/.env
+
+# Logs
+*.log
+
+# Kubernetes / Helm
+infra/k8s/**/*.secret.yaml
+*.tgz
+
+# Poetry
+poetry.lock
+

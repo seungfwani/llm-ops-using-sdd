@@ -1,0 +1,37 @@
+[tool.poetry]
+name = "llm-ops-backend"
+version = "0.1.0"
+description = "Backend services for the LLM Ops platform"
+authors = ["LLM Ops Platform Team"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.115.0"
+uvicorn = { extras = ["standard"], version = "^0.30.0" }
+pydantic = "^2.6.4"
+pydantic-settings = "^2.0.0"
+python-multipart = "^0.0.6"
+sqlalchemy = "^2.0.30"
+psycopg = { extras = ["binary"], version = "^3.1.19" }
+redis = "^5.0.4"
+python-dotenv = "^1.0.1"
+httpx = "^0.27.0"
+mlflow = "^2.14.0"
+prometheus-client = "^0.20.0"
+alembic = "^1.13.2"
+boto3 = "^1.34.162"
+kubernetes = "^29.0.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.2.1"
+pytest-asyncio = "^0.23.6"
+schemathesis = "^3.21.6"
+pre-commit = "^3.7.0"
+ruff = "^0.5.5"
+mypy = "^1.11.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+

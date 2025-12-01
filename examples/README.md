@@ -1,0 +1,284 @@
+# LLM Ops Platform Examples
+
+이 디렉토리에는 LLM Ops 플랫폼을 사용하는 다양한 예제 코드가 포함되어 있습니다.
+
+## 목차
+
+- [서빙 클라이언트 예제](#서빙-클라이언트-예제)
+- [사용 방법](#사용-방법)
+- [추가 예제](#추가-예제)
+
+## 서빙 클라이언트 예제
+
+### `serving_client.py`
+
+서빙된 모델을 사용하는 Python 클라이언트 예제입니다.
+
+**주요 기능:**
+- 서빙 엔드포인트 배포
+- 엔드포인트 목록 조회 및 필터링
+- 엔드포인트 상태 확인 및 헬스 체크
+- 엔드포인트 롤백
+- 모델 추론 호출 (구현 예정)
+
+**사용 예제:**
+
+```bash
+# 전체 워크플로우 예제 실행
+python examples/serving_client.py workflow
+
+# 엔드포인트 배포 및 상태 확인
+python examples/serving_client.py deploy
+
+# 엔드포인트 목록 조회
+python examples/serving_client.py list
+
+# 엔드포인트 롤백
+python examples/serving_client.py rollback
+```
+
+**코드에서 직접 사용:**
+
+```python
+from examples.serving_client import ServingClient
+
+# 클라이언트 생성
+client = ServingClient(
+    base_url="https://dev.llm-ops.local/llm-ops/v1",
+    user_id="admin",
+    user_roles="admin"
+)
+
+# 엔드포인트 배포
+endpoint = client.deploy_endpoint(
+    model_id="your-model-id",
+    environment="dev",
+    route="/llm-ops/v1/serve/my-model",
+    min_replicas=1,
+    max_replicas=3
+)
+
+# Healthy 상태 대기
+client.wait_for_healthy(endpoint["id"])
+
+# 헬스 체크
+health = client.check_health("my-model")
+print(f"Health: {health['status']}")
+```
+
+## 사용 방법
+
+### 1. 환경 설정
+
+예제를 실행하기 전에 필요한 패키지를 설치합니다:
+
+```bash
+cd backend
+pip install requests  # 또는 poetry install
+```
+
+### 2. 환경 변수 설정
+
+API 기본 URL과 인증 정보를 설정합니다:
+
+```bash
+export LLM_OPS_API_BASE_URL="https://dev.llm-ops.local/llm-ops/v1"
+export LLM_OPS_USER_ID="your-user-id"
+export LLM_OPS_USER_ROLES="admin,researcher"
+```
+
+또는 코드에서 직접 설정할 수 있습니다:
+
+```python
+client = ServingClient(
+    base_url="https://dev.llm-ops.local/llm-ops/v1",
+    user_id="your-user-id",
+    user_roles="admin,researcher"
+)
+```
+
+### 3. 예제 실행
+
+```bash
+# 전체 워크플로우 실행
+python examples/serving_client.py workflow
+
+# 특정 예제 실행
+python examples/serving_client.py deploy
+python examples/serving_client.py list
+python examples/serving_client.py rollback
+```
+
+## 모델 등록 예제
+
+### `register_base_model.py`
+
+Base 모델을 카탈로그에 등록하고 서빙하는 예제입니다.
+
+**주요 기능:**
+- Base 모델 등록
+- 모델 상태 업데이트 (draft → approved)
+- 모델 등록 후 서빙 엔드포인트 배포
+- JSON 파일에서 모델 정보 읽어서 등록
+
+**사용 예제:**
+```bash
+# Base 모델 등록만 수행
+python examples/register_base_model.py register
+
+# 모델 등록 및 서빙 전체 워크플로우
+python examples/register_base_model.py workflow
+
+# JSON 파일에서 모델 정보 읽어서 등록
+python examples/register_base_model.py json
+```
+
+**JSON 예제 파일:**
+`model_register_example.json` 파일을 참조하여 모델 등록에 필요한 정보를 확인할 수 있습니다.
+
+**코드에서 직접 사용:**
+```python
+from examples.register_base_model import CatalogClient, ServingClient
+
+# 카탈로그 클라이언트 생성
+catalog_client = CatalogClient(
+    base_url="https://dev.llm-ops.local/llm-ops/v1",
+    user_id="admin",
+    user_roles="admin"
+)
+
+# Base 모델 등록
+model = catalog_client.create_model(
+    name="my-base-model",
+    version="1.0",
+    model_type="base",
+    owner_team="ml-platform",
+    metadata={
+        "architecture": "transformer",
+        "parameters": "7B",
+        "framework": "pytorch"
+    }
+)
+
+# 모델 승인
+approved_model = catalog_client.update_model_status(model['id'], "approved")
+
+# 서빙 엔드포인트 배포
+serving_client = ServingClient(base_url="https://dev.llm-ops.local/llm-ops/v1")
+endpoint = serving_client.deploy_endpoint(
+    model_id=approved_model['id'],
+    environment="dev",
+    route="/llm-ops/v1/serve/my-base-model"
+)
+```
+
+### `download_and_register_hf_model.py`
+
+Hugging Face에서 모델을 다운로드하고 등록하는 예제입니다.
+
+**주의사항:**
+- 현재 시스템은 Hugging Face에서 직접 import하는 기능이 아직 구현되지 않았습니다.
+- 모델 파일은 매우 클 수 있으므로(수 GB ~ 수십 GB), 프로덕션 환경에서는 별도의 워크플로우를 사용하는 것을 권장합니다.
+- Hugging Face Import 기능은 PRD에 계획되어 있으며 향후 구현 예정입니다.
+
+**사용 방법:**
+
+1. **Hugging Face 라이브러리 설치:**
+```bash
+pip install huggingface_hub
+```
+
+2. **모델 다운로드 및 등록:**
+```bash
+# Hugging Face에서 모델 다운로드 후 등록
+python examples/download_and_register_hf_model.py download
+```
+
+3. **이미 업로드된 모델 등록:**
+```bash
+# storage_uri를 사용하여 이미 S3에 업로드된 모델 등록
+python examples/download_and_register_hf_model.py register
+```
+
+**코드에서 직접 사용:**
+```python
+from examples.download_and_register_hf_model import (
+    HuggingFaceModelDownloader,
+    CatalogClient
+)
+
+# Hugging Face 모델 다운로드
+downloader = HuggingFaceModelDownloader()
+model_path = downloader.download_model("meta-llama/Llama-2-7b-chat-hf")
+
+# 모델 등록
+catalog_client = CatalogClient(base_url="https://dev.llm-ops.local/llm-ops/v1")
+model = catalog_client.create_model(
+    name="llama_2_7b_chat",
+    version="1.0",
+    model_type="base",
+    owner_team="ml-platform",
+    metadata={
+        "source": "huggingface",
+        "huggingface_model_id": "meta-llama/Llama-2-7b-chat-hf",
+        "architecture": "llama",
+        "parameters": "7B",
+        "framework": "pytorch"
+    },
+    storage_uri="s3://models/llama_2_7b_chat/1.0/"
+)
+```
+
+**대안 방법:**
+
+Hugging Face에서 직접 import하는 기능이 아직 없으므로, 다음 방법을 사용할 수 있습니다:
+
+1. **수동 다운로드 후 업로드:**
+   - Hugging Face에서 모델을 다운로드
+   - 모델 파일을 S3/객체 스토리지에 업로드
+   - `storage_uri`를 지정하여 모델 등록
+
+2. **storage_uri로 참조:**
+   - 이미 S3에 업로드된 모델의 경우 `storage_uri`만 지정하여 등록
+
+3. **API를 통한 파일 업로드:**
+   - 모델 등록 후 `/catalog/models/{model_id}/upload` API로 파일 업로드
+
+## 추가 예제
+
+더 많은 예제와 사용 사례는 다음 문서를 참조하세요:
+
+- [서빙 예제 가이드](../docs/serving-examples.md) - 서빙된 모델을 사용하는 다양한 예제
+- [Quickstart 가이드](../specs/001-document-llm-ops/quickstart.md) - 플랫폼 설정 및 사용 가이드
+
+## 주의 사항
+
+1. **추론 API**: 모델 추론 호출 API (`call_chat_model` 등)는 현재 구현되어 있지 않습니다. PRD에 명시되어 있으나 아직 개발 중입니다.
+
+2. **인증**: 모든 API 요청에는 `X-User-Id`와 `X-User-Roles` 헤더가 필요합니다.
+
+3. **환경**: `dev`, `stg`, `prod` 환경에 따라 API 기본 URL이 달라집니다.
+
+4. **에러 처리**: 모든 API 응답은 `{status, message, data}` 형식의 envelope을 사용합니다.
+
+## 향후 계획
+
+다음 예제들이 추가될 예정입니다:
+
+- [x] Base 모델 등록 예제
+- [x] Hugging Face 모델 등록 예제
+- [ ] Hugging Face 직접 Import 기능 (PRD에 계획됨)
+- [ ] JavaScript/TypeScript 클라이언트 예제
+- [ ] 모델 추론 호출 예제 (추론 API 구현 후)
+- [ ] 프롬프트 A/B 테스트 예제
+- [ ] 배치 추론 예제
+- [ ] 모델 학습 예제
+- [ ] 데이터셋 관리 예제
+
+## 기여하기
+
+새로운 예제를 추가하거나 기존 예제를 개선하고 싶다면:
+
+1. 이 디렉토리에 새로운 예제 파일을 추가하세요
+2. 이 README 파일에 예제 설명을 추가하세요
+3. 필요한 경우 문서화를 업데이트하세요

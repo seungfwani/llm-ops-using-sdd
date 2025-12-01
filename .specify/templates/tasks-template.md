@@ -25,6 +25,12 @@ description: "Task list template for feature implementation"
 - **Mobile**: `api/src/`, `ios/src/` or `android/src/`
 - Paths shown below assume single project - adjust based on plan.md structure
 
+> Constitution alignment: Include explicit tasks for (a) updating the SDD
+> sections in `docs/Constitution.txt`, (b) refreshing diagrams/data-flows,
+> (c) validating every `/llm-ops/v1` contract and logging path, and
+> (d) documenting deployment/backups per environment whenever the feature
+> changes those concerns.
+
 <!-- 
   ============================================================================
   IMPORTANT: The tasks below are SAMPLE TASKS for illustration purposes only.

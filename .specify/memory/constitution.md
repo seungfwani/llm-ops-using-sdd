@@ -1,50 +1,108 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+<!--
+Sync Impact Report
+Version change: N/A → 1.0.0
+Modified Principles:
+- Structured SDD Ownership (new)
+- Architecture Transparency (new)
+- Interface Contract Fidelity (new)
+- Non-Functional Safeguards (new)
+- Operations-Ready Delivery (new)
+Added Sections:
+- System Design Standards
+- Delivery Workflow & Reviews
+Removed Sections:
+- None
+Templates Requiring Updates:
+- ✅ .specify/templates/plan-template.md
+- ✅ .specify/templates/spec-template.md
+- ✅ .specify/templates/tasks-template.md
+Follow-up TODOs:
+- None
+-->
+
+# LLM Ops Platform Constitution
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### Structured SDD Ownership
+- Every change must update the Software Design Document sections covering
+  purpose, scope, references, functional inventory, scenarios, and UI flows as
+  outlined in `docs/Constitution.txt`.
+- Functional descriptions must enumerate feature IDs with clear inputs,
+  outputs, and independent verification steps.
+Rationale: Treating the SDD as the single source of truth prevents drift between
+requirements, design, and implementation.
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+### Architecture Transparency
+- Maintain current component/topology diagrams, module responsibilities, and
+  data-flow/DFD artifacts for any impacted area.
+- Each component entry must state role, dependencies, and integration contracts.
+Rationale: Visible architecture enables safe changes and speeds reviews by
+showing blast radius upfront.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+### Interface Contract Fidelity
+- All `/llm-ops/v1` APIs must publish request/response schemas that return HTTP
+  200 on success with `{status,message,data}` bodies and translate failures into
+  documented 4xx/5xx envelopes.
+- Server-side exceptions are caught, logged, and converted to the standard
+  response shape; client-caused errors remain 4xx.
+Rationale: Uniform contracts keep clients stable and simplify observability.
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+### Non-Functional Safeguards
+- Performance, security, failure recovery, and logging/monitoring requirements
+  must be explicit, measurable, and testable for every feature.
+- Designs must describe retry/rollback plans, log levels, metrics, and traces
+  tied to each user journey.
+Rationale: Non-functional regressions are the primary source of production
+incidents; codifying them makes them reviewable.
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+### Operations-Ready Delivery
+- Deployment diagrams, environment configurations (DEV/STG/PROD), backup
+  policies, scaling strategies, and maintenance workflows must accompany each
+  change.
+- Operations artifacts must demonstrate how new capabilities are deployed,
+  observed, and supported after launch.
+Rationale: Features are incomplete without a verified path to operate them in
+all environments.
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+## System Design Standards
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+We adopt the seven-section structure from `docs/Constitution.txt` for every
+feature or module: (1) document overview, (2) system overview, (3) functional
+design, (4) technical design, (5) non-functional design, (6) deployment and
+operations, and (7) glossary. Each section must reference concrete diagrams
+(component, topology, ERD, sequence, DFD), tabular definitions (feature lists,
+tables, interfaces), and environmental constraints. API documentation must list
+prefixes, request/response schemas, and error handling rules; database content
+must include ERD, schema, and index guidance; process designs must call out
+sync/async paths plus queues or batch systems; non-functional coverage must
+detail performance budgets, security controls, failure handling, and monitoring.
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+## Delivery Workflow & Reviews
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+Planning artifacts (`plan.md`, `spec.md`, `tasks.md`) must embed a Constitution
+Check that confirms SDD updates, architectural alignment, API contract
+conformance, non-functional guardrails, and operations plans before coding
+begins. Each user story, task, and test remains independently deployable,
+mapped to specific SDD sections, and linked to diagrams/contracts it affects.
+Violations enter the Complexity Tracking log with mitigation steps. Reviews
+reject work that lacks SDD deltas, diagram updates, or deployment/backup notes.
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+- **Supremacy**: This constitution supersedes conflicting process guidance. All
+  research, planning, specification, coding, and review activities must cite the
+  sections they satisfy.
+- **Amendments**: Amendments require consensus between product and engineering
+  leads plus documented rationale, migration plans, and template updates. New
+  principles or section changes imply a MINOR version bump; clarifications
+  imply a PATCH. Removing or redefining principles requires a MAJOR bump.
+- **Compliance Reviews**: Every PR and document review must confirm SDD updates,
+  diagram refreshes, API contract adherence, non-functional evidence, and ops
+  readiness. Non-compliant work cannot merge.
+- **Versioning**: Store the constitution in SemVer format. `RATIFICATION_DATE`
+  captures the first adoption; `LAST_AMENDED_DATE` updates whenever content
+  changes. The Sync Impact Report at the top of this file logs propagated
+  updates so dependent templates stay aligned.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+**Version**: 1.0.0 | **Ratified**: 2025-11-27 | **Last Amended**: 2025-11-27

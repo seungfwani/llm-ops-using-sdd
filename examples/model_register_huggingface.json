@@ -1,0 +1,24 @@
+{
+  "name": "llama-2-7b-chat",
+  "version": "1.0",
+  "type": "base",
+  "owner_team": "ml-platform",
+  "metadata": {
+    "source": "huggingface",
+    "huggingface_model_id": "meta-llama/Llama-2-7b-chat-hf",
+    "architecture": "llama",
+    "parameters": "7B",
+    "framework": "pytorch",
+    "license": "llama2",
+    "description": "Llama 2 7B Chat model from Hugging Face",
+    "download_url": "https://huggingface.co/meta-llama/Llama-2-7b-chat-hf"
+  },
+  "storage_uri": "s3://models/llama-2-7b-chat/1.0/",
+  "lineage_dataset_ids": [],
+  "status": "draft",
+  "evaluation_summary": {
+    "accuracy": 0.85,
+    "latency_ms": 200
+  }
+}
+
