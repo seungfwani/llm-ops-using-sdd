@@ -1,0 +1,20 @@
+{
+  "name": "gpt-4-base",
+  "version": "1.0",
+  "type": "base",
+  "owner_team": "ml-platform",
+  "metadata": {
+    "architecture": "transformer",
+    "parameters": "175B",
+    "framework": "pytorch",
+    "license": "proprietary",
+    "description": "GPT-4 base model for general purpose tasks"
+  },
+  "lineage_dataset_ids": [],
+  "status": "draft",
+  "evaluation_summary": {
+    "accuracy": 0.92,
+    "latency_ms": 150
+  }
+}
+

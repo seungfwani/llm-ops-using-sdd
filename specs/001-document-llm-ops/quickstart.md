@@ -9,12 +9,20 @@
 
 1. Kubernetes clusters `dev`, `stg`, `prod` with GPU nodes (NVIDIA device plugin)
    and ingress controller installed.
-2. PostgreSQL 14+ with logical replication enabled for audit log archiving.
-3. Object storage bucket (MinIO/S3) reachable from clusters for artifacts and
+2. **KServe installed** in the Kubernetes cluster (recommended for model serving).
+   Install KServe using:
+   ```bash
+   # Install KServe
+   kubectl apply -f https://github.com/kserve/kserve/releases/download/v0.11.0/kserve.yaml
+   # Or use KServe operator
+   kubectl apply -f https://github.com/kserve/kserve/releases/download/v0.11.0/kserve-runtimes.yaml
+   ```
+3. PostgreSQL 14+ with logical replication enabled for audit log archiving.
+4. Object storage bucket (MinIO/S3) reachable from clusters for artifacts and
    experiment outputs.
-4. Redis cluster for prompt cache metadata.
-5. Prometheus + Grafana stack with service discovery for backend + serving pods.
-6. Organization-wide SSO or IdP configured for RBAC integration.
+5. Redis cluster for prompt cache metadata.
+6. Prometheus + Grafana stack with service discovery for backend + serving pods.
+7. Organization-wide SSO or IdP configured for RBAC integration.
 
 ## 2. Bootstrap Steps
 
@@ -44,36 +52,80 @@
      ```
 4. **Apply Infrastructure Manifests**
    ```bash
-   kubectl apply -k infra/k8s/base
-   kubectl apply -k infra/k8s/overlays/dev
+   # Use deployment script (recommended)
+   cd infra/scripts
+   ./deploy-all.sh dev
+   
+   # Or manually
+   kubectl apply -k infra/k8s/dependencies
    ```
    Repeat for `stg` and `prod` once smoke tests pass.
-5. **Run Database Migrations**
+5. **Configure Local Development Access** (if running backend locally)
+   
+   **Important**: If you're running the backend server on your local machine (not in Kubernetes),
+   you need to set up port-forwarding to access services in the cluster:
+   
+   ```bash
+   # Option 1: Use automated script (recommended)
+   cd infra/scripts
+   ./port-forward-all.sh dev
+   
+   # Option 2: Manual port-forwarding
+   kubectl port-forward -n llm-ops-dev svc/postgresql 5432:5432 &
+   kubectl port-forward -n llm-ops-dev svc/redis 6379:6379 &
+   kubectl port-forward -n llm-ops-dev svc/minio 9000:9000 &
+   kubectl port-forward -n llm-ops-dev svc/minio 9001:9001 &
+   ```
+   
+   **Backend .env for local development** (with port-forward):
+   ```bash
+   DATABASE_URL=postgresql+psycopg://llmops:password@localhost:5432/llmops
+   REDIS_URL=redis://localhost:6379/0
+   OBJECT_STORE_ENDPOINT=http://localhost:9000
+   OBJECT_STORE_ACCESS_KEY=llmops
+   OBJECT_STORE_SECRET_KEY=llmops-secret
+   OBJECT_STORE_SECURE=false
+   ```
+   
+   **Backend .env for cluster deployment** (backend running in Kubernetes):
+   ```bash
+   DATABASE_URL=postgresql+psycopg://llmops:password@postgresql.llm-ops-dev.svc.cluster.local:5432/llmops
+   REDIS_URL=redis://redis.llm-ops-dev.svc.cluster.local:6379/0
+   OBJECT_STORE_ENDPOINT=http://minio.llm-ops-dev.svc.cluster.local:9000
+   OBJECT_STORE_ACCESS_KEY=llmops
+   OBJECT_STORE_SECRET_KEY=llmops-secret
+   OBJECT_STORE_SECURE=false
+   ```
+6. **Run Database Migrations**
    ```bash
    cd backend
    poetry run alembic upgrade head
    cd ..
    ```
    Applies the SQL-backed Alembic revision aligning with `data-model.md`.
-6. **Seed Reference Data**
+   
+   **Note**: If you get "Connection refused" errors, ensure port-forwarding is active
+   (see step 5) or that your backend is running in the cluster with correct environment
+   variables.
+7. **Seed Reference Data**
    - Import baseline models, datasets, and prompt templates via `/llm-ops/v1`
      catalog endpoints.
    - Register governance policies (RBAC roles, data classification).
-7. **Deploy Backend & Workers**
+8. **Deploy Backend & Workers**
    ```bash
    helm upgrade --install catalog backend/helm/catalog -f infra/helm/dev.yaml
    helm upgrade --install trainers backend/helm/trainers -f infra/helm/dev.yaml
    ```
-8. **Deploy Frontend**
+9. **Deploy Frontend**
    ```bash
    npm install --prefix frontend
    npm run build --prefix frontend
    helm upgrade --install ui frontend/helm -f infra/helm/dev.yaml
    ```
-9. **Configure Observability**
+10. **Configure Observability**
    - Register services with Prometheus scrape configs.
    - Import Grafana dashboards for latency, error, token, GPU metrics.
-10. **Validate API Contracts**
+11. **Validate API Contracts**
    ```bash
    cd backend
    poetry run pytest tests/contract/ -v
@@ -81,7 +133,7 @@
    poetry run schemathesis run --base-url=http://localhost:8000/llm-ops/v1 \
      specs/001-document-llm-ops/contracts/*.yaml
    ```
-11. **Run Load Tests** (optional, for performance validation)
+12. **Run Load Tests** (optional, for performance validation)
    ```bash
    # Install k6: https://k6.io/docs/getting-started/installation/
    k6 run --env BASE_URL=http://localhost:8000/llm-ops/v1 \
@@ -94,7 +146,7 @@
           backend/tests/load/k6_training_test.js
    ```
    Review output files: `serving_load_test_summary.json`, `training_load_test_summary.json`
-12. **Document SDD Updates**
+13. **Document SDD Updates**
     - Update `docs/Constitution.txt` sections impacted by new features.
     - Link catalog entries to doc anchors for traceability.
 
@@ -158,9 +210,15 @@
 
 4. **Verify Deployment**
    ```bash
-   kubectl get deployment serving-<endpoint-id> -n default
-   kubectl get hpa serving-<endpoint-id>-hpa -n default
-   kubectl get ingress serving-<endpoint-id>-ingress -n default
+   # Kubernetes namespace uses llm-ops-{environment} format
+   kubectl get deployment serving-<endpoint-id> -n llm-ops-<environment>
+   kubectl get hpa serving-<endpoint-id>-hpa -n llm-ops-<environment>
+   kubectl get ingress serving-<endpoint-id>-ingress -n llm-ops-<environment>
+   
+   # Example for dev environment:
+   kubectl get deployment serving-<endpoint-id> -n llm-ops-dev
+   kubectl get hpa serving-<endpoint-id>-hpa -n llm-ops-dev
+   kubectl get ingress serving-<endpoint-id>-ingress -n llm-ops-dev
    ```
 
 5. **Check Health**
@@ -286,13 +344,57 @@ Exceptions are caught by `ErrorHandlerMiddleware` and logged with:
 ### 5.2 Common Issues
 
 **Database Connection Errors:**
-```bash
-# Check PostgreSQL connectivity
-psql $DATABASE_URL -c "SELECT 1"
 
-# Verify Alembic migrations
-cd backend && poetry run alembic current
-```
+If you see "Connection refused" errors when connecting to PostgreSQL:
+
+1. **Check if you're running backend locally** (most common case):
+   ```bash
+   # Verify port-forward is running
+   kubectl get pods -n llm-ops-dev
+   
+   # Start port-forward if not running
+   cd infra/scripts
+   ./port-forward-all.sh dev
+   ```
+   
+   Ensure your `.env` uses `localhost`:
+   ```bash
+   DATABASE_URL=postgresql+psycopg://llmops:password@localhost:5432/llmops
+   ```
+
+2. **Check if backend is running in cluster**:
+   ```bash
+   # Verify backend pod is running
+   kubectl get pods -n llm-ops-dev -l app=backend
+   
+   # Check environment variables
+   kubectl exec -n llm-ops-dev <backend-pod> -- env | grep DATABASE_URL
+   ```
+   
+   Ensure your `.env` uses cluster DNS:
+   ```bash
+   DATABASE_URL=postgresql+psycopg://llmops:password@postgresql.llm-ops-dev.svc.cluster.local:5432/llmops
+   ```
+
+3. **Test PostgreSQL connectivity**:
+   ```bash
+   # From local (with port-forward)
+   psql postgresql+psycopg://llmops:password@localhost:5432/llmops -c "SELECT 1"
+   
+   # From cluster
+   kubectl exec -n llm-ops-dev deployment/postgresql -- psql -U llmops -d llmops -c "SELECT 1"
+   ```
+
+4. **Verify Alembic migrations**:
+   ```bash
+   cd backend && poetry run alembic current
+   ```
+
+5. **Connection test script**:
+   ```bash
+   cd infra/scripts
+   ./test-connections.sh dev
+   ```
 
 **Kubernetes Scheduler Errors:**
 ```bash

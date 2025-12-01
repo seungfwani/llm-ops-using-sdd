@@ -13,6 +13,7 @@ from catalog.schemas import (
     ModelCatalogCreate,
     ModelCatalogResponse,
 )
+from pydantic import BaseModel
 from catalog.services import CatalogService, DatasetService
 from core.database import get_session
 
@@ -175,6 +176,42 @@ def create_dataset(
             updated_at=dataset.updated_at,
         ),
     )
+
+
+@router.delete("/models/{model_id}", status_code=200)
+def delete_model(
+    model_id: str,
+    session=Depends(get_session),
+) -> dict:
+    """Delete a model catalog entry."""
+    service = CatalogService(session)
+    try:
+        result = service.delete_entry(model_id)
+        return {
+            "status": "success",
+            "message": f"Model {model_id} deleted successfully",
+            "data": result,
+        }
+    except ValueError as exc:
+        return {
+            "status": "fail",
+            "message": str(exc),
+            "data": None,
+        }
+    except Exception as exc:
+        # Handle database integrity errors (e.g., model is referenced by serving endpoints)
+        error_msg = str(exc)
+        if "foreign key constraint" in error_msg.lower() or "integrity" in error_msg.lower():
+            return {
+                "status": "fail",
+                "message": f"Cannot delete model {model_id}: it is being used by serving endpoints or other resources. Please remove dependencies first.",
+                "data": None,
+            }
+        return {
+            "status": "fail",
+            "message": f"Deletion failed: {error_msg}",
+            "data": None,
+        }
 
 
 @router.post("/models/{model_id}/upload", response_model=EnvelopeModelCatalog)

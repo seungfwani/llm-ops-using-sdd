@@ -11,6 +11,8 @@ export interface ServingEndpointRequest {
     targetLatencyMs?: number;
   };
   promptPolicyId?: string;
+  useGpu?: boolean; // Whether to request GPU resources. If not provided, uses default from settings
+  servingRuntimeImage?: string; // Container image for model serving runtime (e.g., vLLM, TGI). If not provided, uses default from settings
 }
 
 export interface ServingEndpoint {
@@ -18,6 +20,7 @@ export interface ServingEndpoint {
   modelId: string;
   environment: string;
   route: string;
+  runtimeImage?: string;
   status: string;
   minReplicas: number;
   maxReplicas: number;
@@ -73,6 +76,27 @@ export const servingClient = {
   async rollbackEndpoint(endpointId: string): Promise<EnvelopeServingEndpoint> {
     const response = await apiClient.post<EnvelopeServingEndpoint>(
       `/serving/endpoints/${endpointId}/rollback`
+    );
+    return response.data;
+  },
+
+  async redeployEndpoint(endpointId: string, useGpu?: boolean, servingRuntimeImage?: string): Promise<EnvelopeServingEndpoint> {
+    const params = new URLSearchParams();
+    if (useGpu !== undefined) {
+      params.append("useGpu", useGpu.toString());
+    }
+    if (servingRuntimeImage !== undefined) {
+      params.append("servingRuntimeImage", servingRuntimeImage);
+    }
+    const queryString = params.toString();
+    const url = `/serving/endpoints/${endpointId}/redeploy${queryString ? `?${queryString}` : ""}`;
+    const response = await apiClient.post<EnvelopeServingEndpoint>(url);
+    return response.data;
+  },
+
+  async deleteEndpoint(endpointId: string): Promise<EnvelopeServingEndpoint> {
+    const response = await apiClient.delete<EnvelopeServingEndpoint>(
+      `/serving/endpoints/${endpointId}`
     );
     return response.data;
   },

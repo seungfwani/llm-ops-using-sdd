@@ -75,6 +75,13 @@
             >
               Chat
             </router-link>
+            <button
+              @click="handleDelete(endpoint.id, endpoint.route)"
+              class="btn-delete-small"
+              :disabled="deletingIds.has(endpoint.id)"
+            >
+              {{ deletingIds.has(endpoint.id) ? 'Deleting...' : 'Delete' }}
+            </button>
           </td>
         </tr>
       </tbody>
@@ -90,6 +97,7 @@ import { servingClient, type ServingEndpoint, type ListEndpointsFilters } from '
 const endpoints = ref<ServingEndpoint[]>([]);
 const loading = ref(false);
 const error = ref('');
+const deletingIds = ref<Set<string>>(new Set());
 
 const filters = reactive<ListEndpointsFilters>({
   environment: undefined,
@@ -122,6 +130,27 @@ async function fetchEndpoints() {
     endpoints.value = [];
   } finally {
     loading.value = false;
+  }
+}
+
+async function handleDelete(endpointId: string, route: string) {
+  if (!confirm(`Are you sure you want to delete endpoint "${route}"? This will permanently delete the endpoint and all its Kubernetes resources.`)) {
+    return;
+  }
+
+  deletingIds.value.add(endpointId);
+  try {
+    const response = await servingClient.deleteEndpoint(endpointId);
+    if (response.status === "success") {
+      // Remove from list
+      endpoints.value = endpoints.value.filter(e => e.id !== endpointId);
+    } else {
+      alert(`Delete failed: ${response.message}`);
+    }
+  } catch (e) {
+    alert(`Error: ${e}`);
+  } finally {
+    deletingIds.value.delete(endpointId);
   }
 }
 
@@ -282,6 +311,26 @@ header {
 
 .btn-chat {
   color: #28a745;
+}
+
+.btn-delete-small {
+  padding: 0.25rem 0.5rem;
+  background: #dc3545;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  margin-left: 0.5rem;
+}
+
+.btn-delete-small:hover:not(:disabled) {
+  background: #c82333;
+}
+
+.btn-delete-small:disabled {
+  background: #ccc;
+  cursor: not-allowed;
 }
 
 .loading,

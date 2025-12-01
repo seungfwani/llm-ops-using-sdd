@@ -8,6 +8,8 @@ from typing import Callable
 from fastapi import Request, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError, HTTPException
+from sqlalchemy.exc import OperationalError, DisconnectionError
+from psycopg import OperationalError as PsycopgOperationalError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
@@ -46,6 +48,27 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
                 content={
                     "status": "fail",
                     "message": e.detail,
+                    "data": None,
+                },
+            )
+        except (OperationalError, DisconnectionError, PsycopgOperationalError) as e:
+            # Handle database connection errors
+            error_id = id(e)
+            logger.error(
+                f"Database connection error on {request.url.path} (error_id={error_id}): {str(e)}",
+                exc_info=True,
+                extra={
+                    "error_id": error_id,
+                    "path": request.url.path,
+                    "method": request.method,
+                    "error_type": "database_connection_error",
+                },
+            )
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content={
+                    "status": "fail",
+                    "message": f"Database connection error. Please try again or contact support if the issue persists (error_id={error_id}).",
                     "data": None,
                 },
             )

@@ -27,6 +27,14 @@ class ModelCatalogRepository:
         self.session.add(entry)
         return entry
 
+    def delete(self, entry_id: str | UUID) -> bool:
+        """Delete a model catalog entry by ID. Returns True if deleted, False if not found."""
+        entry = self.get(entry_id)
+        if not entry:
+            return False
+        self.session.delete(entry)
+        return True
+
 
 class DatasetRepository:
     def __init__(self, session: Session):

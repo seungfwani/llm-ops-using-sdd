@@ -109,6 +109,141 @@ python examples/serving_client.py list
 python examples/serving_client.py rollback
 ```
 
+## 모델 등록 예제
+
+### `register_base_model.py`
+
+Base 모델을 카탈로그에 등록하고 서빙하는 예제입니다.
+
+**주요 기능:**
+- Base 모델 등록
+- 모델 상태 업데이트 (draft → approved)
+- 모델 등록 후 서빙 엔드포인트 배포
+- JSON 파일에서 모델 정보 읽어서 등록
+
+**사용 예제:**
+```bash
+# Base 모델 등록만 수행
+python examples/register_base_model.py register
+
+# 모델 등록 및 서빙 전체 워크플로우
+python examples/register_base_model.py workflow
+
+# JSON 파일에서 모델 정보 읽어서 등록
+python examples/register_base_model.py json
+```
+
+**JSON 예제 파일:**
+`model_register_example.json` 파일을 참조하여 모델 등록에 필요한 정보를 확인할 수 있습니다.
+
+**코드에서 직접 사용:**
+```python
+from examples.register_base_model import CatalogClient, ServingClient
+
+# 카탈로그 클라이언트 생성
+catalog_client = CatalogClient(
+    base_url="https://dev.llm-ops.local/llm-ops/v1",
+    user_id="admin",
+    user_roles="admin"
+)
+
+# Base 모델 등록
+model = catalog_client.create_model(
+    name="my-base-model",
+    version="1.0",
+    model_type="base",
+    owner_team="ml-platform",
+    metadata={
+        "architecture": "transformer",
+        "parameters": "7B",
+        "framework": "pytorch"
+    }
+)
+
+# 모델 승인
+approved_model = catalog_client.update_model_status(model['id'], "approved")
+
+# 서빙 엔드포인트 배포
+serving_client = ServingClient(base_url="https://dev.llm-ops.local/llm-ops/v1")
+endpoint = serving_client.deploy_endpoint(
+    model_id=approved_model['id'],
+    environment="dev",
+    route="/llm-ops/v1/serve/my-base-model"
+)
+```
+
+### `download_and_register_hf_model.py`
+
+Hugging Face에서 모델을 다운로드하고 등록하는 예제입니다.
+
+**주의사항:**
+- 현재 시스템은 Hugging Face에서 직접 import하는 기능이 아직 구현되지 않았습니다.
+- 모델 파일은 매우 클 수 있으므로(수 GB ~ 수십 GB), 프로덕션 환경에서는 별도의 워크플로우를 사용하는 것을 권장합니다.
+- Hugging Face Import 기능은 PRD에 계획되어 있으며 향후 구현 예정입니다.
+
+**사용 방법:**
+
+1. **Hugging Face 라이브러리 설치:**
+```bash
+pip install huggingface_hub
+```
+
+2. **모델 다운로드 및 등록:**
+```bash
+# Hugging Face에서 모델 다운로드 후 등록
+python examples/download_and_register_hf_model.py download
+```
+
+3. **이미 업로드된 모델 등록:**
+```bash
+# storage_uri를 사용하여 이미 S3에 업로드된 모델 등록
+python examples/download_and_register_hf_model.py register
+```
+
+**코드에서 직접 사용:**
+```python
+from examples.download_and_register_hf_model import (
+    HuggingFaceModelDownloader,
+    CatalogClient
+)
+
+# Hugging Face 모델 다운로드
+downloader = HuggingFaceModelDownloader()
+model_path = downloader.download_model("meta-llama/Llama-2-7b-chat-hf")
+
+# 모델 등록
+catalog_client = CatalogClient(base_url="https://dev.llm-ops.local/llm-ops/v1")
+model = catalog_client.create_model(
+    name="llama_2_7b_chat",
+    version="1.0",
+    model_type="base",
+    owner_team="ml-platform",
+    metadata={
+        "source": "huggingface",
+        "huggingface_model_id": "meta-llama/Llama-2-7b-chat-hf",
+        "architecture": "llama",
+        "parameters": "7B",
+        "framework": "pytorch"
+    },
+    storage_uri="s3://models/llama_2_7b_chat/1.0/"
+)
+```
+
+**대안 방법:**
+
+Hugging Face에서 직접 import하는 기능이 아직 없으므로, 다음 방법을 사용할 수 있습니다:
+
+1. **수동 다운로드 후 업로드:**
+   - Hugging Face에서 모델을 다운로드
+   - 모델 파일을 S3/객체 스토리지에 업로드
+   - `storage_uri`를 지정하여 모델 등록
+
+2. **storage_uri로 참조:**
+   - 이미 S3에 업로드된 모델의 경우 `storage_uri`만 지정하여 등록
+
+3. **API를 통한 파일 업로드:**
+   - 모델 등록 후 `/catalog/models/{model_id}/upload` API로 파일 업로드
+
 ## 추가 예제
 
 더 많은 예제와 사용 사례는 다음 문서를 참조하세요:
@@ -130,6 +265,9 @@ python examples/serving_client.py rollback
 
 다음 예제들이 추가될 예정입니다:
 
+- [x] Base 모델 등록 예제
+- [x] Hugging Face 모델 등록 예제
+- [ ] Hugging Face 직접 Import 기능 (PRD에 계획됨)
 - [ ] JavaScript/TypeScript 클라이언트 예제
 - [ ] 모델 추론 호출 예제 (추론 API 구현 후)
 - [ ] 프롬프트 A/B 테스트 예제

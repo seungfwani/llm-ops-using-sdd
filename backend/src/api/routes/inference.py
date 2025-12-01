@@ -4,10 +4,12 @@ from __future__ import annotations
 import logging
 from uuid import uuid4
 
+import httpx
 from fastapi import APIRouter, Depends, Header, status
 from sqlalchemy.orm import Session
 
 from core.database import get_session
+from core.settings import get_settings
 from serving import schemas
 from serving.serving_service import ServingService
 from serving.repositories import ServingEndpointRepository
@@ -198,22 +200,29 @@ async def chat_completion(
                     data=None,
                 )
         else:
-            # Call internal model inference
-            response_content = await _call_model_inference(
-                endpoint=endpoint,
-                messages=messages,
-                temperature=request.temperature,
-                max_tokens=request.max_tokens,
-            )
-            # Estimate token usage (simplified)
-            prompt_tokens = sum(len(msg["content"].split()) for msg in messages) * 1.3
-            completion_tokens = len(response_content.split()) * 1.3
-            usage = {
-                "prompt_tokens": int(prompt_tokens),
-                "completion_tokens": int(completion_tokens),
-                "total_tokens": int(prompt_tokens + completion_tokens),
-            }
-            finish_reason = "stop"
+            # Call internal model inference (KServe or raw deployment)
+            try:
+                result = await _call_model_inference(
+                    endpoint=endpoint,
+                    model_entry=model_entry,
+                    messages=messages,
+                    temperature=request.temperature,
+                    max_tokens=request.max_tokens,
+                )
+                response_content = result["content"]
+                usage = result.get("usage", {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                })
+                finish_reason = result.get("finish_reason", "stop")
+            except Exception as e:
+                logger.error(f"Internal model inference failed: {e}", exc_info=True)
+                return schemas.ChatCompletionResponse(
+                    status="fail",
+                    message=f"Model inference failed: {str(e)}",
+                    data=None,
+                )
         
         return schemas.ChatCompletionResponse(
             status="success",
@@ -247,48 +256,116 @@ async def chat_completion(
 
 async def _call_model_inference(
     endpoint,
+    model_entry: catalog_models.ModelCatalogEntry,
     messages: list[dict],
     temperature: float,
     max_tokens: int,
-) -> str:
-    """Call the actual model for inference.
+) -> dict:
+    """Call the actual model for inference via KServe or raw Kubernetes deployment.
     
-    This is a placeholder implementation. In a real system, this would:
-    1. Call the deployed model service (Kubernetes service)
-    2. Use an inference client (e.g., OpenAI, vLLM, TensorRT-LLM)
-    3. Handle errors and retries
+    Args:
+        endpoint: ServingEndpoint entity
+        model_entry: ModelCatalogEntry entity
+        messages: List of chat messages
+        temperature: Sampling temperature
+        max_tokens: Maximum tokens to generate
     
-    For now, this returns a mock response.
+    Returns:
+        Dict with 'content', 'usage', and 'finish_reason'
     """
-    # TODO: Implement actual model inference
-    # Example approaches:
-    # 1. HTTP call to Kubernetes service
-    # 2. gRPC call to model server
-    # 3. Use model inference library
+    settings = get_settings()
+    endpoint_name = f"serving-{endpoint.id}"
+    namespace = f"llm-ops-{endpoint.environment}"
+
+    # If a local override is configured (e.g., port-forwarded service), use that.
+    if settings.serving_local_base_url is not None:
+        service_name = f"{endpoint_name}-local"
+        service_url = str(settings.serving_local_base_url).rstrip("/")
+        namespace = "local"
+        inference_url = f"{service_url}/v1/chat/completions"
+    else:
+        # Determine service URL based on deployment type
+        if settings.use_kserve:
+            # KServe InferenceService URL
+            # KServe creates a service named: {inference-service-name}-predictor-default
+            # For vLLM, we use OpenAI-compatible API at /v1/chat/completions
+            service_name = f"{endpoint_name}-predictor-default"
+            service_url = f"http://{service_name}.{namespace}.svc.cluster.local"
+            inference_url = f"{service_url}/v1/chat/completions"
+        else:
+            # Raw Kubernetes Deployment URL
+            service_name = f"{endpoint_name}-svc"
+            service_url = f"http://{service_name}.{namespace}.svc.cluster.local:8000"
+            # Assume OpenAI-compatible API (vLLM/TGI)
+            inference_url = f"{service_url}/v1/chat/completions"
+
+    logger.info(f"Calling model inference at: {inference_url}")
     
-    # Mock response for demonstration
-    user_message = next(
-        (msg["content"] for msg in reversed(messages) if msg["role"] == "user"),
-        "Hello"
-    )
+    # Prepare request payload (OpenAI-compatible format)
+    payload = {
+        "model": model_entry.name,  # Model name for vLLM
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
     
-    # Simple echo response with some variation
-    mock_responses = [
-        f"I understand you said: {user_message}. This is a mock response from the LLM Ops platform. "
-        f"The endpoint is configured but actual model inference is not yet implemented.",
-        f"Thank you for your message. I'm processing: '{user_message}'. "
-        f"In a production system, this would be sent to the actual model for inference.",
-        f"Received your message: {user_message}. The serving endpoint is working correctly. "
-        f"Model inference will be implemented to connect to the deployed model service.",
-    ]
-    
-    import random
-    response = random.choice(mock_responses)
-    
-    # Truncate to max_tokens if needed
-    words = response.split()
-    if len(words) > max_tokens // 2:  # Rough word-to-token estimate
-        response = " ".join(words[:max_tokens // 2]) + "..."
-    
-    return response
+    # Call KServe InferenceService or raw deployment
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                inference_url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            # Parse OpenAI-compatible response
+            if "choices" in data and len(data["choices"]) > 0:
+                choice = data["choices"][0]
+                content = choice.get("message", {}).get("content", "")
+                finish_reason = choice.get("finish_reason", "stop")
+                
+                # Extract usage information if available
+                usage = data.get("usage", {})
+                if not usage:
+                    # Estimate if not provided
+                    prompt_tokens = sum(len(msg["content"].split()) for msg in messages) * 1.3
+                    completion_tokens = len(content.split()) * 1.3
+                    usage = {
+                        "prompt_tokens": int(prompt_tokens),
+                        "completion_tokens": int(completion_tokens),
+                        "total_tokens": int(prompt_tokens + completion_tokens),
+                    }
+                
+                return {
+                    "content": content,
+                    "usage": usage,
+                    "finish_reason": finish_reason,
+                }
+            else:
+                raise ValueError(f"Invalid response format from model service: {data}")
+                
+    except httpx.HTTPStatusError as e:
+        error_msg = f"Model service returned error {e.response.status_code}"
+        try:
+            error_detail = e.response.json()
+            error_msg += f": {error_detail}"
+        except:
+            error_msg += f": {e.response.text}"
+        logger.error(f"HTTP error calling model inference: {error_msg}")
+        raise ValueError(error_msg) from e
+    except httpx.TimeoutException:
+        logger.error(f"Timeout calling model inference at {inference_url}")
+        raise ValueError("Model inference request timed out") from None
+    except httpx.ConnectError as e:
+        logger.error(f"Connection error calling model inference: {e}")
+        raise ValueError(
+            f"Cannot connect to model service at {inference_url}. "
+            f"Make sure the endpoint is deployed and healthy. "
+            f"Service: {service_name}, Namespace: {namespace}"
+        ) from e
+    except Exception as e:
+        logger.error(f"Unexpected error calling model inference: {e}", exc_info=True)
+        raise ValueError(f"Model inference failed: {str(e)}") from e
 

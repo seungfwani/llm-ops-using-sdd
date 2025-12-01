@@ -64,5 +64,12 @@ export const catalogClient = {
     );
     return response.data;
   },
+
+  async deleteModel(modelId: string): Promise<Envelope<{ model_id: string; storage_cleaned: boolean }>> {
+    const response = await apiClient.delete<Envelope<{ model_id: string; storage_cleaned: boolean }>>(
+      `/catalog/models/${modelId}`
+    );
+    return response.data;
+  },
 };
 

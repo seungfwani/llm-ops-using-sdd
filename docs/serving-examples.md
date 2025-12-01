@@ -3,12 +3,36 @@
 이 문서는 LLM Ops 플랫폼에서 서빙된 모델을 사용하는 다양한 예제를 제공합니다.
 
 ## 목차
-1. [서빙 엔드포인트 배포](#1-서빙-엔드포인트-배포)
-2. [엔드포인트 조회 및 상태 확인](#2-엔드포인트-조회-및-상태-확인)
-3. [서빙된 모델 추론 호출](#3-서빙된-모델-추론-호출)
-4. [Health Check](#4-health-check)
-5. [프롬프트 A/B 테스트](#5-프롬프트-ab-테스트)
-6. [롤백](#6-롤백)
+1. [예제 서빙 런타임: DialogGPT-small (transformers-pytorch-cpu)](#0-예제-서빙-런타임-dialoggpt-small-transformers-pytorch-cpu)
+2. [서빙 엔드포인트 배포](#1-서빙-엔드포인트-배포)
+3. [엔드포인트 조회 및 상태 확인](#2-엔드포인트-조회-및-상태-확인)
+4. [서빙된 모델 추론 호출](#3-서빙된-모델-추론-호출)
+5. [Health Check](#4-health-check)
+6. [프롬프트 A/B 테스트](#5-프롬프트-ab-테스트)
+7. [롤백](#6-롤백)
+
+---
+
+## 0. 예제 서빙 런타임: DialogGPT-small (transformers-pytorch-cpu)
+
+`huggingface/transformers-pytorch-cpu` 이미지를 기반으로
+`microsoft/DialoGPT-small` 모델을 서빙하는 **예제 런타임 이미지**가
+`examples/serving_dialogpt/` 디렉토리에 포함되어 있습니다.
+
+- 예제 구성:
+  - `examples/serving_dialogpt/serve_dialogpt.py` – FastAPI 기반 서빙 코드
+  - `examples/serving_dialogpt/Dockerfile` – 위 코드를 포함하는 런타임 이미지
+  - `examples/serving_dialogpt/README.md` – 빌드 및 배포 방법
+- 특징:
+  - `huggingface/transformers-pytorch-cpu` 를 그대로 사용하면서 HTTP 서버를 추가
+  - `/health`, `/ready`, `/generate` 엔드포인트를 8000 포트에 노출
+  - `MODEL_STORAGE_URI` + `AWS_*` 환경 변수로 MinIO/S3에서 모델을 로드
+
+이 이미지를 빌드 후 레지스트리에 푸시하고, 서빙 엔드포인트 배포 시
+`servingRuntimeImage` 값으로 지정하면, 플랫폼을 통해 DialogGPT 예제를
+손쉽게 배포/테스트할 수 있습니다.
+
+자세한 내용과 실제 명령어는 `examples/serving_dialogpt/README.md`를 참조하세요.
 
 ---
 

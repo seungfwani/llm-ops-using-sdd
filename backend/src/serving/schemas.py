@@ -18,6 +18,8 @@ class ServingEndpointRequest(BaseModel):
     maxReplicas: int = Field(default=3, ge=1)
     autoscalePolicy: Optional[dict] = Field(default=None)
     promptPolicyId: Optional[str] = Field(default=None)
+    useGpu: Optional[bool] = Field(default=None, description="Whether to request GPU resources. If not provided, uses default from settings")
+    servingRuntimeImage: Optional[str] = Field(default=None, description="Container image for model serving runtime (e.g., vLLM, TGI). If not provided, uses default from settings")
 
 
 class ServingEndpointResponse(BaseModel):
@@ -27,6 +29,7 @@ class ServingEndpointResponse(BaseModel):
     modelId: str
     environment: str
     route: str
+    runtimeImage: Optional[str] = None
     status: str
     minReplicas: int
     maxReplicas: int

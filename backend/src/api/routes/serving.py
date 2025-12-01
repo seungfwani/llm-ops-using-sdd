@@ -73,6 +73,8 @@ def deploy_endpoint(
             max_replicas=request.maxReplicas,
             autoscale_policy=request.autoscalePolicy,
             prompt_policy_id=request.promptPolicyId,
+            use_gpu=request.useGpu,
+            serving_runtime_image=request.servingRuntimeImage,
         )
         return schemas.EnvelopeServingEndpoint(
             status="success",
@@ -82,6 +84,7 @@ def deploy_endpoint(
                 modelId=str(endpoint.model_entry_id),
                 environment=endpoint.environment,
                 route=endpoint.route,
+                runtimeImage=endpoint.runtime_image,
                 status=endpoint.status,
                 minReplicas=endpoint.min_replicas,
                 maxReplicas=endpoint.max_replicas,
@@ -124,6 +127,7 @@ def get_endpoint(
             modelId=str(endpoint.model_entry_id),
             environment=endpoint.environment,
             route=endpoint.route,
+            runtimeImage=endpoint.runtime_image,
             status=endpoint.status,
             minReplicas=endpoint.min_replicas,
             maxReplicas=endpoint.max_replicas,
@@ -172,6 +176,98 @@ def rollback_endpoint(
         return schemas.EnvelopeServingEndpoint(
             status="fail",
             message=f"Failed to rollback endpoint: {str(e)}",
+            data=None,
+        )
+
+
+@router.post("/endpoints/{endpointId}/redeploy", response_model=schemas.EnvelopeServingEndpoint)
+def redeploy_endpoint(
+    endpointId: str,
+    useGpu: Optional[bool] = Query(None, description="Whether to request GPU resources. If not provided, uses endpoint's current setting"),
+    servingRuntimeImage: Optional[str] = Query(None, description="Container image for model serving runtime. If not provided, uses endpoint's current setting"),
+    service: ServingService = Depends(get_serving_service),
+) -> schemas.EnvelopeServingEndpoint:
+    """Redeploy a serving endpoint with the same configuration."""
+    try:
+        endpoint = service.redeploy_endpoint(endpointId, use_gpu=useGpu, serving_runtime_image=servingRuntimeImage)
+        return schemas.EnvelopeServingEndpoint(
+            status="success",
+            message="Serving endpoint redeployed successfully",
+            data=schemas.ServingEndpointResponse(
+                id=str(endpoint.id),
+                modelId=str(endpoint.model_entry_id),
+                environment=endpoint.environment,
+                route=endpoint.route,
+                runtimeImage=endpoint.runtime_image,
+                status=endpoint.status,
+                minReplicas=endpoint.min_replicas,
+                maxReplicas=endpoint.max_replicas,
+                createdAt=endpoint.created_at,
+            ),
+        )
+    except ValueError as e:
+        return schemas.EnvelopeServingEndpoint(
+            status="fail",
+            message=str(e),
+            data=None,
+        )
+    except Exception as e:
+        return schemas.EnvelopeServingEndpoint(
+            status="fail",
+            message=f"Failed to redeploy endpoint: {str(e)}",
+            data=None,
+        )
+
+
+@router.delete("/endpoints/{endpointId}", response_model=schemas.EnvelopeServingEndpoint)
+def delete_endpoint(
+    endpointId: str,
+    service: ServingService = Depends(get_serving_service),
+) -> schemas.EnvelopeServingEndpoint:
+    """Delete a serving endpoint and its Kubernetes resources."""
+    try:
+        # Get endpoint before deletion for response
+        endpoint = service.get_endpoint(endpointId)
+        if not endpoint:
+            return schemas.EnvelopeServingEndpoint(
+                status="fail",
+                message=f"Serving endpoint {endpointId} not found",
+                data=None,
+            )
+        
+        # Delete the endpoint
+        success = service.delete_endpoint(endpointId)
+        if not success:
+            return schemas.EnvelopeServingEndpoint(
+                status="fail",
+                message=f"Failed to delete endpoint {endpointId}",
+                data=None,
+            )
+        
+        return schemas.EnvelopeServingEndpoint(
+            status="success",
+            message="Serving endpoint deleted successfully",
+            data=schemas.ServingEndpointResponse(
+                id=str(endpoint.id),
+                modelId=str(endpoint.model_entry_id),
+                environment=endpoint.environment,
+                route=endpoint.route,
+                status=endpoint.status,
+                minReplicas=endpoint.min_replicas,
+                maxReplicas=endpoint.max_replicas,
+                createdAt=endpoint.created_at,
+            ),
+        )
+    except ValueError as e:
+        return schemas.EnvelopeServingEndpoint(
+            status="fail",
+            message=str(e),
+            data=None,
+        )
+    except Exception as e:
+        return schemas.EnvelopeServingEndpoint(
+            status="fail",
+            message=f"Failed to delete endpoint: {str(e)}",
             data=None,
         )
 

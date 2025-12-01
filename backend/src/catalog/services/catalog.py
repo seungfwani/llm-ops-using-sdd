@@ -61,6 +61,63 @@ class CatalogService:
         self.session.refresh(entry)
         return entry
 
+    def delete_entry(self, entry_id: str) -> dict:
+        """Delete a model catalog entry and optionally clean up storage files."""
+        entry = self.get_entry(entry_id)
+        if not entry:
+            raise ValueError("Entry not found")
+
+        # Check if model is being used by serving endpoints
+        if entry.training_jobs:
+            raise ValueError(
+                f"Cannot delete model {entry_id}: it has associated training jobs. "
+                "Please delete or update training jobs first."
+            )
+
+        # Note: We don't check serving_endpoints here because the foreign key constraint
+        # will prevent deletion if there are active serving endpoints (ondelete="RESTRICT")
+        # The database will raise an integrity error if deletion is attempted.
+
+        storage_uri = entry.storage_uri
+        model_id = str(entry.id)
+
+        # Delete from database
+        deleted = self.models.delete(entry_id)
+        if not deleted:
+            raise ValueError("Failed to delete entry")
+
+        self.session.commit()
+
+        # Optionally clean up storage files
+        # Note: This is a best-effort cleanup. If it fails, we still consider the deletion successful
+        # since the database record is already deleted.
+        storage_cleaned = False
+        if storage_uri:
+            try:
+                s3_client = get_object_store_client()
+                # Extract bucket and prefix from storage_uri (format: s3://bucket/prefix/)
+                if storage_uri.startswith("s3://"):
+                    parts = storage_uri.replace("s3://", "").split("/", 1)
+                    if len(parts) == 2:
+                        bucket_name = parts[0]
+                        prefix = parts[1]
+                        # List and delete all objects with this prefix
+                        try:
+                            response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
+                            if "Contents" in response:
+                                for obj in response["Contents"]:
+                                    s3_client.delete_object(Bucket=bucket_name, Key=obj["Key"])
+                                storage_cleaned = True
+                        except Exception:
+                            pass  # Ignore storage cleanup errors
+            except Exception:
+                pass  # Ignore storage cleanup errors
+
+        return {
+            "model_id": model_id,
+            "storage_cleaned": storage_cleaned,
+        }
+
     async def upload_model_files(
         self, model_id: str, files: list[UploadFile]
     ) -> dict:
@@ -141,7 +198,19 @@ class CatalogService:
 
         # Check file sizes (max 10GB per file)
         max_file_size = 10 * 1024 * 1024 * 1024  # 10GB
-        allowed_extensions = {".bin", ".safetensors", ".json", ".txt", ".pt", ".pth", ".onnx"}
+        # Allowed file extensions for model files
+        # Includes: PyTorch (.pt, .pth, .bin), SafeTensors (.safetensors),
+        # Flax/JAX (.msgpack), TensorFlow (.h5, .pb, .ckpt), ONNX (.onnx),
+        # and common config/text files
+        allowed_extensions = {
+            ".bin", ".safetensors", ".json", ".txt", ".pt", ".pth", ".onnx",
+            ".msgpack",  # Flax/JAX models
+            ".h5", ".hdf5",  # Keras/TensorFlow HDF5
+            ".pb",  # TensorFlow protobuf
+            ".ckpt",  # TensorFlow checkpoint
+            ".tflite",  # TensorFlow Lite
+            ".md",  # Documentation files bundled with models (e.g., README.md)
+        }
 
         filenames = [f.filename for f in files]
         required_files = {"config.json"}  # Minimum required

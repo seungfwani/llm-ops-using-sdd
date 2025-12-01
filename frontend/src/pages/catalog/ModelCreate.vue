@@ -122,6 +122,7 @@
 
       <div v-if="form.type !== 'external'" class="form-section">
         <h2>Model Files (Optional)</h2>
+        <div class="file-upload-section">
         <label>
           Upload Model Files
           <div class="file-upload-area" 
@@ -148,7 +149,14 @@
             </ul>
           </div>
         </label>
-        <small class="help-text">Upload model files (weights, config, tokenizer, etc.). You can also upload files after model creation.</small>
+          <div v-if="uploadProgress > 0 && uploadProgress < 100" class="upload-progress">
+            <div class="progress-bar">
+              <div class="progress-fill" :style="{ width: uploadProgress + '%' }"></div>
+            </div>
+            <p class="progress-text">Uploading... {{ uploadProgress }}%</p>
+          </div>
+          <small class="help-text">Upload model files (weights, config, tokenizer, etc.). Files will be uploaded after model creation.</small>
+        </div>
       </div>
       
       <div v-else class="form-section">
@@ -186,6 +194,9 @@ const messageType = ref<'success' | 'error'>('error');
 const dragover = ref(false);
 const selectedFiles = ref<File[]>([]);
 const fileInput = ref<HTMLInputElement | null>(null);
+const uploading = ref(false);
+const uploadProgress = ref(0);
+const createdModelId = ref<string | null>(null);
 
 const form = reactive({
   name: '',
@@ -298,35 +309,25 @@ async function handleSubmit() {
     });
 
     if (response.status === "success") {
+      const modelId = response.data ? (Array.isArray(response.data) ? response.data[0].id : response.data.id) : null;
+      createdModelId.value = modelId;
+      
       message.value = 'Model created successfully!';
       messageType.value = 'success';
       
       // Upload files if any selected (skip for external models)
-      if (response.data && selectedFiles.value.length > 0 && form.type !== 'external') {
-        const modelId = Array.isArray(response.data) ? response.data[0].id : response.data.id;
-        try {
-          const uploadResponse = await catalogClient.uploadModelFiles(modelId, selectedFiles.value);
-          if (uploadResponse.status === "success") {
-            message.value = 'Model created and files uploaded successfully!';
+      if (modelId && selectedFiles.value.length > 0 && form.type !== 'external') {
+        await handleFileUpload(modelId);
           } else {
-            message.value = `Model created but file upload failed: ${uploadResponse.message}`;
-            messageType.value = 'error';
-          }
-        } catch (uploadError) {
-          message.value = `Model created but file upload failed: ${uploadError}`;
-          messageType.value = 'error';
-        }
-      }
-      
-      // Redirect to model detail page after a short delay
+        // Redirect to model detail page after a short delay if no files to upload
       setTimeout(() => {
-        if (response.data) {
-          const modelId = Array.isArray(response.data) ? response.data[0].id : response.data.id;
+          if (modelId) {
           router.push(`/catalog/models/${modelId}`);
         } else {
           router.push('/catalog/models');
         }
       }, 1500);
+      }
     } else {
       message.value = response.message || 'Failed to create model';
       messageType.value = 'error';
@@ -363,6 +364,62 @@ function formatFileSize(bytes: number): string {
   const sizes = ['Bytes', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+}
+
+async function handleFileUpload(modelId: string) {
+  if (selectedFiles.value.length === 0) return;
+  
+  uploading.value = true;
+  uploadProgress.value = 0;
+  
+  try {
+    // Simulate progress (in real implementation, use axios onUploadProgress)
+    const progressInterval = setInterval(() => {
+      if (uploadProgress.value < 90) {
+        uploadProgress.value += 10;
+      }
+    }, 200);
+    
+    const uploadResponse = await catalogClient.uploadModelFiles(modelId, selectedFiles.value);
+    
+    clearInterval(progressInterval);
+    uploadProgress.value = 100;
+    
+    if (uploadResponse.status === "success") {
+      message.value = 'Model created and files uploaded successfully!';
+      messageType.value = 'success';
+      selectedFiles.value = []; // Clear files after successful upload
+      
+      // Redirect to model detail page after a short delay
+      setTimeout(() => {
+        router.push(`/catalog/models/${modelId}`);
+      }, 1500);
+    } else {
+      message.value = `Model created but file upload failed: ${uploadResponse.message}`;
+      messageType.value = 'error';
+      // Still redirect to detail page so user can retry upload
+      setTimeout(() => {
+        router.push(`/catalog/models/${modelId}`);
+      }, 2000);
+    }
+  } catch (uploadError) {
+    message.value = `Model created but file upload failed: ${uploadError}`;
+    messageType.value = 'error';
+    uploadProgress.value = 0;
+    // Still redirect to detail page so user can retry upload
+    setTimeout(() => {
+      if (modelId) {
+        router.push(`/catalog/models/${modelId}`);
+      } else {
+        router.push('/catalog/models');
+      }
+    }, 2000);
+  } finally {
+    uploading.value = false;
+    setTimeout(() => {
+      uploadProgress.value = 0;
+    }, 1000);
+  }
 }
 </script>
 
@@ -514,6 +571,10 @@ header {
   border: 1px solid #f5c6cb;
 }
 
+.file-upload-section {
+  margin-top: 1rem;
+}
+
 .file-upload-area {
   border: 2px dashed #ddd;
   border-radius: 4px;
@@ -522,6 +583,7 @@ header {
   cursor: pointer;
   transition: all 0.3s;
   background: #f8f9fa;
+  margin-top: 0.5rem;
 }
 
 .file-upload-area:hover,
@@ -582,6 +644,31 @@ header {
 
 .remove-file:hover {
   background: #c82333;
+}
+
+.upload-progress {
+  margin-top: 1rem;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 20px;
+  background: #e9ecef;
+  border-radius: 10px;
+  overflow: hidden;
+  margin-bottom: 0.5rem;
+}
+
+.progress-fill {
+  height: 100%;
+  background: #28a745;
+  transition: width 0.3s;
+}
+
+.progress-text {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #6c757d;
 }
 
 .external-provider-section {

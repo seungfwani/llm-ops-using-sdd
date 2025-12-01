@@ -46,6 +46,15 @@
               View Model Details →
             </router-link>
           </dd>
+          <dt>Runtime Image</dt>
+          <dd class="monospace">
+            <span v-if="endpoint.runtimeImage">
+              {{ endpoint.runtimeImage }}
+            </span>
+            <span v-else class="text-muted">
+              Default (server setting)
+            </span>
+          </dd>
         </dl>
       </div>
 
@@ -64,6 +73,33 @@
       </div>
 
       <div class="detail-section">
+        <h2>Runtime Configuration</h2>
+        <dl class="detail-list">
+          <dt>Override Runtime Image</dt>
+          <dd>
+            <select v-model="runtimeImageSelection">
+              <option value="">Use current / default</option>
+              <option value="vllm/vllm-openai:nightly">vLLM OpenAI (nightly)</option>
+              <option value="ghcr.io/vllm/vllm:latest">vLLM (latest)</option>
+              <option value="ghcr.io/vllm/vllm:0.6.0">vLLM (0.6.0)</option>
+              <option value="huggingface/text-generation-inference:latest">TGI (latest)</option>
+              <option value="custom">Custom image...</option>
+            </select>
+            <input
+              v-if="runtimeImageSelection === 'custom'"
+              v-model="customRuntimeImage"
+              type="text"
+              placeholder="e.g., my-registry.io/my-image:tag"
+              class="runtime-image-input"
+            />
+            <p class="help-text">
+              If set, this image will be used on the next redeploy and recorded on the endpoint. Leave empty to keep current/default image.
+            </p>
+          </dd>
+        </dl>
+      </div>
+
+      <div class="detail-section">
         <h2>Actions</h2>
         <div class="actions">
           <router-link
@@ -73,8 +109,18 @@
           >
             Test Chat
           </router-link>
-          <button @click="handleRollback" :disabled="rollingBack" class="btn-danger">
+          <button 
+            @click="handleRedeploy" 
+            :disabled="redeploying || deleting || rollingBack" 
+            class="btn-redeploy"
+          >
+            {{ redeploying ? 'Redeploying...' : 'Redeploy Endpoint' }}
+          </button>
+          <button @click="handleRollback" :disabled="rollingBack || deleting || redeploying" class="btn-danger">
             {{ rollingBack ? 'Rolling back...' : 'Rollback Endpoint' }}
+          </button>
+          <button @click="handleDelete" :disabled="deleting || rollingBack || redeploying" class="btn-delete">
+            {{ deleting ? 'Deleting...' : 'Delete Endpoint' }}
           </button>
           <button @click="refreshEndpoint" :disabled="loading" class="btn-secondary">
             Refresh
@@ -96,6 +142,10 @@ const endpoint = ref<ServingEndpoint | null>(null);
 const loading = ref(false);
 const error = ref('');
 const rollingBack = ref(false);
+const deleting = ref(false);
+const redeploying = ref(false);
+const runtimeImageSelection = ref<string>('');
+const customRuntimeImage = ref<string>('');
 
 async function fetchEndpoint() {
   const endpointId = route.params.id as string;
@@ -110,6 +160,25 @@ async function fetchEndpoint() {
     const response = await servingClient.getEndpoint(endpointId);
     if (response.status === "success" && response.data) {
       endpoint.value = response.data;
+      // Initialize runtime image selector based on current endpoint
+      if (endpoint.value.runtimeImage) {
+        const knownImages = [
+          "vllm/vllm-openai:nightly",
+          "ghcr.io/vllm/vllm:latest",
+          "ghcr.io/vllm/vllm:0.6.0",
+          "huggingface/text-generation-inference:latest",
+        ];
+        if (knownImages.includes(endpoint.value.runtimeImage)) {
+          runtimeImageSelection.value = endpoint.value.runtimeImage;
+          customRuntimeImage.value = "";
+        } else {
+          runtimeImageSelection.value = "custom";
+          customRuntimeImage.value = endpoint.value.runtimeImage;
+        }
+      } else {
+        runtimeImageSelection.value = "";
+        customRuntimeImage.value = "";
+      }
     } else {
       error.value = response.message || "Failed to load endpoint";
       endpoint.value = null;
@@ -119,6 +188,41 @@ async function fetchEndpoint() {
     endpoint.value = null;
   } finally {
     loading.value = false;
+  }
+}
+
+async function handleRedeploy() {
+  if (!endpoint.value) return;
+  
+  if (!confirm(`Are you sure you want to redeploy endpoint "${endpoint.value.route}"? This will restart the deployment with the same configuration.`)) {
+    return;
+  }
+
+  redeploying.value = true;
+  try {
+    // Determine runtime image override
+    let runtimeImageOverride: string | undefined;
+    if (runtimeImageSelection.value === 'custom' && customRuntimeImage.value.trim()) {
+      runtimeImageOverride = customRuntimeImage.value.trim();
+    } else if (runtimeImageSelection.value && runtimeImageSelection.value !== 'custom') {
+      runtimeImageOverride = runtimeImageSelection.value;
+    }
+
+    const response = await servingClient.redeployEndpoint(
+      endpoint.value.id,
+      undefined,
+      runtimeImageOverride
+    );
+    if (response.status === "success") {
+      alert('Endpoint redeployment started successfully. Status will update shortly.');
+      await fetchEndpoint();
+    } else {
+      alert(`Redeploy failed: ${response.message}`);
+    }
+  } catch (e) {
+    alert(`Error: ${e}`);
+  } finally {
+    redeploying.value = false;
   }
 }
 
@@ -142,6 +246,29 @@ async function handleRollback() {
     alert(`Error: ${e}`);
   } finally {
     rollingBack.value = false;
+  }
+}
+
+async function handleDelete() {
+  if (!endpoint.value) return;
+  
+  if (!confirm(`Are you sure you want to delete endpoint "${endpoint.value.route}"? This will permanently delete the endpoint and all its Kubernetes resources.`)) {
+    return;
+  }
+
+  deleting.value = true;
+  try {
+    const response = await servingClient.deleteEndpoint(endpoint.value.id);
+    if (response.status === "success") {
+      alert('Endpoint deleted successfully');
+      router.push('/serving/endpoints');
+    } else {
+      alert(`Delete failed: ${response.message}`);
+    }
+  } catch (e) {
+    alert(`Error: ${e}`);
+  } finally {
+    deleting.value = false;
   }
 }
 
@@ -336,6 +463,24 @@ header {
   cursor: not-allowed;
 }
 
+.btn-delete {
+  padding: 0.5rem 1rem;
+  background: #dc3545;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.btn-delete:hover:not(:disabled) {
+  background: #c82333;
+}
+
+.btn-delete:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
 .btn-secondary {
   padding: 0.5rem 1rem;
   background: #6c757d;
@@ -352,6 +497,43 @@ header {
 .btn-secondary:disabled {
   background: #ccc;
   cursor: not-allowed;
+}
+
+.btn-redeploy {
+  padding: 0.5rem 1rem;
+  background: #007bff;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.btn-redeploy:hover:not(:disabled) {
+  background: #0056b3;
+}
+
+.btn-redeploy:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+.runtime-image-input {
+  margin-top: 0.5rem;
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+
+.help-text {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  color: #6c757d;
+}
+
+.text-muted {
+  color: #6c757d;
+  font-style: italic;
 }
 
 .loading,

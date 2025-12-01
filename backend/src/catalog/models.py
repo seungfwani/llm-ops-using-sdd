@@ -168,6 +168,7 @@ class ServingEndpoint(Base):
     )
     environment: Mapped[str] = mapped_column(Text, nullable=False)
     route: Mapped[str] = mapped_column(Text, nullable=False)
+    runtime_image: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, default="deploying", nullable=False)
     min_replicas: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     max_replicas: Mapped[int] = mapped_column(Integer, default=1, nullable=False)

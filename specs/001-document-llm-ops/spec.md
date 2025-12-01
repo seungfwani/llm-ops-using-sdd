@@ -248,7 +248,19 @@ unauthorized access.
   remain queryable for comparisons.
 - **FR-006**: The serving subsystem MUST deploy approved model versions into
   scalable inference endpoints with health probes, traffic policies, and defined
-  rollback paths.
+  rollback paths. For internal models, this MUST include Kubernetes deployment
+  with Deployment, Service, HPA (Horizontal Pod Autoscaler), and Ingress
+  resources. The deployment MUST support:
+  - Automatic scaling based on CPU/memory utilization or custom metrics
+  - Health checks via `/health` and `/ready` endpoints
+  - Traffic routing through Ingress with proper path configuration
+  - Resource limits and requests for GPU/CPU/memory allocation
+  - Rollback capability to previous deployment versions
+  - Kubernetes namespace mapping: The deployment environment (dev/stg/prod) MUST
+    be mapped to Kubernetes namespaces with the `llm-ops-` prefix for resource
+    isolation. All Kubernetes resources (Deployment, Service, HPA, Ingress) MUST
+    be created in the namespace `llm-ops-{environment}` (e.g., `llm-ops-dev`,
+    `llm-ops-stg`, `llm-ops-prod`).
 - **FR-006a**: Users MUST be able to list and view all serving endpoints with
   filtering by environment, model, and status, and access detailed endpoint
   information including route, health status, scaling configuration, and bound
@@ -264,6 +276,72 @@ unauthorized access.
   inference interface. External model requests MUST be routed to the appropriate
   provider client (OpenAI, Ollama, etc.) based on model metadata, with error
   handling and token usage tracking consistent across all model types.
+- **FR-006e**: The serving subsystem MUST support CPU-only deployment when GPU
+  resources are unavailable or not requested. The platform MUST:
+  - Allow users to specify `useGpu` parameter (optional boolean) in deployment
+    requests via the serving API (`POST /llm-ops/v1/serving/endpoints`)
+  - Provide a global configuration setting `use_gpu` (default: `true`) that can
+    be overridden per deployment request
+  - Automatically adjust CPU and memory resource requests when GPU is not
+    requested (e.g., increase CPU from 2 to 4 cores, memory limits remain
+    configurable)
+  - Support both KServe InferenceService and raw Kubernetes Deployment modes
+    with CPU-only resource allocation
+  - Prevent deployment failures due to insufficient GPU resources by allowing
+    graceful fallback to CPU-only deployment
+- **FR-006f**: The serving subsystem MUST support configurable resource limits
+  (CPU, memory) for serving deployments. The platform MUST:
+  - Provide environment variables for GPU-enabled resource limits:
+    `SERVING_CPU_REQUEST`, `SERVING_CPU_LIMIT`, `SERVING_MEMORY_REQUEST`,
+    `SERVING_MEMORY_LIMIT`
+  - Provide environment variables for CPU-only resource limits:
+    `SERVING_CPU_ONLY_CPU_REQUEST`, `SERVING_CPU_ONLY_CPU_LIMIT`,
+    `SERVING_CPU_ONLY_MEMORY_REQUEST`, `SERVING_CPU_ONLY_MEMORY_LIMIT`
+  - Allow different resource configurations for local development (smaller
+    values) and production (larger values)
+  - Default to reasonable values suitable for local development (CPU: 1/2,
+    Memory: 1Gi/2Gi for CPU-only, CPU: 1/2, Memory: 2Gi/4Gi for GPU-enabled)
+- **FR-006h**: The serving subsystem MUST support per-endpoint override of the
+  serving runtime image. The platform MUST:
+  - Provide an optional `servingRuntimeImage` field on serving deployment and
+    redeployment APIs (e.g., `POST /llm-ops/v1/serving/endpoints`,
+    `POST /llm-ops/v1/serving/endpoints/{endpointId}/redeploy`) that, when set,
+    overrides the global `serving_runtime_image` setting for that endpoint.
+  - Allow users to select a serving runtime image from a curated list
+    (e.g., vLLM, Text Generation Inference, custom images) via the serving
+    endpoint deployment UI (`EndpointDeploy.vue`) and to specify a fully
+    qualified custom image string.
+  - Preserve the chosen runtime image on the endpoint entity so that subsequent
+    redeploy operations reuse the same image unless explicitly overridden.
+  - Clearly surface image-related deployment failures (e.g., ImagePullBackOff)
+    in the UI and API responses with actionable error messages and remediation
+    hints (such as trying an alternative image).
+- **FR-006g**: The platform MUST provide comprehensive environment variable
+  configuration support. The platform MUST:
+  - Load configuration from `.env` file in the backend directory
+  - Provide `env.example` template file with all available configuration options
+  - Support environment-specific configurations (local development, cluster
+    deployment, production)
+  - Parse boolean values as lowercase `true`/`false` strings
+  - Convert empty strings for optional fields to `None` automatically
+  - Document all environment variables in `ENV_SETUP.md` with examples for each
+    environment type
+  - Support case-insensitive environment variable names
+  - Ignore empty environment variables when loading configuration
+- **FR-006i**: The serving subsystem MUST provide a safe endpoint deletion and
+  model deletion flow with dependency awareness. The platform MUST:
+  - Prevent deletion of a model catalog entry if it is referenced by active
+    serving endpoints or training jobs, returning a clear error message
+    indicating which resources block deletion.
+  - Expose a model deletion API and UI action that, when allowed, deletes the
+    catalog entry and performs best-effort cleanup of associated model files
+    in object storage (e.g., deleting all objects under the model's `storage_uri`).
+  - Expose a serving endpoint deletion API and UI action that deletes both the
+    database record and associated Kubernetes resources (Deployment/Service/HPA/
+    Ingress or KServe InferenceService), handling partial failures gracefully
+    and surfacing status to the user.
+  - Log all delete operations (model and endpoint) to the audit log with actor,
+    resource identifiers, and result for governance traceability.
 - **FR-007**: Prompt management MUST support versioned templates, A/B testing,
   and quick rollback while capturing experiment outcomes and reviewer approvals.
 - **FR-008**: Every `/llm-ops/v1` endpoint MUST reply with HTTP 200 +
@@ -492,4 +570,53 @@ specified in the PRD's "Hybrid Router" requirement.
 - External model configuration (API keys, endpoints) is stored in model
   metadata. Security best practices should be followed for sensitive
   credentials (e.g., encryption at rest, secret management integration).
-- No outstanding open questions require product clarification at this time.
+- **Kubernetes Deployment for Internal Models**: Internal models MUST be deployed
+  to Kubernetes clusters as specified in FR-006. The platform uses the following
+  approach:
+  - **KServe Integration**: The platform uses KServe (Kubernetes-native model serving
+    framework) for deploying internal models. KServe provides standardized inference
+    APIs, automatic scaling, canary deployments, and traffic splitting capabilities.
+    KServe is enabled by default (`use_kserve=true`) but can be disabled to use raw
+    Kubernetes Deployments for legacy compatibility.
+  - **Model Loading from Object Storage**: Internal models are loaded directly
+    from object storage (MinIO/S3) using the `storage_uri` stored in the catalog
+    entry. No separate container image build process is required for model files.
+  - **Model Serving Runtime**: The platform uses a configurable model serving
+    runtime (default: `python:3.11-slim` for local testing, `ghcr.io/vllm/vllm:latest`
+    for production) that can load models from object storage at container startup.
+    The runtime image is configurable via `serving_runtime_image` setting (supports
+    vLLM, Text Generation Inference, etc.). The platform MUST handle cases where
+    the specified image does not exist (ImagePullBackOff errors) by providing
+    clear error messages and alternative image options.
+  - **KServe InferenceService**: When KServe is enabled, the platform creates
+    `InferenceService` CustomResources instead of raw Deployments. KServe automatically
+    manages Deployments, Services, and autoscaling based on the InferenceService spec.
+  - **Object Storage Access**: Serving containers receive object storage credentials
+    and endpoint configuration via Kubernetes secrets (`llm-ops-object-store-credentials`)
+    and ConfigMaps (`llm-ops-object-store-config`). The `MODEL_STORAGE_URI` environment
+    variable is set to the catalog entry's `storage_uri` (e.g., `s3://models/{model_id}/{version}/`).
+  - **Deployment Validation**: Before deployment, the platform validates that the
+    model entry has a `storage_uri` (model files must be uploaded via
+    `POST /catalog/models/{model_id}/upload`).
+  - **Container Image Registry**: The serving runtime images (vLLM, TGI, etc.)
+    are pulled from public container registries (Docker Hub, Hugging Face, etc.)
+    or can be configured to use private registries via Kubernetes image pull secrets.
+  - **KServe Prerequisites**: KServe must be installed in the Kubernetes cluster
+    before deploying models. The platform assumes KServe is installed in the
+    `kserve` namespace (configurable via `kserve_namespace` setting).
+  - **Environment Configuration**: The platform uses environment variables for
+    configuration, loaded from a `.env` file in the backend directory. A template
+    file `env.example` is provided with all available configuration options. The
+    platform MUST support:
+    - Database connection URL configuration (PostgreSQL)
+    - Redis connection URL configuration
+    - Object storage (MinIO/S3) endpoint and credentials
+    - Kubernetes configuration (kubeconfig path or in-cluster detection)
+    - Serving runtime image configuration (vLLM, TGI, etc.)
+    - Resource limits configuration (CPU, memory, GPU) for serving deployments
+    - GPU fallback configuration (`use_gpu` setting to enable CPU-only deployment)
+    - Environment-specific settings (local development vs. cluster deployment)
+    - All boolean values MUST be parsed as lowercase `true`/`false` strings
+    - Empty strings for optional fields MUST be converted to `None` automatically
+    - Configuration MUST be documented in `ENV_SETUP.md` with environment-specific
+      examples (local, cluster, production)

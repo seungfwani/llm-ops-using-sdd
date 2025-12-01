@@ -63,7 +63,12 @@
           </td>
           <td>{{ model.owner_team }}</td>
           <td>
+            <div class="action-buttons">
             <router-link :to="`/catalog/models/${model.id}`" class="btn-link">View</router-link>
+              <button @click="handleDelete(model.id, model.name)" class="btn-delete" :disabled="deleting === model.id">
+                {{ deleting === model.id ? 'Deleting...' : 'Delete' }}
+              </button>
+            </div>
           </td>
         </tr>
       </tbody>
@@ -79,6 +84,7 @@ import { catalogClient, type CatalogModel } from '@/services/catalogClient';
 const models = ref<CatalogModel[]>([]);
 const loading = ref(false);
 const error = ref('');
+const deleting = ref<string | null>(null);
 
 const filters = reactive({
   type: '',
@@ -128,6 +134,27 @@ async function fetchModels() {
     models.value = [];
   } finally {
     loading.value = false;
+  }
+}
+
+async function handleDelete(modelId: string, modelName: string) {
+  if (!confirm(`Are you sure you want to delete model "${modelName}" (${modelId})? This action cannot be undone.`)) {
+    return;
+  }
+
+  deleting.value = modelId;
+  try {
+    const response = await catalogClient.deleteModel(modelId);
+    if (response.status === "success") {
+      alert('Model deleted successfully');
+      await fetchModels(); // Refresh the list
+    } else {
+      alert(`Failed to delete model: ${response.message}`);
+    }
+  } catch (e) {
+    alert(`Error deleting model: ${e}`);
+  } finally {
+    deleting.value = null;
   }
 }
 
@@ -270,6 +297,31 @@ header {
 
 .btn-link:hover {
   text-decoration: underline;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.btn-delete {
+  padding: 0.25rem 0.75rem;
+  background: #dc3545;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.btn-delete:hover:not(:disabled) {
+  background: #c82333;
+}
+
+.btn-delete:disabled {
+  background: #ccc;
+  cursor: not-allowed;
 }
 
 .loading,

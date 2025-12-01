@@ -113,6 +113,13 @@
           <button @click="refreshModel" :disabled="loading" class="btn-secondary">
             Refresh
           </button>
+          <button 
+            @click="handleDelete" 
+            :disabled="loading || deleting" 
+            class="btn-delete"
+          >
+            {{ deleting ? 'Deleting...' : 'Delete Model' }}
+          </button>
         </div>
       </div>
     </div>
@@ -135,6 +142,7 @@ const selectedFiles = ref<File[]>([]);
 const fileInput = ref<HTMLInputElement | null>(null);
 const uploading = ref(false);
 const uploadProgress = ref(0);
+const deleting = ref(false);
 
 async function fetchModel() {
   const modelId = route.params.id as string;
@@ -255,6 +263,32 @@ async function handleUpload() {
     uploadProgress.value = 0;
   } finally {
     uploading.value = false;
+  }
+}
+
+async function handleDelete() {
+  if (!model.value) return;
+
+  const modelName = model.value.name;
+  const modelId = model.value.id;
+
+  if (!confirm(`Are you sure you want to delete model "${modelName}" (${modelId})? This action cannot be undone.`)) {
+    return;
+  }
+
+  deleting.value = true;
+  try {
+    const response = await catalogClient.deleteModel(modelId);
+    if (response.status === "success") {
+      alert('Model deleted successfully');
+      router.push('/catalog/models'); // Navigate back to list
+    } else {
+      alert(`Failed to delete model: ${response.message}`);
+    }
+  } catch (e) {
+    alert(`Error deleting model: ${e}`);
+  } finally {
+    deleting.value = false;
   }
 }
 
@@ -431,6 +465,25 @@ header {
 }
 
 .btn-secondary:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+.btn-delete {
+  padding: 0.5rem 1rem;
+  background: #dc3545;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  height: fit-content;
+}
+
+.btn-delete:hover:not(:disabled) {
+  background: #c82333;
+}
+
+.btn-delete:disabled {
   background: #ccc;
   cursor: not-allowed;
 }
