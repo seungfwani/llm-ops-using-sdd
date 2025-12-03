@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     # Use HTTPS for object storage (set to true for production S3)
     object_store_secure: bool = False
     
+    # Object storage bucket name for models
+    object_store_models_bucket: str = "models"
+    
     # =========================================================================
     # Application Configuration
     # =========================================================================
@@ -85,10 +88,11 @@ class Settings(BaseSettings):
     #   - vllm/vllm-server:latest (official vLLM server image)
     #   - vllm/vllm:latest (may not exist, use vllm/vllm-server instead)
     #   - ghcr.io/vllm/vllm:latest (GitHub Container Registry)
-    #   - huggingface/text-generation-inference:latest (TGI alternative)
+    #   - ghcr.io/huggingface/text-generation-inference:latest (official TGI image on GHCR)
     #   - python:3.11-slim (for custom runtime, requires building your own image)
     # Note: For local development, you may need to build a custom image or use a different runtime
-    serving_runtime_image: str = "python:3.11-slim"  # Default to lightweight image for local testing
+    # Default: TGI on GHCR so that internal models are served via text-generation-inference by default
+    serving_runtime_image: str = "ghcr.io/huggingface/text-generation-inference:latest"
     
     # Use KServe InferenceService (requires Knative + Istio)
     # Set to False if KServe is not properly installed (missing Knative/Istio dependencies)
@@ -126,6 +130,71 @@ class Settings(BaseSettings):
     # will use this base URL instead of Kubernetes cluster DNS.
     # Example: http://localhost:8001 (port-forwarded serving service)
     serving_local_base_url: AnyHttpUrl | None = None
+    
+    # =========================================================================
+    # Training Resource Limits (CPU-only)
+    # =========================================================================
+    # CPU and memory requests/limits for CPU-only training jobs
+    # Use when useGpu=false is specified in training job submission
+    # Format: "4" (4 cores), "8Gi" (8 gibibytes)
+    training_cpu_only_cpu_request: str = "4"  # CPU request for CPU-only training
+    training_cpu_only_cpu_limit: str = "8"  # CPU limit for CPU-only training
+    training_cpu_only_memory_request: str = "8Gi"  # Memory request for CPU-only training
+    training_cpu_only_memory_limit: str = "16Gi"  # Memory limit for CPU-only training
+
+    # =========================================================================
+    # Training Resource Limits (GPU-enabled)
+    # =========================================================================
+    # CPU and memory requests/limits for GPU training jobs
+    # Format: "4" (4 cores), "8Gi" (8 gibibytes)
+    # Adjust based on your cluster capacity and model size
+    training_gpu_cpu_request: str = "4"  # CPU request for GPU training
+    training_gpu_cpu_limit: str = "8"  # CPU limit for GPU training
+    training_gpu_memory_request: str = "4Gi"  # Memory request for GPU training (reduced for small clusters)
+    training_gpu_memory_limit: str = "8Gi"  # Memory limit for GPU training (reduced for small clusters)
+    
+    # Distributed training uses more resources per pod
+    training_gpu_distributed_memory_request: str = "16Gi"  # Memory request for distributed GPU training
+    training_gpu_distributed_memory_limit: str = "32Gi"  # Memory limit for distributed GPU training
+    
+    # =========================================================================
+    # Training Configuration
+    # =========================================================================
+    # Kubernetes namespace for training jobs
+    # Format: llm-ops-{environment} (e.g., llm-ops-dev, llm-ops-stg, llm-ops-prod)
+    # Default: llm-ops-dev for local development
+    training_namespace: str = "llm-ops-dev"
+    
+    # GPU node selector (optional, for targeting specific GPU nodes)
+    # Example: {"accelerator": "nvidia-tesla-v100"} or {"node-type": "gpu"}
+    # Leave empty dict {} to allow scheduling on any node
+    training_gpu_node_selector: dict = {}
+    
+    # GPU node tolerations (optional, for nodes with taints)
+    # Example: [{"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}]
+    # Leave empty list [] if no tolerations needed
+    training_gpu_tolerations: list = []
+    
+    # API base URL for training pods to record metrics
+    # Leave empty ("") to disable metric recording from training pods
+    # Format options:
+    #   - Same namespace: http://{service-name}:{port} (e.g., http://llm-ops-api:8000)
+    #   - Cross namespace: http://{service-name}.{namespace}.svc.cluster.local:{port}
+    #   - External URL: http://api.example.com:8000 (if API is accessible from cluster)
+    #   - Local development (minikube): http://host.minikube.internal:8000/llm-ops/v1
+    #   - Local development (Docker Desktop): http://host.docker.internal:8000/llm-ops/v1
+    #   - Local development (general): http://{your-local-ip}:8000/llm-ops/v1
+    #   - Example: http://llm-ops-api.llm-ops-dev.svc.cluster.local:8000/llm-ops/v1
+    # Note: For local development, use host.minikube.internal (minikube) or host.docker.internal (Docker Desktop)
+    #       or your local machine's IP address that is accessible from Kubernetes cluster
+    training_api_base_url: str = ""
+    
+    # =========================================================================
+    # Training Job Status Sync Configuration
+    # =========================================================================
+    # Interval in seconds for checking training job statuses (default: 30 seconds)
+    # Set to 0 to disable automatic status checking
+    training_job_status_sync_interval: int = 30
 
 
 @lru_cache()

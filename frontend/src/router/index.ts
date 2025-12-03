@@ -20,12 +20,32 @@ const router = createRouter({
       component: () => import('@/pages/catalog/ModelDetail.vue'),
     },
     {
+      path: '/catalog/datasets',
+      component: () => import('@/pages/catalog/DatasetList.vue'),
+    },
+    {
+      path: '/catalog/datasets/new',
+      component: () => import('@/pages/catalog/DatasetCreate.vue'),
+    },
+    {
+      path: '/catalog/datasets/:id',
+      component: () => import('@/pages/catalog/DatasetDetail.vue'),
+    },
+    {
       path: '/training/jobs',
+      component: () => import('@/pages/training/JobList.vue'),
+    },
+    {
+      path: '/training/jobs/submit',
       component: () => import('@/pages/training/JobSubmit.vue'),
     },
     {
       path: '/training/jobs/:id',
       component: () => import('@/pages/training/JobDetail.vue'),
+    },
+    {
+      path: '/experiments/:id',
+      component: () => import('@/pages/training/ExperimentDetail.vue'),
     },
     {
       path: '/serving/endpoints',

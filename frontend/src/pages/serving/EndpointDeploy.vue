@@ -47,7 +47,7 @@
           <option value="vllm/vllm-openai:nightly">vLLM OpenAI (nightly)</option>
           <option value="ghcr.io/vllm/vllm:latest">vLLM (latest)</option>
           <option value="ghcr.io/vllm/vllm:0.6.0">vLLM (0.6.0)</option>
-          <option value="huggingface/text-generation-inference:latest">TGI (latest)</option>
+          <option value="ghcr.io/huggingface/text-generation-inference:latest">TGI (latest, GHCR)</option>
           <option value="custom">Custom image...</option>
         </select>
         <input 

@@ -14,7 +14,7 @@ from sqlalchemy import (
     Float,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, foreign
 
 from core.database import Base
 
@@ -24,7 +24,15 @@ class ModelCatalogEntry(Base):
     __table_args__ = (
         UniqueConstraint("name", "type", "version"),
         CheckConstraint("type in ('base','fine-tuned','external')"),
-        CheckConstraint("status in ('draft','under_review','approved','deprecated')"),
+        # NOTE:
+        # - Historically the spec used: draft, under_review, approved, deprecated
+        # - The frontend now also uses: pending_review, rejected
+        # To avoid runtime DB integrity errors (e.g. when setting status='rejected')
+        # we support the superset of values here. The service layer is responsible
+        # for constraining which values are actually used in workflows.
+        CheckConstraint(
+            "status in ('draft','under_review','approved','deprecated','pending_review','rejected')"
+        ),
     )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=True), primary_key=True)
@@ -45,7 +53,14 @@ class ModelCatalogEntry(Base):
     datasets: Mapped[List["DatasetRecord"]] = relationship(
         secondary="catalog_entry_datasets", back_populates="catalog_entries"
     )
-    training_jobs: Mapped[List["TrainingJob"]] = relationship(back_populates="model_entry")
+    training_jobs: Mapped[List["TrainingJob"]] = relationship(
+        back_populates="model_entry",
+        primaryjoin="ModelCatalogEntry.id == TrainingJob.model_entry_id"
+    )
+    output_training_jobs: Mapped[List["TrainingJob"]] = relationship(
+        back_populates="output_model_entry",
+        primaryjoin="ModelCatalogEntry.id == TrainingJob.output_model_entry_id"
+    )
 
 
 class DatasetRecord(Base):
@@ -137,8 +152,19 @@ class TrainingJob(Base):
     submitted_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=datetime.utcnow)
     started_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
     completed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
+    output_model_storage_uri: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    output_model_entry_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("model_catalog_entries.id", ondelete="SET NULL"), nullable=True
+    )
 
-    model_entry: Mapped[ModelCatalogEntry] = relationship(back_populates="training_jobs")
+    model_entry: Mapped[ModelCatalogEntry] = relationship(
+        back_populates="training_jobs",
+        primaryjoin="TrainingJob.model_entry_id == ModelCatalogEntry.id"
+    )
+    output_model_entry: Mapped[Optional[ModelCatalogEntry]] = relationship(
+        back_populates="output_training_jobs",
+        primaryjoin="TrainingJob.output_model_entry_id == ModelCatalogEntry.id"
+    )
     dataset: Mapped[DatasetRecord] = relationship(back_populates="training_jobs")
     metrics: Mapped[List["ExperimentMetric"]] = relationship(back_populates="training_job")
 

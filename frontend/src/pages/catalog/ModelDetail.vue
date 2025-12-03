@@ -1,5 +1,9 @@
 <template>
   <section class="model-detail">
+    <div class="catalog-tabs">
+      <router-link to="/catalog/models" class="tab-link" active-class="active">Models</router-link>
+      <router-link to="/catalog/datasets" class="tab-link" active-class="active">Datasets</router-link>
+    </div>
     <header>
       <h1>Model Details</h1>
       <router-link to="/catalog/models" class="btn-back">← Back to List</router-link>
@@ -300,6 +304,32 @@ onMounted(fetchModel);
   padding: 2rem;
   max-width: 900px;
   margin: 0 auto;
+}
+
+.catalog-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 2px solid #e0e0e0;
+}
+
+.tab-link {
+  padding: 0.75rem 1.5rem;
+  text-decoration: none;
+  color: #666;
+  font-weight: 500;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: all 0.2s;
+}
+
+.tab-link:hover {
+  color: #007bff;
+}
+
+.tab-link.active {
+  color: #007bff;
+  border-bottom-color: #007bff;
 }
 
 header {

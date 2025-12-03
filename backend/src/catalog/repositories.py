@@ -58,3 +58,11 @@ class DatasetRepository:
         stmt = select(models.DatasetRecord).where(models.DatasetRecord.id.in_(dataset_ids))
         return self.session.execute(stmt).scalars().all()
 
+    def get_by_name_version(self, name: str, version: str) -> models.DatasetRecord | None:
+        """Get a dataset by name and version combination."""
+        stmt = select(models.DatasetRecord).where(
+            models.DatasetRecord.name == name,
+            models.DatasetRecord.version == version
+        )
+        return self.session.execute(stmt).scalar_one_or_none()
+

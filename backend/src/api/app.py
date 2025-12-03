@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 # Add src directory to Python path
@@ -12,11 +14,18 @@ if str(src_dir) not in sys.path:
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 
 from core.observability import add_observability
+from core.database import SessionLocal
+from core.settings import get_settings
 from governance.middleware import PolicyEngine, RBACMiddleware
 from api.middleware.error_handler import add_error_handler
 from api.routes import include_routes
+from training.services import TrainingJobService
+
+logger = logging.getLogger(__name__)
 
 
 def custom_openapi(app: FastAPI):
@@ -85,6 +94,54 @@ def custom_openapi(app: FastAPI):
     return app.openapi_schema
 
 
+def sync_training_job_statuses():
+    """Background task to sync training job statuses with Kubernetes."""
+    settings = get_settings()
+    if settings.training_job_status_sync_interval <= 0:
+        return
+    
+    session = SessionLocal()
+    try:
+        service = TrainingJobService(session)
+        updated_count = service.sync_all_active_jobs()
+        if updated_count > 0:
+            logger.debug(f"Synced {updated_count} training job(s) with Kubernetes")
+    except Exception as e:
+        logger.error(f"Error syncing training job statuses: {e}", exc_info=True)
+    finally:
+        session.close()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifespan events."""
+    settings = get_settings()
+    scheduler = None
+    
+    # Start scheduler if interval is configured
+    if settings.training_job_status_sync_interval > 0:
+        scheduler = BackgroundScheduler()
+        scheduler.add_job(
+            sync_training_job_statuses,
+            trigger=IntervalTrigger(seconds=settings.training_job_status_sync_interval),
+            id="sync_training_jobs",
+            name="Sync training job statuses with Kubernetes",
+            replace_existing=True,
+        )
+        scheduler.start()
+        logger.info(
+            f"Started training job status sync scheduler "
+            f"(interval: {settings.training_job_status_sync_interval}s)"
+        )
+    
+    yield
+    
+    # Shutdown scheduler
+    if scheduler:
+        scheduler.shutdown()
+        logger.info("Stopped training job status sync scheduler")
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="LLM Ops Platform API",
@@ -98,6 +155,7 @@ def create_app() -> FastAPI:
         swagger_ui_parameters={
             "persistAuthorization": True,
         },
+        lifespan=lifespan,
     )
     
     # Override OpenAPI schema to include auth headers

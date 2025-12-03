@@ -1,7 +1,8 @@
 <template>
   <div id="app">
     <nav>
-      <router-link to="/catalog/models">Catalog</router-link> |
+      <router-link to="/catalog/models">Models</router-link> |
+      <router-link to="/catalog/datasets">Datasets</router-link> |
       <router-link to="/training/jobs">Training</router-link> |
       <router-link to="/serving/endpoints">Serving</router-link> |
       <router-link to="/governance/policies">Governance</router-link>

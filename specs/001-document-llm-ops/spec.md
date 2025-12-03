@@ -79,7 +79,8 @@ while version history stays auditable.
 4. **Given** a user views a model detail page, **When** they access a specific
    model, **Then** they can see complete model information including metadata,
    status, and update the model status (draft, pending_review, approved,
-   rejected). (See `frontend/src/pages/catalog/ModelDetail.vue`)
+   rejected) according to the approval workflow. (See
+   `frontend/src/pages/catalog/ModelDetail.vue`)
 5. **Given** a user wants to create a new model, **When** they navigate to the
    model creation page, **Then** they can fill out model information including
    name, version, type, owner team, metadata, and lineage dataset IDs, and
@@ -87,7 +88,25 @@ while version history stays auditable.
 6. **Given** a data engineer revises a dataset, **When** they trigger a new
    version, **Then** the platform compares diffs, runs PII checks, and blocks
    publication until quality gates pass.
-7. **Given** a user wants to register an external model (e.g., OpenAI GPT-4,
+7. **Given** a data engineer wants to upload a dataset, **When** they select
+   files (CSV, JSONL, or Parquet) through the UI or API, **Then** the platform
+   uploads files to object storage, validates file format and structure, stores
+   the storage URI in the catalog entry, and triggers validation checks (PII
+   scan, quality scoring). (See `frontend/src/pages/catalog/DatasetCreate.vue`)
+8. **Given** a user wants to preview a dataset before using it for training,
+   **When** they access the dataset preview, **Then** they can see sample rows,
+   column schema, basic statistics (row count, file size, format), and navigate
+   through paginated results. (See `frontend/src/pages/catalog/DatasetDetail.vue`)
+9. **Given** a dataset validation completes, **When** a user views the dataset
+   detail page, **Then** they can see PII scan results (status, detected PII
+   types, locations), quality score breakdown, validation recommendations, and
+   approval status. The dataset cannot be approved if PII scan fails or quality
+   score is below the configured threshold.
+10. **Given** a user navigates to the dataset list page, **When** they view the
+    page, **Then** they can see all datasets in a table format with filtering by
+    name, version, owner team, PII status, and quality score, and click through
+    to detailed dataset views. (See `frontend/src/pages/catalog/DatasetList.vue`)
+11. **Given** a user wants to register an external model (e.g., OpenAI GPT-4,
    Ollama llama2), **When** they select "External" as the model type and
    provide provider-specific configuration (API key, endpoint, model name),
    **Then** the platform creates a catalog entry with the provider information
@@ -98,9 +117,10 @@ while version history stays auditable.
 
 ### User Story 2 - Automated Training & Experiment Tracking (Priority: P1)
 
-ML engineers configure fine-tuning or distributed training jobs that reserve GPU
-capacity, execute orchestrated pipelines, and log experiments (parameters,
-artifacts, metrics) back into the SDD functional design appendix.
+ML engineers configure training jobs (fine-tuning, from-scratch, pre-training,
+or distributed) that reserve GPU capacity, execute orchestrated pipelines, and
+log experiments (parameters, artifacts, metrics) back into the SDD functional
+design appendix.
 
 **Why this priority**: Automated training unlocks the promised productivity
 gains (faster experiments, reduced manual GPU allocation) and underpins the PRD
@@ -112,12 +132,77 @@ even if the run fails.
 
 **Acceptance Scenarios**:
 
-1. **Given** an engineer submits a fine-tuning job, **When** the job enters the
-   queue, **Then** the scheduler reserves GPUs, executes the pipeline, and emits
+1. **Given** an engineer submits a fine-tuning job with a base model, **When**
+   the job enters the queue, **Then** the scheduler reserves GPUs, loads the
+   base model from the catalog, executes the fine-tuning pipeline, and emits
    live status plus retry controls.
-2. **Given** a training failure, **When** operators inspect the experiment
+2. **Given** an engineer wants to train a model from scratch, **When** they
+   submit a from-scratch training job with architecture configuration (no base
+   model required), **Then** the platform validates the architecture definition,
+   reserves GPUs, initializes the model from scratch, executes the training
+   pipeline, and creates a new model entry in the catalog upon completion.
+3. **Given** an engineer wants to create a domain-specific base model, **When**
+   they submit a pre-training job with a large dataset and architecture
+   configuration, **Then** the platform validates the configuration, reserves
+   extensive GPU resources, executes pre-training on the large dataset, and
+   creates a new base model in the catalog that can be used for subsequent
+   fine-tuning.
+4. **Given** an engineer submits a distributed training job (fine-tuning,
+   from-scratch, or pre-training), **When** the job is configured with multiple
+   GPUs/nodes, **Then** the platform distributes the training workload across
+   the specified resources, synchronizes gradients, and executes the training
+   pipeline with improved efficiency and capacity.
+5. **Given** a training failure, **When** operators inspect the experiment
    record, **Then** they see parameters, logs, and root-cause tags needed to
    restart or roll back.
+6. **Given** a training job is running, **When** the training pod records
+   metrics (loss, accuracy, etc.) during training, **Then** the platform stores
+   metrics in the database, displays them in the experiment detail page with
+   charts and tables, and training continues even if metric recording fails.
+7. **Given** a user views an experiment detail page, **When** they access
+   `/experiments/{jobId}`, **Then** they can see all recorded metrics grouped by
+   name, displayed as charts showing trends over time and tables with detailed
+   values, timestamps, and units.
+8. **Given** a training job is submitted, **When** the backend detects local
+   development environment (minikube), **Then** it automatically configures
+   `API_BASE_URL` environment variable in training pods to use
+   `host.minikube.internal:8000` so training pods can call the metrics API.
+3. **Given** training jobs are submitted, **When** a user navigates to the
+   training jobs list page, **Then** they can view all training jobs in a table
+   format with filtering by status (queued, running, succeeded, failed, cancelled)
+   and model ID, see job timeline (submitted, started, completed), and click
+   through to detailed job views. (See `frontend/src/pages/training/JobList.vue`)
+4. **Given** a user views a training job detail page, **When** they access a
+   specific job, **Then** they can see complete job information including status,
+   job type, model/dataset IDs, timeline visualization, and cancel running or
+   queued jobs. The page automatically refreshes status for active jobs. (See
+   `frontend/src/pages/training/JobDetail.vue`)
+5. **Given** a user submits a training job, **When** the job is successfully
+   submitted, **Then** they are automatically redirected to the job detail page
+   to monitor the job progress.
+6. **Given** a training job completes successfully, **When** an automatic
+   evaluation is triggered (or manually executed), **Then** the platform runs
+   evaluation against a benchmark dataset, calculates metrics (BLEU, ROUGE, F1,
+   etc.), stores results in an EvaluationRun, and links it to the trained model
+   version. (See `frontend/src/pages/evaluation/EvaluationRun.vue`)
+7. **Given** a user wants to evaluate a model manually, **When** they select a
+   model and benchmark dataset through the evaluation UI, **Then** they can
+   configure evaluation parameters (metrics to calculate, sample size), execute
+   the evaluation, and view results with visualizations and sample outputs.
+   (See `frontend/src/pages/evaluation/EvaluationCreate.vue`)
+8. **Given** evaluation results are available, **When** a user views the
+   evaluation detail page, **Then** they can see automated metrics, human
+   review results (if available), LLM Judge scores (if available), sample
+   outputs, and comparison with previous evaluations. (See
+   `frontend/src/pages/evaluation/EvaluationDetail.vue`)
+9. **Given** multiple model versions need comparison, **When** a user selects
+   multiple evaluations on the comparison page, **Then** they can see
+   side-by-side metric comparisons, performance trends, and recommendations
+   for model promotion. (See `frontend/src/pages/evaluation/EvaluationCompare.vue`)
+10. **Given** a model requires human review, **When** evaluators are assigned
+    evaluation tasks, **Then** they can view sample outputs, rate model
+    performance according to rubrics, submit reviews, and the platform
+    aggregates results with inter-annotator agreement metrics.
 
 ---
 
@@ -240,12 +325,176 @@ unauthorized access.
   dataset versions, including visual diffs, audit logs, and rollback controls.
 - **FR-003**: Dataset ingestion MUST run automated quality, PII, and compliance
   checks before assets become available to training jobs.
+- **FR-003a**: The platform MUST support dataset file uploads (CSV, JSONL, Parquet)
+  to object storage, store the storage URI in catalog entries, and validate file
+  format and structure before allowing training job usage. The platform MUST:
+  - Provide a `POST /llm-ops/v1/catalog/datasets/{dataset_id}/upload` API endpoint
+    that accepts multipart/form-data with dataset files
+  - Support multiple file formats (CSV, JSONL, Parquet) with format validation
+  - Store files in object storage (MinIO/S3) under `datasets/{dataset_id}/{version}/`
+  - Update catalog entry with storage URI after successful upload
+  - Validate file structure (schema, encoding, required columns) before acceptance
+  - Provide upload progress tracking for large files
+- **FR-003b**: Users MUST be able to preview dataset contents before using them
+  for training. The platform MUST:
+  - Provide a `GET /llm-ops/v1/catalog/datasets/{dataset_id}/preview` API endpoint
+    that returns sample data (first N rows, configurable limit)
+  - Display dataset schema/column information (column names, types, nullability)
+  - Show basic statistics (total rows, column count, file size, format)
+  - Support pagination for large datasets
+  - Display preview in dataset detail UI pages
+- **FR-003c**: Dataset validation MUST provide detailed quality and compliance
+  reports. The platform MUST:
+  - Run PII detection using configurable rules (regex patterns, NER models) and
+    report detected PII types and locations
+  - Calculate quality scores (0-100) based on:
+    - Missing value percentage
+    - Duplicate record percentage
+    - Data distribution anomalies
+    - Schema compliance
+    - Format validation
+  - Generate validation reports with:
+    - PII scan results (status: pending, clean, failed) with detailed findings
+    - Quality score breakdown by metric
+    - Recommendations for data improvement
+    - Block dataset approval if PII scan fails or quality score below threshold
+- **FR-003d**: Users MUST be able to manage datasets through dedicated UI pages.
+  The platform MUST:
+  - Provide dataset list page with filtering by name, version, owner team, PII
+    status, and quality score
+  - Provide dataset detail page showing complete information, preview, validation
+    results, and version history
+  - Provide dataset creation/upload page with file upload, metadata input, and
+    validation trigger
+  - Display dataset status badges (PII status, quality score, approval status)
+  - Support dataset version comparison with visual diffs
+  - Enable dataset approval workflow (draft → under_review → approved/rejected)
 - **FR-004**: Training orchestration MUST allow users to configure fine-tuning
   and distributed jobs, reserve GPU capacity, and define retry/on-failure
   behaviors without manual cluster interaction.
+- **FR-004a**: Users MUST be able to list and view all training jobs with
+  filtering by status (queued, running, succeeded, failed, cancelled) and model
+  ID, access detailed job information including timeline (submitted, started,
+  completed), and cancel queued or running jobs through the training UI pages.
+  (See `frontend/src/pages/training/JobList.vue` and
+  `frontend/src/pages/training/JobDetail.vue`)
+- **FR-004b**: The platform MUST support multiple training job types to accommodate
+  different learning approaches. The platform MUST:
+  - Support **fine-tuning** (`jobType: "finetune"`): Requires a base model from
+    the catalog, adapts the model to a specific task using a smaller dataset,
+    typically faster and requires fewer resources than from-scratch training.
+  - Support **from-scratch training** (`jobType: "from_scratch"`): Does not
+    require a base model, trains a new model architecture from initialization,
+    requires more GPU resources and training time, suitable for custom
+    architectures or domain-specific models.
+  - Support **pre-training** (`jobType: "pretrain"`): Trains a base model on
+    large-scale data, typically produces a base model that can be used for
+    subsequent fine-tuning, requires extensive GPU resources and long training
+    duration.
+  - Support **distributed training** (`jobType: "distributed"`): Can be applied
+    to any training type (fine-tuning, from-scratch, pre-training), distributes
+    training across multiple GPUs/nodes for faster training and larger model
+    capacity.
+  - Validate job type requirements (e.g., fine-tuning requires base model,
+    from-scratch requires architecture definition, pre-training requires large
+    dataset).
+  - Allow users to specify training job type in job submission API and UI.
+- **FR-004c**: For from-scratch and pre-training jobs, the platform MUST support
+  architecture definition and initialization. The platform MUST:
+  - Allow users to specify model architecture configuration (e.g., transformer
+    config, layer counts, hidden dimensions) via hyperparameters or metadata.
+  - Support initialization strategies (random, pretrained embeddings, custom
+    weights) for from-scratch training.
+  - Store architecture definitions in training job metadata for reproducibility.
+  - Validate architecture configuration before job submission.
+- **FR-004d**: The training subsystem MUST support CPU-only training when GPU
+  resources are unavailable or not requested. The platform MUST:
+  - Allow users to specify `useGpu` parameter (optional boolean, default: `true`)
+    in training job submission API and UI
+  - Support CPU-only resource allocation when `useGpu=false` is specified
+  - Automatically adjust CPU and memory resource requests when GPU is not
+    requested (e.g., increase CPU cores, allocate more memory for CPU-based
+    training)
+  - Queue training jobs when GPU quota is unavailable, but allow immediate
+    execution with CPU-only configuration if `useGpu=false` is specified
+  - Prevent training job failures due to insufficient GPU resources by allowing
+    graceful fallback to CPU-only training
+  - Support CPU-only training for development, testing, and small-scale
+    fine-tuning scenarios
+  - Provide environment variables for CPU-only training resource limits:
+    `TRAINING_CPU_ONLY_CPU_REQUEST`, `TRAINING_CPU_ONLY_CPU_LIMIT`,
+    `TRAINING_CPU_ONLY_MEMORY_REQUEST`, `TRAINING_CPU_ONLY_MEMORY_LIMIT`
 - **FR-005**: Every training job MUST emit structured experiment records
   (parameters, logs, metrics, artifacts) that map back to catalog entries and
   remain queryable for comparisons.
+- **FR-005f**: Training pods MUST be able to record experiment metrics during
+  training execution. The platform MUST:
+  - Provide `API_BASE_URL` environment variable to training pods when submitting
+    jobs, allowing pods to call the metrics API endpoint
+  - Support automatic detection of local development environment (minikube) and
+    configure appropriate API URL (e.g., `host.minikube.internal:8000`)
+  - Provide `POST /llm-ops/v1/training/jobs/{jobId}/metrics` API endpoint that
+    accepts metric name, value, and optional unit from training pods
+  - Store metrics in `ExperimentMetric` entities linked to training jobs
+  - Continue training execution even if metric recording fails (non-blocking)
+  - Support optional `apiBaseUrl` parameter in training job submission request
+    to override default API URL configuration
+  - Log metric recording attempts and failures for debugging
+  - Provide `GET /llm-ops/v1/training/experiments/{jobId}` endpoint to retrieve
+    all metrics for a training job
+  - Display metrics in experiment detail UI pages with charts and tables
+- **FR-005a**: The platform MUST support model evaluation execution and management
+  after training completion. The platform MUST:
+  - Provide a `POST /llm-ops/v1/evaluation/runs` API endpoint to execute model
+    evaluation against benchmark datasets
+  - Support automatic evaluation trigger after training job completion (optional)
+  - Support manual evaluation execution through UI or API
+  - Store evaluation results in `EvaluationRun` entities linked to model entries
+  - Support evaluation scheduling for continuous evaluation (CI/CD style)
+  - Link evaluation runs to training jobs for traceability
+- **FR-005b**: The platform MUST support automated evaluation metrics calculation.
+  The platform MUST:
+  - Calculate standard NLP metrics: BLEU, ROUGE (ROUGE-1, ROUGE-2, ROUGE-L),
+    F1 score, Exact Match (EM), Perplexity
+  - Support task-specific metrics (e.g., accuracy for classification, F1 for
+    NER, BLEU/ROUGE for generation)
+  - Execute evaluation against benchmark datasets stored in the catalog
+  - Generate evaluation reports with metric breakdowns and sample outputs
+  - Store metrics in `EvaluationRun.metrics` (JSONB) for querying and comparison
+  - Support batch evaluation (evaluate multiple models against same dataset)
+- **FR-005c**: The platform MUST support human review workflow for model
+  evaluation. The platform MUST:
+  - Provide a `POST /llm-ops/v1/evaluation/runs/{runId}/human-review` API endpoint
+    to submit human evaluation results
+  - Assign evaluation tasks to human reviewers (role-based assignment)
+  - Support evaluation criteria and rubrics definition
+  - Collect human ratings (e.g., 1-5 scale, pass/fail, quality scores)
+  - Aggregate multiple human reviews with inter-annotator agreement metrics
+  - Store human review results in `EvaluationRun` with `run_type: "human"`
+  - Support evaluation task management (assign, track progress, collect results)
+- **FR-005d**: The platform MUST support LLM-based automatic evaluation (LLM Judge).
+  The platform MUST:
+  - Provide a `POST /llm-ops/v1/evaluation/runs/{runId}/llm-judge` API endpoint
+    to execute LLM Judge evaluation
+  - Support configurable evaluation criteria and prompts for LLM Judge
+  - Use LLM models (from catalog) to evaluate model outputs
+  - Calculate evaluation scores and confidence metrics
+  - Store LLM Judge results in `EvaluationRun` with `run_type: "llm_judge"`
+  - Support multiple LLM Judge models for consensus evaluation
+- **FR-005e**: Users MUST be able to manage evaluations through dedicated UI pages
+  and APIs. The platform MUST:
+  - Provide evaluation list page with filtering by model, dataset, run type,
+    status, and date range
+  - Provide evaluation detail page showing metrics, sample outputs, comparison
+    with previous evaluations, and approval status
+  - Provide evaluation execution page for manual evaluation trigger with
+    benchmark dataset selection and evaluation configuration
+  - Provide evaluation comparison page to compare multiple models/versions
+    against the same benchmark dataset
+  - Display evaluation results with visualizations (charts, tables, sample
+    outputs)
+  - Support evaluation result export (CSV, JSON) for reporting
+  - Link evaluations to training jobs and model versions for traceability
 - **FR-006**: The serving subsystem MUST deploy approved model versions into
   scalable inference endpoints with health probes, traffic policies, and defined
   rollback paths. For internal models, this MUST include Kubernetes deployment
@@ -342,6 +591,52 @@ unauthorized access.
     and surfacing status to the user.
   - Log all delete operations (model and endpoint) to the audit log with actor,
     resource identifiers, and result for governance traceability.
+- **FR-006j**: The serving subsystem MUST support endpoint rollback and redeployment
+  operations. The platform MUST:
+  - Provide a `POST /llm-ops/v1/serving/endpoints/{endpointId}/rollback` API
+    endpoint that reverts an endpoint to its previous deployment version.
+  - Provide a `POST /llm-ops/v1/serving/endpoints/{endpointId}/redeploy` API
+    endpoint that redeploys an endpoint with the same or updated configuration
+    (e.g., GPU settings, runtime image).
+  - Support optional parameters on redeploy for `useGpu` and `servingRuntimeImage`
+    to allow configuration updates without full endpoint recreation.
+  - Maintain deployment history to enable rollback operations.
+- **FR-006k**: The serving subsystem MUST store the runtime image used for each
+  endpoint deployment. The platform MUST:
+  - Store the `runtime_image` field on the `ServingEndpoint` entity to track
+    which container image is used for each endpoint.
+  - Return the `runtimeImage` in serving endpoint responses for visibility and
+    debugging purposes.
+  - Preserve the runtime image across redeployments unless explicitly overridden.
+- **FR-001d**: The catalog subsystem MUST support model status updates and deletion.
+  The platform MUST:
+  - Provide a `PATCH /llm-ops/v1/catalog/models/{modelId}/status` API endpoint
+    that allows updating a model's status (draft, under_review, approved, deprecated).
+  - Provide a `DELETE /llm-ops/v1/catalog/models/{modelId}` API endpoint that
+    deletes a model catalog entry with dependency checking (prevents deletion if
+    referenced by serving endpoints or training jobs).
+  - Return clear error messages when deletion is blocked due to dependencies.
+- **FR-010a**: The governance subsystem MUST provide additional policy and cost
+  management APIs. The platform MUST:
+  - Provide a `GET /llm-ops/v1/governance/policies/{policyId}` API endpoint that
+    retrieves a specific governance policy by ID.
+  - Provide a `GET /llm-ops/v1/governance/observability/cost-aggregate` API endpoint
+    that returns aggregated cost summaries across resources, time windows, and
+    resource types (training, serving).
+  - Support filtering cost aggregates by resource type, start date, and end date.
+- **FR-006l**: The platform MUST provide a unified inference API for chat completions.
+  The platform MUST:
+  - Provide a `POST /llm-ops/v1/serve/{route_name}/chat` API endpoint that accepts
+    chat completion requests and routes them to the appropriate serving endpoint
+    (internal or external models).
+  - Support both internal models (deployed to Kubernetes) and external models
+    (OpenAI, Ollama, etc.) through the same API interface.
+  - Automatically detect the model type and route requests to the appropriate
+    backend (Kubernetes pod or external API client).
+  - Return standardized chat completion responses with message choices, token usage,
+    and finish reasons.
+  - Support inference parameters (temperature, max_tokens) in the request.
+  - Apply prompt templates if configured for the endpoint.
 - **FR-007**: Prompt management MUST support versioned templates, A/B testing,
   and quick rollback while capturing experiment outcomes and reviewer approvals.
 - **FR-008**: Every `/llm-ops/v1` endpoint MUST reply with HTTP 200 +
@@ -373,12 +668,15 @@ unauthorized access.
   storage (e.g., `s3://models/{model_id}/{version}/`).
 - **DatasetRecord**: Captures dataset versions, quality checks, PII scan
   outcomes, ownership, and approval/audit history.
-- **TrainingJob**: Defines submitted fine-tuning or distributed training runs
-  with resource requirements, pipeline stages, execution logs, and resulting
-  artifacts.
+- **TrainingJob**: Defines submitted training runs (fine-tuning, from-scratch,
+  pre-training, or distributed) with resource requirements, pipeline stages,
+  execution logs, and resulting artifacts. Includes job type, base model
+  reference (if applicable for fine-tuning), architecture configuration (for
+  from-scratch/pre-training), and training hyperparameters.
 - **ServingEndpoint**: Describes deployed inference routes (environment,
   scaling policy, health status, bound model version, prompt routing rules) tied
-  to the `/llm-ops/v1` contract.
+  to the `/llm-ops/v1` contract. Includes `runtime_image` field to track the
+  container image used for serving.
 - **EvaluationRun**: Stores automated and human review results, benchmark
   datasets used, scoring metrics, and promotion/blocker decisions.
 - **CostProfile**: Aggregates GPU, token, and storage consumption per model,
@@ -474,6 +772,166 @@ The platform provides comprehensive catalog management through dedicated fronten
 These pages support **FR-001b**, providing a complete UI for catalog management, model
 registration, status tracking, and metadata management through the platform interface.
 
+### Dataset UI Pages
+
+The platform provides comprehensive dataset management through dedicated frontend pages:
+
+- **Dataset List Page**: [`frontend/src/pages/catalog/DatasetList.vue`](../../frontend/src/pages/catalog/DatasetList.vue)
+  - Table-based dataset listing with columns for name, version, owner team, PII status, quality score, and approval status
+  - Filtering capabilities by name, version, owner team, PII status (pending, clean, failed), and quality score range
+  - Status badges with color coding for visual identification (PII status, quality score ranges)
+  - "Create New Dataset" button linking to dataset creation page
+  - Click-through navigation to dataset detail pages
+  - Refresh functionality to reload dataset list
+
+- **Dataset Detail Page**: [`frontend/src/pages/catalog/DatasetDetail.vue`](../../frontend/src/pages/catalog/DatasetDetail.vue)
+  - Complete dataset information display including ID, name, version, owner team, storage URI
+  - Dataset preview section showing sample rows (first N rows, configurable limit)
+  - Schema/column information display (column names, types, nullability)
+  - Basic statistics (total rows, column count, file size, format)
+  - Validation results section:
+    - PII scan results (status, detected PII types, locations, recommendations)
+    - Quality score breakdown by metric (missing values, duplicates, distribution, schema compliance)
+    - Overall quality score (0-100) with visual indicator
+  - Version history and comparison with visual diffs
+  - Dataset approval workflow (draft → under_review → approved/rejected)
+  - "Back to List" navigation
+  - Refresh functionality to reload dataset details
+
+- **Dataset Create Page**: [`frontend/src/pages/catalog/DatasetCreate.vue`](../../frontend/src/pages/catalog/DatasetCreate.vue)
+  - Form-based dataset creation with validation
+  - Fields for name, version, owner team, change log, and metadata (JSON)
+  - File upload interface supporting CSV, JSONL, and Parquet formats
+  - Drag-and-drop or file picker for dataset files
+  - Upload progress tracking for large files
+  - File format validation before upload
+  - Automatic validation trigger after upload (PII scan, quality scoring)
+  - Success/error message display
+  - Automatic redirect to dataset detail page after successful creation
+  - Cancel button to return to list
+
+- **Dataset Client**: [`frontend/src/services/catalogClient.ts`](../../frontend/src/services/catalogClient.ts)
+  - `listDatasets(filters?)` - Retrieve all datasets with optional filtering
+  - `getDataset(datasetId)` - Get specific dataset details
+  - `createDataset(payload)` - Create new dataset entry
+  - `uploadDatasetFiles(datasetId, files)` - Upload dataset files
+  - `previewDataset(datasetId, limit?)` - Get dataset preview (sample rows)
+  - `getDatasetValidation(datasetId)` - Get validation results (PII scan, quality score)
+  - `updateDatasetStatus(datasetId, status)` - Update dataset approval status
+
+These pages support **FR-003a**, **FR-003b**, **FR-003c**, and **FR-003d**, providing a complete
+UI for dataset management, file upload, preview, validation, and version control through the
+platform interface.
+
+### Training UI Pages
+
+The platform provides comprehensive training job management through dedicated frontend pages:
+
+- **Job List Page**: [`frontend/src/pages/training/JobList.vue`](../../frontend/src/pages/training/JobList.vue)
+  - Table-based job listing with columns for ID, model ID, dataset ID, job type, status, and timeline (submitted, started, completed)
+  - Filtering capabilities by status (queued, running, succeeded, failed, cancelled) and model ID
+  - Status badges with color coding for visual identification (queued: yellow, running: blue, succeeded: green, failed: red, cancelled: gray)
+  - "Submit New Job" button linking to job submission page
+  - Click-through navigation to job detail pages
+  - Cancel job functionality for queued or running jobs
+  - Auto-refresh every 10 seconds for active jobs (queued or running)
+  - Refresh button for manual updates
+
+- **Job Detail Page**: [`frontend/src/pages/training/JobDetail.vue`](../../frontend/src/pages/training/JobDetail.vue)
+  - Complete job information display including ID, model ID, dataset ID, job type, and status
+  - Timeline visualization showing job progress (submitted → started → completed)
+  - Status badges and job type indicators
+  - Cancel job button (available for queued or running jobs)
+  - Experiment URL link to view experiment details
+  - Auto-refresh every 5 seconds for active jobs (queued or running)
+  - Manual refresh button
+  - "Back to Jobs" navigation link
+
+- **Job Submit Page**: [`frontend/src/pages/training/JobSubmit.vue`](../../frontend/src/pages/training/JobSubmit.vue)
+  - Form-based job submission with validation
+  - Fields for job type selection (finetune, from_scratch, pretrain, distributed)
+  - Conditional fields based on job type:
+    - Fine-tuning: Base model selection (required), dataset selection (required)
+    - From-scratch: Architecture configuration (required), dataset selection (required), base model selection (optional/disabled)
+    - Pre-training: Architecture configuration (required), large dataset selection (required), base model selection (optional/disabled)
+    - Distributed: Can be combined with any training type, additional GPU/node configuration
+  - **CPU-only training option**: `useGpu` toggle (default: enabled) to allow CPU-only training for development/testing
+  - GPU configuration (count, type, max duration) - shown when `useGpu=true`
+  - CPU configuration (cores, memory) - shown when `useGpu=false`
+  - Hyperparameters input (JSON editor) for architecture definition and training parameters
+  - Model and dataset dropdowns populated from catalog
+  - Job type-specific validation (e.g., fine-tuning requires base model, from-scratch requires architecture)
+  - Success/error message display
+  - Automatic redirect to job detail page after successful submission
+  - Cancel button to return to list
+
+- **Training Client**: [`frontend/src/services/trainingClient.ts`](../../frontend/src/services/trainingClient.ts)
+  - `listJobs(filters?)` - Retrieve training jobs with optional filters (status, modelId)
+  - `submitJob(request)` - Submit a new training job
+  - `getJob(jobId)` - Get specific job details
+  - `cancelJob(jobId)` - Cancel a queued or running job
+
+These pages support **FR-004a**, providing a complete UI for training job management, submission,
+monitoring, and cancellation through the platform interface.
+
+### Evaluation UI Pages
+
+The platform provides comprehensive model evaluation management through dedicated frontend pages:
+
+- **Evaluation List Page**: [`frontend/src/pages/evaluation/EvaluationList.vue`](../../frontend/src/pages/evaluation/EvaluationList.vue)
+  - Table-based evaluation listing with columns for ID, model ID, dataset ID, run type (automated, human, llm_judge), status, metrics summary, and date
+  - Filtering capabilities by model, dataset, run type, status, and date range
+  - Status badges with color coding for visual identification
+  - "Create New Evaluation" button linking to evaluation execution page
+  - Click-through navigation to evaluation detail pages
+  - Refresh functionality to reload evaluation list
+
+- **Evaluation Detail Page**: [`frontend/src/pages/evaluation/EvaluationDetail.vue`](../../frontend/src/pages/evaluation/EvaluationDetail.vue)
+  - Complete evaluation information display including ID, model ID, dataset ID, run type, status, and execution timeline
+  - Metrics visualization (charts, tables) showing BLEU, ROUGE, F1, Exact Match, and other calculated metrics
+  - Sample outputs display (input, expected output, actual output, scores)
+  - Comparison with previous evaluations (metric trends, performance changes)
+  - Human review results section (if available): reviewer ratings, comments, inter-annotator agreement
+  - LLM Judge results section (if available): LLM evaluation scores, confidence metrics, consensus results
+  - Evaluation report export (CSV, JSON)
+  - Link to training job that produced the evaluated model
+  - "Back to List" navigation
+  - Refresh functionality to reload evaluation details
+
+- **Evaluation Create Page**: [`frontend/src/pages/evaluation/EvaluationCreate.vue`](../../frontend/src/pages/evaluation/EvaluationCreate.vue)
+  - Form-based evaluation execution with validation
+  - Fields for model selection (from catalog), benchmark dataset selection, evaluation type (automated, human, llm_judge, or combined)
+  - Evaluation configuration:
+    - Metrics to calculate (BLEU, ROUGE, F1, EM, etc.)
+    - Sample size (for quick evaluation)
+    - Evaluation criteria and rubrics (for human review)
+    - LLM Judge model selection and prompts (for LLM Judge)
+  - Automatic evaluation trigger option (after training completion)
+  - Success/error message display
+  - Automatic redirect to evaluation detail page after successful execution
+  - Cancel button to return to list
+
+- **Evaluation Compare Page**: [`frontend/src/pages/evaluation/EvaluationCompare.vue`](../../frontend/src/pages/evaluation/EvaluationCompare.vue)
+  - Side-by-side comparison of multiple evaluations (different models or versions)
+  - Metric comparison tables and charts
+  - Performance trend visualization
+  - Sample output comparison
+  - Model promotion recommendations based on evaluation results
+  - Export comparison reports
+
+- **Evaluation Client**: [`frontend/src/services/evaluationClient.ts`](../../frontend/src/services/evaluationClient.ts)
+  - `listEvaluations(filters?)` - Retrieve evaluations with optional filtering
+  - `getEvaluation(evaluationId)` - Get specific evaluation details
+  - `createEvaluation(request)` - Execute new evaluation
+  - `submitHumanReview(evaluationId, review)` - Submit human review results
+  - `executeLLMJudge(evaluationId, config)` - Execute LLM Judge evaluation
+  - `compareEvaluations(evaluationIds)` - Compare multiple evaluations
+  - `exportEvaluation(evaluationId, format)` - Export evaluation results
+
+These pages support **FR-005a**, **FR-005b**, **FR-005c**, **FR-005d**, and **FR-005e**, providing a complete
+UI for model evaluation execution, result viewing, human review workflow, LLM Judge evaluation,
+and evaluation comparison through the platform interface.
+
 ### Model File Upload
 
 The platform supports uploading actual model files (weights, configs, tokenizers) when
@@ -554,6 +1012,276 @@ a unified catalog and serving interface:
 This functionality supports **FR-001c** and **FR-006d**, enabling hybrid
 deployment of internal and external models through a unified interface, as
 specified in the PRD's "Hybrid Router" requirement.
+
+### Additional Catalog Management APIs
+
+The platform provides additional catalog management capabilities beyond the core
+CRUD operations:
+
+- **Model Status Update**: `PATCH /llm-ops/v1/catalog/models/{modelId}/status`
+  - Allows updating model status (draft, under_review, approved, deprecated)
+  - Supports status transitions for approval workflows
+  - Returns updated model information
+
+- **Model Deletion**: `DELETE /llm-ops/v1/catalog/models/{modelId}`
+  - Deletes a model catalog entry with dependency checking
+  - Prevents deletion if model is referenced by active serving endpoints or
+    training jobs
+  - Returns clear error messages when deletion is blocked
+  - Performs best-effort cleanup of associated model files in object storage
+
+These APIs support **FR-001d**, providing complete lifecycle management for
+catalog entries.
+
+### Dataset Management APIs
+
+The platform provides comprehensive dataset management capabilities:
+
+- **Dataset List**: `GET /llm-ops/v1/catalog/datasets`
+  - Lists all datasets with optional filtering
+  - Returns dataset ID, name, version, owner team, PII status, quality score, approval status
+  - Supports query parameters for filtering
+
+- **Dataset Creation**: `POST /llm-ops/v1/catalog/datasets`
+  - Creates a new dataset catalog entry
+  - Accepts name, version, owner team, change log, metadata
+  - Returns dataset ID and initial status
+
+- **Dataset File Upload**: `POST /llm-ops/v1/catalog/datasets/{dataset_id}/upload`
+  - Accepts multipart/form-data with dataset files (CSV, JSONL, Parquet)
+  - Validates file format and structure before acceptance
+  - Stores files in object storage under `datasets/{dataset_id}/{version}/`
+  - Updates catalog entry with storage URI
+  - Triggers automatic validation (PII scan, quality scoring)
+  - Returns upload status and storage location
+  - Supports upload progress tracking
+
+- **Dataset Preview**: `GET /llm-ops/v1/catalog/datasets/{dataset_id}/preview`
+  - Returns sample data (first N rows, configurable via `limit` query parameter)
+  - Includes schema/column information (column names, types, nullability)
+  - Returns basic statistics (total rows, column count, file size, format)
+  - Supports pagination for large datasets
+
+- **Dataset Validation Results**: `GET /llm-ops/v1/catalog/datasets/{dataset_id}/validation`
+  - Returns PII scan results (status, detected PII types, locations, recommendations)
+  - Returns quality score breakdown by metric (missing values, duplicates, distribution, schema compliance)
+  - Returns overall quality score (0-100)
+  - Returns validation recommendations
+
+- **Dataset Details**: `GET /llm-ops/v1/catalog/datasets/{dataset_id}`
+  - Retrieves complete dataset information
+  - Includes storage URI, PII status, quality score, approval status, version history
+
+- **Dataset Status Update**: `PATCH /llm-ops/v1/catalog/datasets/{dataset_id}/status`
+  - Updates dataset approval status (draft, under_review, approved, rejected)
+  - Validates PII scan status and quality score before allowing approval
+  - Returns updated dataset information
+
+- **Dataset Version Comparison**: `GET /llm-ops/v1/catalog/datasets/{dataset_id}/versions/{version1}/compare/{version2}`
+  - Compares two dataset versions
+  - Returns visual diff summary (added/removed/modified rows, schema changes)
+  - Highlights changes in data distribution
+
+These APIs support **FR-003a**, **FR-003b**, **FR-003c**, and **FR-003d**, providing complete
+dataset lifecycle management including file upload, preview, validation, and version control.
+
+### Serving Endpoint Management APIs
+
+The platform provides comprehensive serving endpoint management beyond basic
+deployment:
+
+- **Endpoint Rollback**: `POST /llm-ops/v1/serving/endpoints/{endpointId}/rollback`
+  - Reverts an endpoint to its previous deployment version
+  - Maintains deployment history for rollback operations
+  - Updates endpoint status and Kubernetes resources accordingly
+
+- **Endpoint Redeployment**: `POST /llm-ops/v1/serving/endpoints/{endpointId}/redeploy`
+  - Redeploys an endpoint with the same or updated configuration
+  - Supports optional parameters: `useGpu` (boolean) and `servingRuntimeImage` (string)
+  - Allows configuration updates without full endpoint recreation
+  - Preserves existing configuration unless explicitly overridden
+
+- **Endpoint Deletion**: `DELETE /llm-ops/v1/serving/endpoints/{endpointId}`
+  - Deletes both the database record and associated Kubernetes resources
+  - Handles partial failures gracefully (e.g., if Kubernetes resources are
+    already deleted)
+  - Logs deletion operations to the audit log
+
+- **Runtime Image Tracking**: Serving endpoints store and return the `runtimeImage`
+  field to track which container image is used for each deployment. This supports
+  debugging, version tracking, and ensures consistent redeployments.
+
+These APIs support **FR-006j** and **FR-006k**, providing complete endpoint
+lifecycle management.
+
+### Training API
+
+The platform provides comprehensive training job management APIs:
+
+- **Job List**: `GET /llm-ops/v1/training/jobs`
+  - Lists all training jobs with optional filtering
+  - Supports query parameters: `modelId` (filter by model ID), `status` (filter by status: queued, running, succeeded, failed, cancelled)
+  - Returns list of jobs with ID, model ID, dataset ID, job type, status, and timeline (submitted, started, completed)
+  - Jobs are ordered by submission time (most recent first)
+
+- **Job Submission**: `POST /llm-ops/v1/training/jobs`
+  - Submits a new training job (fine-tuning, from-scratch, pre-training, or distributed)
+  - Accepts `jobType` parameter: `"finetune"`, `"from_scratch"`, `"pretrain"`, or `"distributed"`
+  - Accepts optional `useGpu` parameter (boolean, default: `true`) to enable CPU-only training
+  - Accepts optional `apiBaseUrl` parameter (string) to specify API base URL for metric recording
+    - If not provided, uses `TRAINING_API_BASE_URL` setting from backend configuration
+    - For local development with minikube, automatically detects and uses `host.minikube.internal:8000`
+    - Format: `http://{host}:{port}/llm-ops/v1` (e.g., `http://host.minikube.internal:8000/llm-ops/v1`)
+  - Validates job type-specific requirements:
+    - Fine-tuning: Requires base model ID (must be approved in catalog)
+    - From-scratch: Requires architecture configuration in hyperparameters, base model optional
+    - Pre-training: Requires architecture configuration and large dataset, base model optional
+    - Distributed: Can be combined with any training type
+  - Validates dataset is approved before submission
+  - Validates architecture configuration for from-scratch and pre-training jobs
+  - When `useGpu=true` (default): Reserves GPU capacity based on job type and resource profile
+  - When `useGpu=false`: Allocates CPU-only resources (no GPU requirements), suitable for development/testing
+  - Sets `API_BASE_URL` environment variable in Kubernetes job pods to enable metric recording
+  - Submits to Kubernetes scheduler with appropriate training pipeline and resource configuration
+  - Returns job ID and initial status
+
+- **Job Details**: `GET /llm-ops/v1/training/jobs/{jobId}`
+  - Retrieves detailed information for a specific training job
+  - Returns job status, timeline, model/dataset IDs, job type, and experiment URL
+  - Supports real-time status monitoring
+
+- **Job Cancellation**: `DELETE /llm-ops/v1/training/jobs/{jobId}`
+  - Cancels a queued or running training job
+  - Deletes associated Kubernetes job resources
+  - Updates job status to "cancelled"
+  - Only allows cancellation of queued or running jobs
+
+- **Metric Recording**: `POST /llm-ops/v1/training/jobs/{jobId}/metrics`
+  - Records experiment metrics from training pods during training execution
+  - Accepts metric name, value, and optional unit
+  - Stores metrics in `ExperimentMetric` entities linked to training jobs
+  - Returns success/failure status with error details if recording fails
+  - Training pods call this endpoint using `API_BASE_URL` environment variable
+  - Metric recording failures do not stop training execution (non-blocking)
+
+- **Experiment Metrics**: `GET /llm-ops/v1/training/experiments/{jobId}`
+  - Retrieves all experiment metrics for a training job
+  - Returns list of metrics with name, value, unit, and recorded timestamp
+  - Metrics are ordered by recording time (ascending)
+  - Used by experiment detail UI pages to display training progress
+
+These APIs support **FR-004**, **FR-004a**, and **FR-005f**, providing complete training job lifecycle management
+and experiment tracking through both API and UI interfaces.
+
+### Evaluation API
+
+The platform provides comprehensive model evaluation capabilities:
+
+- **Evaluation List**: `GET /llm-ops/v1/evaluation/runs`
+  - Lists all evaluation runs with optional filtering
+  - Supports query parameters: `modelId` (filter by model), `datasetId` (filter by benchmark dataset),
+    `runType` (filter by type: automated, human, llm_judge), `status` (filter by status),
+    `startDate`, `endDate` (filter by date range)
+  - Returns list of evaluations with ID, model ID, dataset ID, run type, status, metrics summary,
+    and execution timeline
+  - Evaluations are ordered by execution time (most recent first)
+
+- **Evaluation Execution**: `POST /llm-ops/v1/evaluation/runs`
+  - Executes model evaluation against a benchmark dataset
+  - Accepts model ID, dataset ID, evaluation type (automated, human, llm_judge, or combined),
+    evaluation configuration (metrics to calculate, sample size, criteria)
+  - Validates model and dataset are approved before evaluation
+  - For automated evaluation: Calculates metrics (BLEU, ROUGE, F1, EM, etc.) automatically
+  - For human review: Creates evaluation tasks for human reviewers
+  - For LLM Judge: Executes LLM-based evaluation with configurable prompts
+  - Supports automatic evaluation trigger after training job completion (via webhook or polling)
+  - Returns evaluation run ID and initial status
+
+- **Evaluation Details**: `GET /llm-ops/v1/evaluation/runs/{runId}`
+  - Retrieves detailed information for a specific evaluation run
+  - Returns evaluation status, metrics (detailed breakdown), sample outputs, execution timeline,
+    linked training job ID, and evaluation type
+  - Includes human review results if available (ratings, comments, inter-annotator agreement)
+  - Includes LLM Judge results if available (scores, confidence metrics, consensus)
+
+- **Human Review Submission**: `POST /llm-ops/v1/evaluation/runs/{runId}/human-review`
+  - Submits human evaluation results for an evaluation run
+  - Accepts reviewer ID, ratings (per sample or overall), comments, and evaluation criteria scores
+  - Aggregates multiple human reviews with inter-annotator agreement calculation
+  - Updates evaluation run status and metrics with human review results
+
+- **LLM Judge Execution**: `POST /llm-ops/v1/evaluation/runs/{runId}/llm-judge`
+  - Executes LLM-based evaluation for an evaluation run
+  - Accepts LLM Judge model ID (from catalog), evaluation prompts, and criteria
+  - Uses LLM to evaluate model outputs and calculate scores
+  - Supports multiple LLM Judge models for consensus evaluation
+  - Updates evaluation run with LLM Judge results
+
+- **Evaluation Comparison**: `GET /llm-ops/v1/evaluation/runs/compare`
+  - Compares multiple evaluation runs (different models or versions)
+  - Accepts query parameter `runIds` (comma-separated evaluation run IDs)
+  - Returns side-by-side metric comparison, performance trends, and recommendations
+  - Validates all evaluations use the same benchmark dataset for fair comparison
+
+- **Evaluation Export**: `GET /llm-ops/v1/evaluation/runs/{runId}/export`
+  - Exports evaluation results in specified format (CSV, JSON)
+  - Includes metrics, sample outputs, and metadata
+  - Supports filtering and formatting options
+
+These APIs support **FR-005a**, **FR-005b**, **FR-005c**, **FR-005d**, and **FR-005e**, providing complete
+model evaluation lifecycle management including automated metrics, human review workflow, LLM Judge
+evaluation, and evaluation comparison through both API and UI interfaces.
+
+### Inference API
+
+The platform provides a unified inference API for chat completions:
+
+- **Chat Completion Endpoint**: `POST /llm-ops/v1/serve/{route_name}/chat`
+  - Accepts chat completion requests with message history
+  - Supports inference parameters: `temperature` (0.0-2.0), `max_tokens` (1-4000)
+  - Automatically routes requests to the appropriate backend:
+    - Internal models: Routes to Kubernetes pods via HTTP
+    - External models: Routes to external API clients (OpenAI, Ollama, etc.)
+  - Applies prompt templates if configured for the endpoint
+  - Returns standardized responses with:
+    - Message choices (role, content, finish_reason)
+    - Token usage (prompt_tokens, completion_tokens, total_tokens)
+    - Standardized error handling with `{status, message, data}` envelope
+
+- **Route Resolution**: The API automatically resolves route names to serving
+  endpoints by searching across all environments (dev, stg, prod), preferring
+  healthy endpoints.
+
+- **External Model Support**: External models are automatically detected based
+  on model metadata and routed to the appropriate provider client, maintaining
+  consistent response format and error handling.
+
+This functionality supports **FR-006l**, providing a unified interface for
+model inference regardless of deployment type.
+
+### Additional Governance APIs
+
+The platform provides additional governance and observability capabilities:
+
+- **Policy Retrieval**: `GET /llm-ops/v1/governance/policies/{policyId}`
+  - Retrieves a specific governance policy by ID
+  - Returns complete policy information including rules, scope, and status
+  - Supports policy inspection and management workflows
+
+- **Cost Aggregation**: `GET /llm-ops/v1/governance/observability/cost-aggregate`
+  - Returns aggregated cost summaries across resources
+  - Supports filtering by:
+    - `resource_type` (training, serving)
+    - `start_date` and `end_date` (datetime)
+  - Returns aggregated metrics:
+    - Total GPU hours
+    - Total tokens
+    - Total cost (with currency)
+    - Resource count
+  - Enables cost analysis and budgeting workflows
+
+These APIs support **FR-010a**, providing comprehensive governance and cost
+management capabilities.
 
 ## Assumptions & Open Issues
 

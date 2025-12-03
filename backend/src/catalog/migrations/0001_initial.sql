@@ -9,7 +9,18 @@ CREATE TABLE IF NOT EXISTS model_catalog_entries (
     version TEXT NOT NULL,
     type TEXT NOT NULL CHECK (type IN ('base', 'fine-tuned', 'external')),
     status TEXT NOT NULL DEFAULT 'draft'
-        CHECK (status IN ('draft', 'under_review', 'approved', 'deprecated')),
+        -- Allow the superset of historical + current UI values to avoid
+        -- integrity errors when the catalog API sets e.g. status='rejected'.
+        CHECK (
+            status IN (
+                'draft',
+                'under_review',
+                'approved',
+                'deprecated',
+                'pending_review',
+                'rejected'
+            )
+        ),
     owner_team TEXT NOT NULL,
     metadata JSONB NOT NULL,
     lineage_dataset_ids UUID[],

@@ -56,6 +56,44 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EnvelopeTrainingJob"
+  /training/jobs/{jobId}/metrics:
+    post:
+      summary: Record a metric for a training job (called from training pod)
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecordMetricRequest"
+      responses:
+        "200":
+          description: Metric recorded successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnvelopeMetric"
+  /training/experiments/{jobId}:
+    get:
+      summary: Get experiment metrics for a training job
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Experiment metrics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnvelopeExperiment"
 components:
   schemas:
     EnvelopeTrainingJob:
@@ -82,7 +120,7 @@ components:
           type: string
         jobType:
           type: string
-          enum: [finetune, distributed]
+          enum: [finetune, from_scratch, pretrain, distributed]
         hyperparameters:
           type: object
         resourceProfile:
@@ -116,6 +154,10 @@ components:
               type: array
               items:
                 type: string
+        apiBaseUrl:
+          type: string
+          description: API base URL for training pod to record metrics. If not provided, uses server configuration. For local development with minikube, use http://host.minikube.internal:8000/llm-ops/v1
+          example: "http://host.minikube.internal:8000/llm-ops/v1"
     TrainingJob:
       allOf:
         - $ref: "#/components/schemas/TrainingJobRequest"
@@ -137,4 +179,64 @@ components:
               format: date-time
             experimentUrl:
               type: string
+    RecordMetricRequest:
+      type: object
+      required:
+        - name
+        - value
+      properties:
+        name:
+          type: string
+          description: Metric name (e.g., 'loss', 'accuracy')
+        value:
+          type: number
+          description: Metric value
+        unit:
+          type: string
+          description: Metric unit (e.g., 'percentage', 'seconds')
+    ExperimentMetric:
+      type: object
+      properties:
+        id:
+          type: string
+        trainingJobId:
+          type: string
+        name:
+          type: string
+        value:
+          type: number
+        unit:
+          type: string
+        recordedAt:
+          type: string
+          format: date-time
+    EnvelopeMetric:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success, fail]
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ExperimentMetric"
+    Experiment:
+      type: object
+      properties:
+        jobId:
+          type: string
+        metrics:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExperimentMetric"
+    EnvelopeExperiment:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success, fail]
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/Experiment"
 

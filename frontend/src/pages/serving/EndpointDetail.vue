@@ -75,6 +75,19 @@
       <div class="detail-section">
         <h2>Runtime Configuration</h2>
         <dl class="detail-list">
+          <dt>GPU Override for Redeploy</dt>
+          <dd>
+            <select v-model="redeployGpuOverride">
+              <option value="">Keep current / default</option>
+              <option value="gpu">Force GPU (useGpu=true)</option>
+              <option value="cpu">Force CPU-only (useGpu=false)</option>
+            </select>
+            <p class="help-text">
+              Choose whether the next redeploy should force GPU or CPU-only resources.
+              Leave as “Keep current / default” to use the existing/global setting.
+            </p>
+          </dd>
+
           <dt>Override Runtime Image</dt>
           <dd>
             <select v-model="runtimeImageSelection">
@@ -82,7 +95,7 @@
               <option value="vllm/vllm-openai:nightly">vLLM OpenAI (nightly)</option>
               <option value="ghcr.io/vllm/vllm:latest">vLLM (latest)</option>
               <option value="ghcr.io/vllm/vllm:0.6.0">vLLM (0.6.0)</option>
-              <option value="huggingface/text-generation-inference:latest">TGI (latest)</option>
+              <option value="ghcr.io/huggingface/text-generation-inference:latest">TGI (latest, GHCR)</option>
               <option value="custom">Custom image...</option>
             </select>
             <input
@@ -144,6 +157,7 @@ const error = ref('');
 const rollingBack = ref(false);
 const deleting = ref(false);
 const redeploying = ref(false);
+const redeployGpuOverride = ref<string>('');
 const runtimeImageSelection = ref<string>('');
 const customRuntimeImage = ref<string>('');
 
@@ -166,7 +180,7 @@ async function fetchEndpoint() {
           "vllm/vllm-openai:nightly",
           "ghcr.io/vllm/vllm:latest",
           "ghcr.io/vllm/vllm:0.6.0",
-          "huggingface/text-generation-inference:latest",
+          "ghcr.io/huggingface/text-generation-inference:latest",
         ];
         if (knownImages.includes(endpoint.value.runtimeImage)) {
           runtimeImageSelection.value = endpoint.value.runtimeImage;
@@ -200,6 +214,14 @@ async function handleRedeploy() {
 
   redeploying.value = true;
   try {
+    // Determine GPU override (tri-state: keep / force GPU / force CPU)
+    let useGpuOverride: boolean | undefined = undefined;
+    if (redeployGpuOverride.value === 'gpu') {
+      useGpuOverride = true;
+    } else if (redeployGpuOverride.value === 'cpu') {
+      useGpuOverride = false;
+    }
+
     // Determine runtime image override
     let runtimeImageOverride: string | undefined;
     if (runtimeImageSelection.value === 'custom' && customRuntimeImage.value.trim()) {
@@ -210,7 +232,7 @@ async function handleRedeploy() {
 
     const response = await servingClient.redeployEndpoint(
       endpoint.value.id,
-      undefined,
+      useGpuOverride,
       runtimeImageOverride
     );
     if (response.status === "success") {

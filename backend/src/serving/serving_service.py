@@ -74,8 +74,9 @@ class ServingService:
         existing = self.endpoint_repo.get_by_route(environment, route)
         if existing:
             raise ValueError(f"Route {route} already exists in {environment}")
-
-        # Determine runtime image for this endpoint (per-endpoint override or global default)
+        
+        # Determine runtime image for this endpoint
+        # Priority: explicit parameter > global default (TGI/vLLM, etc.)
         effective_runtime_image = serving_runtime_image or settings.serving_runtime_image
 
         # Create endpoint entity

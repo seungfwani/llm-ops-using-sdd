@@ -56,6 +56,16 @@ class CatalogService:
         if not entry:
             raise ValueError("Entry not found")
 
+        # Only allow valid, user-facing status values here.
+        # Internal / legacy values (e.g. 'under_review', 'deprecated') are still
+        # permitted by the DB constraint for backwards compatibility, but should
+        # not be set via this API.
+        valid_statuses = ["draft", "pending_review", "approved", "rejected"]
+        if status not in valid_statuses:
+            raise ValueError(
+                f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
+            )
+
         entry.status = status
         self.session.commit()
         self.session.refresh(entry)

@@ -244,11 +244,38 @@ Hugging Face에서 직접 import하는 기능이 아직 없으므로, 다음 방
 3. **API를 통한 파일 업로드:**
    - 모델 등록 후 `/catalog/models/{model_id}/upload` API로 파일 업로드
 
+## Fine-tuning 예제 데이터셋
+
+### `datasets/` 디렉토리
+
+Fine-tuning을 테스트하기 위한 샘플 데이터셋 파일들이 포함되어 있습니다.
+
+**포함된 데이터셋:**
+- `customer-support-sample.csv` - Customer support 챗봇 fine-tuning용 (10개 샘플)
+- `code-generation-sample.jsonl` - Code generation 모델 fine-tuning용 (10개 샘플)
+
+**사용 방법:**
+1. 데이터셋을 카탈로그에 등록
+2. 데이터셋 파일 업로드 (`POST /catalog/datasets/{dataset_id}/upload`)
+3. Base 모델 선택 후 fine-tuning job 제출
+
+자세한 사용 방법은 [`datasets/README.md`](./datasets/README.md)를 참조하세요.
+
+**예제 워크플로우:**
+```bash
+# 1. Base 모델 등록
+python examples/register_base_model.py register
+
+# 2. 데이터셋 생성 및 업로드 (UI 또는 API 사용)
+# 3. Fine-tuning job 제출 (UI: /training/jobs/submit 또는 API)
+```
+
 ## 추가 예제
 
 더 많은 예제와 사용 사례는 다음 문서를 참조하세요:
 
 - [서빙 예제 가이드](../docs/serving-examples.md) - 서빙된 모델을 사용하는 다양한 예제
+- [Fine-tuning 데이터셋 가이드](./datasets/README.md) - Fine-tuning용 예제 데이터셋 사용법
 - [Quickstart 가이드](../specs/001-document-llm-ops/quickstart.md) - 플랫폼 설정 및 사용 가이드
 
 ## 주의 사항
@@ -272,8 +299,8 @@ Hugging Face에서 직접 import하는 기능이 아직 없으므로, 다음 방
 - [ ] 모델 추론 호출 예제 (추론 API 구현 후)
 - [ ] 프롬프트 A/B 테스트 예제
 - [ ] 배치 추론 예제
-- [ ] 모델 학습 예제
-- [ ] 데이터셋 관리 예제
+- [x] 모델 학습 예제 (Fine-tuning 데이터셋 예제 추가됨)
+- [x] 데이터셋 관리 예제 (datasets/README.md에 포함됨)
 
 ## 기여하기
 

@@ -1,71 +1,297 @@
 <template>
   <div class="job-submit">
-    <h1>Submit Training Job</h1>
+    <header>
+      <router-link to="/training/jobs" class="back-link">← Back to Jobs</router-link>
+      <h1>Submit Training Job</h1>
+    </header>
+
     <form @submit.prevent="submitJob">
-      <div>
-        <label>Model:</label>
-        <select v-model="form.modelId" required>
-          <option value="">Select a model</option>
-          <option v-for="model in models" :key="model.id" :value="model.id">
-            {{ model.name }} ({{ model.version }})
-          </option>
-        </select>
+      <div class="form-section">
+        <h2>Job Configuration</h2>
+        
+        <div class="form-group">
+          <label for="jobType">Job Type: <span class="required">*</span></label>
+          <select id="jobType" v-model="form.jobType" @change="onJobTypeChange" required>
+            <option value="finetune">Fine-tuning</option>
+            <option value="from_scratch">From Scratch</option>
+            <option value="pretrain">Pre-training</option>
+            <option value="distributed">Distributed Training</option>
+          </select>
+          <small class="help-text">
+            <span v-if="form.jobType === 'finetune'">Fine-tuning requires a base model</span>
+            <span v-else-if="form.jobType === 'from_scratch'">From-scratch requires architecture configuration</span>
+            <span v-else-if="form.jobType === 'pretrain'">Pre-training requires architecture configuration</span>
+            <span v-else-if="form.jobType === 'distributed'">Distributed training requires multiple GPUs/nodes</span>
+          </small>
+        </div>
+
+        <div v-if="requiresModel" class="form-group">
+          <label for="modelId">Base Model: <span class="required">*</span></label>
+          <select id="modelId" v-model="form.modelId" :required="requiresModel" :disabled="!requiresModel">
+            <option value="">Select a model</option>
+            <option v-for="model in models" :key="model.id" :value="model.id">
+              {{ model.name }} ({{ model.version }})
+            </option>
+          </select>
+          <small v-if="!requiresModel" class="help-text">Not required for {{ form.jobType }} jobs</small>
+        </div>
+
+        <div class="form-group">
+          <label for="datasetId">Dataset: <span class="required">*</span></label>
+          <select id="datasetId" v-model="form.datasetId" required>
+            <option value="">Select a dataset</option>
+            <option v-for="dataset in datasets" :key="dataset.id" :value="dataset.id">
+              {{ dataset.name }} ({{ dataset.version }})
+            </option>
+          </select>
+        </div>
+
+        <div v-if="requiresArchitecture" class="form-group">
+          <label for="architecture">Architecture Configuration (JSON): <span class="required">*</span></label>
+          <textarea
+            id="architecture"
+            v-model="architectureJson"
+            :required="requiresArchitecture"
+            rows="8"
+            placeholder='{"architecture": {"type": "transformer", "layers": 12, "hidden_size": 768, ...}, "learning_rate": 0.0001, ...}'
+            @blur="validateArchitecture"
+          ></textarea>
+          <small class="help-text">Must include "architecture" key with model architecture definition</small>
+          <div v-if="architectureError" class="error-text">{{ architectureError }}</div>
+        </div>
       </div>
-      <div>
-        <label>Dataset:</label>
-        <select v-model="form.datasetId" required>
-          <option value="">Select a dataset</option>
-          <option v-for="dataset in datasets" :key="dataset.id" :value="dataset.id">
-            {{ dataset.name }} ({{ dataset.version }})
-          </option>
-        </select>
+
+      <div class="form-section">
+        <h2>Resource Configuration</h2>
+        
+        <div class="form-group">
+          <label>
+            <input
+              type="checkbox"
+              v-model="form.useGpu"
+              @change="onUseGpuChange"
+            />
+            Use GPU Resources
+          </label>
+          <small class="help-text">
+            Uncheck to use CPU-only training (suitable for development/testing on GPU-less servers)
+          </small>
+        </div>
+
+        <template v-if="form.useGpu">
+          <div class="form-group">
+            <label for="gpuCount">GPU Count: <span class="required">*</span></label>
+            <input
+              id="gpuCount"
+              v-model.number="form.resourceProfile.gpuCount"
+              type="number"
+              min="1"
+              :required="form.useGpu"
+            />
+            <small class="help-text">Number of GPUs per node</small>
+          </div>
+
+          <div v-if="form.jobType === 'distributed'" class="form-group">
+            <label for="numNodes">Number of Nodes: <span class="required">*</span></label>
+            <input
+              id="numNodes"
+              v-model.number="form.resourceProfile.numNodes"
+              type="number"
+              min="2"
+              required
+            />
+            <small class="help-text">Total number of nodes for distributed training (minimum 2)</small>
+          </div>
+
+          <div class="form-group">
+            <label for="gpuType">GPU Type: <span class="required">*</span></label>
+            <select id="gpuType" v-model="form.resourceProfile.gpuType" :required="form.useGpu">
+              <option value="nvidia-tesla-v100">NVIDIA Tesla V100</option>
+              <option value="nvidia-tesla-a100">NVIDIA Tesla A100</option>
+              <option value="nvidia-rtx-3090">NVIDIA RTX 3090</option>
+              <option value="nvidia-rtx-4090">NVIDIA RTX 4090</option>
+            </select>
+          </div>
+        </template>
+
+        <template v-else>
+          <div class="form-group">
+            <label for="cpuCores">CPU Cores: <span class="required">*</span></label>
+            <input
+              id="cpuCores"
+              v-model.number="form.resourceProfile.cpuCores"
+              type="number"
+              min="1"
+              :required="!form.useGpu"
+            />
+            <small class="help-text">Number of CPU cores to allocate</small>
+          </div>
+
+          <div class="form-group">
+            <label for="memory">Memory: <span class="required">*</span></label>
+            <select id="memory" v-model="form.resourceProfile.memory" :required="!form.useGpu">
+              <option value="2Gi">2 GiB</option>
+              <option value="4Gi">4 GiB</option>
+              <option value="8Gi">8 GiB</option>
+              <option value="16Gi">16 GiB</option>
+              <option value="32Gi">32 GiB</option>
+            </select>
+            <small class="help-text">Memory allocation for CPU-only training</small>
+          </div>
+        </template>
+
+        <div class="form-group">
+          <label for="maxDuration">Max Duration (minutes): <span class="required">*</span></label>
+          <input
+            id="maxDuration"
+            v-model.number="form.resourceProfile.maxDuration"
+            type="number"
+            min="1"
+            required
+          />
+        </div>
       </div>
-      <div>
-        <label>Job Type:</label>
-        <select v-model="form.jobType" required>
-          <option value="finetune">Fine-tuning</option>
-          <option value="distributed">Distributed Training</option>
-        </select>
+
+      <div class="form-section">
+        <h2>Advanced Options</h2>
+        
+        <div class="form-group">
+          <label for="hyperparameters">Additional Hyperparameters (JSON):</label>
+          <textarea
+            id="hyperparameters"
+            v-model="hyperparametersJson"
+            rows="6"
+            placeholder='{"batch_size": 32, "epochs": 10, ...}'
+          ></textarea>
+          <small class="help-text">Optional: Additional training hyperparameters (will be merged with architecture config if provided)</small>
+        </div>
       </div>
-      <div>
-        <label>GPU Count:</label>
-        <input v-model.number="form.resourceProfile.gpuCount" type="number" min="1" required />
+
+      <div class="form-actions">
+        <button type="button" @click="router.push('/training/jobs')" class="btn-cancel">Cancel</button>
+        <button type="submit" :disabled="submitting || !isFormValid" class="btn-submit">
+          {{ submitting ? "Submitting..." : "Submit Job" }}
+        </button>
       </div>
-      <div>
-        <label>GPU Type:</label>
-        <input v-model="form.resourceProfile.gpuType" required />
-      </div>
-      <div>
-        <label>Max Duration (minutes):</label>
-        <input v-model.number="form.resourceProfile.maxDuration" type="number" min="1" required />
-      </div>
-      <button type="submit" :disabled="submitting">Submit Job</button>
+
+      <div v-if="message" :class="['message', messageType]">{{ message }}</div>
     </form>
-    <div v-if="message" :class="messageType">{{ message }}</div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from "vue";
+import { ref, reactive, computed, onMounted } from "vue";
+import { useRouter } from "vue-router";
 import { trainingClient, type TrainingJobRequest } from "@/services/trainingClient";
 import { catalogClient } from "@/services/catalogClient";
+
+const router = useRouter();
 
 const form = reactive<TrainingJobRequest>({
   modelId: "",
   datasetId: "",
   jobType: "finetune",
+  useGpu: true,
   resourceProfile: {
     gpuCount: 1,
     gpuType: "nvidia-tesla-v100",
     maxDuration: 60,
+    numNodes: 2,
+    cpuCores: 4,
+    memory: "8Gi",
   },
 });
 
-const models = ref([]);
-const datasets = ref([]);
+const models = ref<Array<{ id: string; name: string; version: string }>>([]);
+const datasets = ref<Array<{ id: string; name: string; version: string }>>([]);
 const submitting = ref(false);
 const message = ref("");
 const messageType = ref<"success" | "error">("success");
+const architectureJson = ref("");
+const hyperparametersJson = ref("");
+const architectureError = ref("");
+
+const requiresModel = computed(() => {
+  return form.jobType === "finetune";
+});
+
+const requiresArchitecture = computed(() => {
+  return form.jobType === "from_scratch" || form.jobType === "pretrain";
+});
+
+const isFormValid = computed(() => {
+  // Basic validation
+  if (!form.datasetId) return false;
+  if (requiresModel.value && !form.modelId) return false;
+  if (requiresArchitecture.value) {
+    if (!architectureJson.value.trim()) return false;
+    if (architectureError.value) return false;
+  }
+  if (form.useGpu) {
+    // GPU validation
+    if (!form.resourceProfile.gpuCount || form.resourceProfile.gpuCount < 1) return false;
+    if (!form.resourceProfile.gpuType) return false;
+    if (form.jobType === "distributed" && (!form.resourceProfile.numNodes || form.resourceProfile.numNodes < 2)) {
+      return false;
+    }
+    if (form.jobType === "distributed" && form.resourceProfile.gpuCount < 2) {
+      return false;
+    }
+  } else {
+    // CPU-only validation
+    if (!form.resourceProfile.cpuCores || form.resourceProfile.cpuCores < 1) return false;
+    if (!form.resourceProfile.memory) return false;
+  }
+  return true;
+});
+
+const onJobTypeChange = () => {
+  // Reset conditional fields when job type changes
+  if (!requiresModel.value) {
+    form.modelId = "";
+  }
+  if (!requiresArchitecture.value) {
+    architectureJson.value = "";
+    architectureError.value = "";
+  }
+  // Reset numNodes for non-distributed jobs
+  if (form.jobType !== "distributed") {
+    form.resourceProfile.numNodes = undefined;
+  } else {
+    form.resourceProfile.numNodes = 2;
+  }
+};
+
+const onUseGpuChange = () => {
+  // Reset resource profile fields when switching between GPU/CPU
+  if (form.useGpu) {
+    // Switching to GPU - ensure GPU fields are set
+    if (!form.resourceProfile.gpuCount) form.resourceProfile.gpuCount = 1;
+    if (!form.resourceProfile.gpuType) form.resourceProfile.gpuType = "nvidia-tesla-v100";
+  } else {
+    // Switching to CPU-only - ensure CPU fields are set
+    if (!form.resourceProfile.cpuCores) form.resourceProfile.cpuCores = 4;
+    if (!form.resourceProfile.memory) form.resourceProfile.memory = "8Gi";
+  }
+};
+
+const validateArchitecture = () => {
+  architectureError.value = "";
+  if (!architectureJson.value.trim()) {
+    if (requiresArchitecture.value) {
+      architectureError.value = "Architecture configuration is required";
+    }
+    return;
+  }
+  try {
+    const parsed = JSON.parse(architectureJson.value);
+    if (!parsed.architecture) {
+      architectureError.value = 'Architecture configuration must include "architecture" key';
+    }
+  } catch (e) {
+    architectureError.value = "Invalid JSON format";
+  }
+};
 
 onMounted(async () => {
   // Load models and datasets for selection
@@ -74,21 +300,69 @@ onMounted(async () => {
     if (modelsRes.status === "success" && modelsRes.data) {
       models.value = Array.isArray(modelsRes.data) ? modelsRes.data : [modelsRes.data];
     }
-    // TODO: Load datasets similarly
+    
+    const datasetsRes = await catalogClient.listDatasets();
+    if (datasetsRes.status === "success" && datasetsRes.data) {
+      datasets.value = Array.isArray(datasetsRes.data) ? datasetsRes.data : [datasetsRes.data];
+    }
   } catch (e) {
     console.error("Failed to load models/datasets:", e);
+    message.value = "Failed to load models/datasets. Please refresh the page.";
+    messageType.value = "error";
   }
 });
 
 async function submitJob() {
+  if (!isFormValid.value) {
+    message.value = "Please fill in all required fields correctly";
+    messageType.value = "error";
+    return;
+  }
+
   submitting.value = true;
   message.value = "";
+
   try {
-    const response = await trainingClient.submitJob(form);
-    if (response.status === "success") {
-      message.value = `Job submitted successfully: ${response.data?.id}`;
+    // Build hyperparameters object
+    let hyperparameters: Record<string, unknown> = {};
+    
+    if (architectureJson.value.trim()) {
+      try {
+        const archParsed = JSON.parse(architectureJson.value);
+        hyperparameters = { ...hyperparameters, ...archParsed };
+      } catch (e) {
+        message.value = "Invalid architecture JSON format";
+        messageType.value = "error";
+        submitting.value = false;
+        return;
+      }
+    }
+    
+    if (hyperparametersJson.value.trim()) {
+      try {
+        const hyperParsed = JSON.parse(hyperparametersJson.value);
+        hyperparameters = { ...hyperparameters, ...hyperParsed };
+      } catch (e) {
+        message.value = "Invalid hyperparameters JSON format";
+        messageType.value = "error";
+        submitting.value = false;
+        return;
+      }
+    }
+
+    const request: TrainingJobRequest = {
+      ...form,
+      hyperparameters: Object.keys(hyperparameters).length > 0 ? hyperparameters : undefined,
+    };
+
+    const response = await trainingClient.submitJob(request);
+    if (response.status === "success" && response.data) {
+      message.value = `Job submitted successfully: ${response.data.id}`;
       messageType.value = "success";
-      // TODO: Navigate to job detail page
+      // Navigate to job detail page after 1 second
+      setTimeout(() => {
+        router.push(`/training/jobs/${response.data!.id}`);
+      }, 1000);
     } else {
       message.value = response.message || "Failed to submit job";
       messageType.value = "error";
@@ -104,40 +378,158 @@ async function submitJob() {
 
 <style scoped>
 .job-submit {
-  max-width: 600px;
+  max-width: 800px;
   margin: 0 auto;
   padding: 20px;
 }
-form > div {
-  margin-bottom: 15px;
+
+header {
+  margin-bottom: 30px;
 }
-label {
+
+.back-link {
+  display: inline-block;
+  margin-bottom: 10px;
+  color: #007bff;
+  text-decoration: none;
+  font-size: 14px;
+}
+
+.back-link:hover {
+  text-decoration: underline;
+}
+
+h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.form-section {
+  background: white;
+  border: 1px solid #e9ecef;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.form-section h2 {
+  margin: 0 0 20px 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #495057;
+  border-bottom: 2px solid #e9ecef;
+  padding-bottom: 10px;
+}
+
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-group label {
   display: block;
-  margin-bottom: 5px;
+  margin-bottom: 8px;
+  font-weight: 500;
+  color: #495057;
+  font-size: 14px;
 }
-input,
-select {
+
+.required {
+  color: #dc3545;
+}
+
+.form-group select,
+.form-group input,
+.form-group textarea {
   width: 100%;
-  padding: 8px;
+  padding: 10px;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  font-size: 14px;
+  font-family: inherit;
 }
-button {
-  padding: 10px 20px;
-  background: #007bff;
-  color: white;
-  border: none;
-  cursor: pointer;
-}
-button:disabled {
-  background: #ccc;
+
+.form-group select:disabled {
+  background: #e9ecef;
   cursor: not-allowed;
 }
-.success {
-  color: green;
-  margin-top: 10px;
+
+.form-group textarea {
+  font-family: monospace;
+  resize: vertical;
 }
-.error {
-  color: red;
-  margin-top: 10px;
+
+.help-text {
+  display: block;
+  margin-top: 5px;
+  font-size: 12px;
+  color: #6c757d;
+}
+
+.error-text {
+  display: block;
+  margin-top: 5px;
+  font-size: 12px;
+  color: #dc3545;
+}
+
+.form-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 30px;
+}
+
+button {
+  padding: 12px 24px;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btn-submit {
+  background: #007bff;
+  color: white;
+}
+
+.btn-submit:hover:not(:disabled) {
+  background: #0056b3;
+}
+
+.btn-submit:disabled {
+  background: #6c757d;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.btn-cancel {
+  background: #6c757d;
+  color: white;
+}
+
+.btn-cancel:hover {
+  background: #5a6268;
+}
+
+.message {
+  margin-top: 20px;
+  padding: 12px;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.message.success {
+  background: #d4edda;
+  color: #155724;
+  border: 1px solid #c3e6cb;
+}
+
+.message.error {
+  background: #f8d7da;
+  color: #721c24;
+  border: 1px solid #f5c6cb;
 }
 </style>
-
