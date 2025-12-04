@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     Float,
+    Boolean,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship, foreign
@@ -200,6 +201,11 @@ class ServingEndpoint(Base):
     max_replicas: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     autoscale_policy: Mapped[Optional[dict]] = mapped_column(JSON)
     prompt_policy_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=True), ForeignKey("prompt_templates.id"))
+    use_gpu: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    cpu_request: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    cpu_limit: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    memory_request: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    memory_limit: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     last_health_check: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
     rollback_plan: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=datetime.utcnow)

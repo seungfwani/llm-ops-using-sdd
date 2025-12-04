@@ -41,6 +41,34 @@
         </small>
       </div>
       <div>
+        <label>CPU Request:</label>
+        <input v-model="form.cpuRequest" type="text" placeholder="e.g., 2 or 1000m" />
+        <small style="display: block; color: #666; margin-top: 5px;">
+          CPU request (e.g., '2' for 2 cores, '1000m' for 1000 millicores). Leave empty to use default.
+        </small>
+      </div>
+      <div>
+        <label>CPU Limit:</label>
+        <input v-model="form.cpuLimit" type="text" placeholder="e.g., 4 or 2000m" />
+        <small style="display: block; color: #666; margin-top: 5px;">
+          CPU limit (e.g., '4' for 4 cores, '2000m' for 2000 millicores). Leave empty to use default.
+        </small>
+      </div>
+      <div>
+        <label>Memory Request:</label>
+        <input v-model="form.memoryRequest" type="text" placeholder="e.g., 4Gi or 2G" />
+        <small style="display: block; color: #666; margin-top: 5px;">
+          Memory request (e.g., '4Gi' for 4 gibibytes, '2G' for 2 gigabytes). Leave empty to use default.
+        </small>
+      </div>
+      <div>
+        <label>Memory Limit:</label>
+        <input v-model="form.memoryLimit" type="text" placeholder="e.g., 8Gi or 4G" />
+        <small style="display: block; color: #666; margin-top: 5px;">
+          Memory limit (e.g., '8Gi' for 8 gibibytes, '4G' for 4 gigabytes). Leave empty to use default.
+        </small>
+      </div>
+      <div>
         <label>Serving Runtime Image:</label>
         <select v-model="form.servingRuntimeImage">
           <option value="">Use default (from server settings)</option>
@@ -80,6 +108,10 @@ const form = reactive<ServingEndpointRequest>({
   maxReplicas: 3,
   useGpu: true, // Default to GPU, user can uncheck for CPU-only
   servingRuntimeImage: "", // Default to empty (use server default)
+  cpuRequest: "",
+  cpuLimit: "",
+  memoryRequest: "",
+  memoryLimit: "",
 });
 
 const models = ref([]);
@@ -127,6 +159,19 @@ async function deployEndpoint() {
     // Only include servingRuntimeImage if it's set
     if (!request.servingRuntimeImage) {
       delete request.servingRuntimeImage;
+    }
+    // Include CPU/memory resources if set
+    if (form.cpuRequest && form.cpuRequest.trim()) {
+      request.cpuRequest = form.cpuRequest.trim();
+    }
+    if (form.cpuLimit && form.cpuLimit.trim()) {
+      request.cpuLimit = form.cpuLimit.trim();
+    }
+    if (form.memoryRequest && form.memoryRequest.trim()) {
+      request.memoryRequest = form.memoryRequest.trim();
+    }
+    if (form.memoryLimit && form.memoryLimit.trim()) {
+      request.memoryLimit = form.memoryLimit.trim();
     }
     
     const response = await servingClient.deployEndpoint(request);

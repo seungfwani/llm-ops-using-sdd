@@ -10,6 +10,7 @@ from catalog.schemas import (
     EnvelopeDatasetList,
     EnvelopeModelCatalog,
     EnvelopeModelCatalogList,
+    HuggingFaceImportRequest,
     ModelCatalogCreate,
     ModelCatalogResponse,
 )
@@ -444,6 +445,56 @@ async def upload_model_files(
         return EnvelopeModelCatalog(
             status="fail",
             message=f"Upload failed: {str(exc)}",
+            data=None,
+        )
+
+
+@router.post("/models/import-from-huggingface", response_model=EnvelopeModelCatalog)
+def import_from_huggingface(
+    request: HuggingFaceImportRequest,
+    session=Depends(get_session),
+) -> EnvelopeModelCatalog:
+    """Import a model from Hugging Face Hub automatically."""
+    service = CatalogService(session)
+    try:
+        entry = service.import_from_huggingface(
+            hf_model_id=request.hf_model_id,
+            name=request.name,
+            version=request.version,
+            model_type=request.model_type,
+            owner_team=request.owner_team,
+            hf_token=request.hf_token,
+        )
+        return EnvelopeModelCatalog(
+            status="success",
+            message=f"Model '{entry.name}' imported successfully from Hugging Face",
+            data=ModelCatalogResponse(
+                id=str(entry.id),
+                name=entry.name,
+                version=entry.version,
+                type=entry.type,
+                status=entry.status,
+                owner_team=entry.owner_team,
+                metadata=entry.model_metadata,
+                storage_uri=entry.storage_uri,
+            ),
+        )
+    except ImportError as exc:
+        return EnvelopeModelCatalog(
+            status="fail",
+            message=str(exc),
+            data=None,
+        )
+    except ValueError as exc:
+        return EnvelopeModelCatalog(
+            status="fail",
+            message=str(exc),
+            data=None,
+        )
+    except Exception as exc:
+        return EnvelopeModelCatalog(
+            status="fail",
+            message=f"Import failed: {str(exc)}",
             data=None,
         )
 

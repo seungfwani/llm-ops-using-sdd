@@ -38,9 +38,15 @@ def list_endpoints(
                 modelId=str(endpoint.model_entry_id),
                 environment=endpoint.environment,
                 route=endpoint.route,
+                runtimeImage=endpoint.runtime_image,
                 status=endpoint.status,
                 minReplicas=endpoint.min_replicas,
                 maxReplicas=endpoint.max_replicas,
+                useGpu=endpoint.use_gpu,
+                cpuRequest=endpoint.cpu_request,
+                cpuLimit=endpoint.cpu_limit,
+                memoryRequest=endpoint.memory_request,
+                memoryLimit=endpoint.memory_limit,
                 createdAt=endpoint.created_at,
             )
             for endpoint in endpoints
@@ -75,6 +81,10 @@ def deploy_endpoint(
             prompt_policy_id=request.promptPolicyId,
             use_gpu=request.useGpu,
             serving_runtime_image=request.servingRuntimeImage,
+            cpu_request=request.cpuRequest,
+            cpu_limit=request.cpuLimit,
+            memory_request=request.memoryRequest,
+            memory_limit=request.memoryLimit,
         )
         return schemas.EnvelopeServingEndpoint(
             status="success",
@@ -88,6 +98,11 @@ def deploy_endpoint(
                 status=endpoint.status,
                 minReplicas=endpoint.min_replicas,
                 maxReplicas=endpoint.max_replicas,
+                useGpu=endpoint.use_gpu,
+                cpuRequest=endpoint.cpu_request,
+                cpuLimit=endpoint.cpu_limit,
+                memoryRequest=endpoint.memory_request,
+                memoryLimit=endpoint.memory_limit,
                 createdAt=endpoint.created_at,
             ),
         )
@@ -131,6 +146,11 @@ def get_endpoint(
             status=endpoint.status,
             minReplicas=endpoint.min_replicas,
             maxReplicas=endpoint.max_replicas,
+            useGpu=endpoint.use_gpu,
+            cpuRequest=endpoint.cpu_request,
+            cpuLimit=endpoint.cpu_limit,
+            memoryRequest=endpoint.memory_request,
+            memoryLimit=endpoint.memory_limit,
             createdAt=endpoint.created_at,
         ),
     )
@@ -160,9 +180,15 @@ def rollback_endpoint(
                 modelId=str(endpoint.model_entry_id),
                 environment=endpoint.environment,
                 route=endpoint.route,
+                runtimeImage=endpoint.runtime_image,
                 status=endpoint.status,
                 minReplicas=endpoint.min_replicas,
                 maxReplicas=endpoint.max_replicas,
+                useGpu=endpoint.use_gpu,
+                cpuRequest=endpoint.cpu_request,
+                cpuLimit=endpoint.cpu_limit,
+                memoryRequest=endpoint.memory_request,
+                memoryLimit=endpoint.memory_limit,
                 createdAt=endpoint.created_at,
             ) if endpoint else None,
         )
@@ -185,11 +211,23 @@ def redeploy_endpoint(
     endpointId: str,
     useGpu: Optional[bool] = Query(None, description="Whether to request GPU resources. If not provided, uses endpoint's current setting"),
     servingRuntimeImage: Optional[str] = Query(None, description="Container image for model serving runtime. If not provided, uses endpoint's current setting"),
+    cpuRequest: Optional[str] = Query(None, description="CPU request (e.g., '2', '1000m'). If not provided, uses endpoint's current/default setting"),
+    cpuLimit: Optional[str] = Query(None, description="CPU limit (e.g., '4', '2000m'). If not provided, uses endpoint's current/default setting"),
+    memoryRequest: Optional[str] = Query(None, description="Memory request (e.g., '4Gi', '2G'). If not provided, uses endpoint's current/default setting"),
+    memoryLimit: Optional[str] = Query(None, description="Memory limit (e.g., '8Gi', '4G'). If not provided, uses endpoint's current/default setting"),
     service: ServingService = Depends(get_serving_service),
 ) -> schemas.EnvelopeServingEndpoint:
-    """Redeploy a serving endpoint with the same configuration."""
+    """Redeploy a serving endpoint with the same or updated configuration."""
     try:
-        endpoint = service.redeploy_endpoint(endpointId, use_gpu=useGpu, serving_runtime_image=servingRuntimeImage)
+        endpoint = service.redeploy_endpoint(
+            endpointId,
+            use_gpu=useGpu,
+            serving_runtime_image=servingRuntimeImage,
+            cpu_request=cpuRequest,
+            cpu_limit=cpuLimit,
+            memory_request=memoryRequest,
+            memory_limit=memoryLimit,
+        )
         return schemas.EnvelopeServingEndpoint(
             status="success",
             message="Serving endpoint redeployed successfully",
@@ -202,6 +240,11 @@ def redeploy_endpoint(
                 status=endpoint.status,
                 minReplicas=endpoint.min_replicas,
                 maxReplicas=endpoint.max_replicas,
+                useGpu=endpoint.use_gpu,
+                cpuRequest=endpoint.cpu_request,
+                cpuLimit=endpoint.cpu_limit,
+                memoryRequest=endpoint.memory_request,
+                memoryLimit=endpoint.memory_limit,
                 createdAt=endpoint.created_at,
             ),
         )
@@ -252,9 +295,15 @@ def delete_endpoint(
                 modelId=str(endpoint.model_entry_id),
                 environment=endpoint.environment,
                 route=endpoint.route,
+                runtimeImage=endpoint.runtime_image,
                 status=endpoint.status,
                 minReplicas=endpoint.min_replicas,
                 maxReplicas=endpoint.max_replicas,
+                useGpu=endpoint.use_gpu,
+                cpuRequest=endpoint.cpu_request,
+                cpuLimit=endpoint.cpu_limit,
+                memoryRequest=endpoint.memory_request,
+                memoryLimit=endpoint.memory_limit,
                 createdAt=endpoint.created_at,
             ),
         )

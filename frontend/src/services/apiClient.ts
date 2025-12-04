@@ -9,6 +9,7 @@ export const apiClient: AxiosInstance = axios.create({
   headers: {
     "Content-Type": "application/json",
   },
+  timeout: 300000, // 5 minutes default timeout
 });
 
 // Request interceptor to add auth headers
@@ -35,8 +36,14 @@ apiClient.interceptors.response.use(
     return response;
   },
   (error) => {
+    // Handle timeout errors
+    if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+      console.error("Request timeout. The operation may be taking longer than expected.");
+      // Add timeout flag to error for easier handling
+      error.isTimeout = true;
+    }
     // Handle common errors
-    if (error.response?.status === 401) {
+    else if (error.response?.status === 401) {
       console.error("Authentication failed. Please check your credentials.");
     } else if (error.response?.status === 403) {
       console.error("Access denied. You don't have permission to access this resource.");

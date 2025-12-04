@@ -42,8 +42,11 @@
           <dd>{{ model.owner_team }}</dd>
           
           <dt>Storage URI</dt>
-          <dd v-if="model.storage_uri" class="monospace">{{ model.storage_uri }}</dd>
-          <dd v-else class="text-muted">No files uploaded</dd>
+          <dd v-if="model.storage_uri" class="monospace storage-uri-value">{{ model.storage_uri }}</dd>
+          <dd v-else class="text-muted">
+            <span v-if="isHuggingFaceModel">Files are being uploaded from Hugging Face...</span>
+            <span v-else>No files uploaded</span>
+          </dd>
         </dl>
       </div>
 
@@ -56,6 +59,20 @@
         <h2>Model Files</h2>
         <div v-if="model.storage_uri" class="storage-info">
           <p><strong>Storage Location:</strong> <span class="monospace">{{ model.storage_uri }}</span></p>
+          <p v-if="model.metadata?.model_size_gb" class="file-size-info">
+            <strong>Model Size:</strong> {{ formatModelSize(model.metadata.model_size_gb) }}
+          </p>
+          <p v-if="isHuggingFaceModel" class="import-source">
+            <strong>Source:</strong> Imported from Hugging Face ({{ model.metadata?.huggingface_model_id || 'N/A' }})
+          </p>
+        </div>
+        <div v-else class="no-storage-info">
+          <p v-if="isHuggingFaceModel" class="info-message">
+            This model was imported from Hugging Face. Files should be available shortly.
+          </p>
+          <p v-else class="info-message">
+            No files have been uploaded for this model yet.
+          </p>
         </div>
         <div class="file-upload-section">
           <label>
@@ -131,7 +148,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { catalogClient, type CatalogModel } from '@/services/catalogClient';
 
@@ -224,12 +241,25 @@ function removeFile(index: number) {
   selectedFiles.value.splice(index, 1);
 }
 
+const isHuggingFaceModel = computed(() => {
+  return model.value?.metadata?.source === 'huggingface' || 
+         model.value?.metadata?.huggingface_model_id !== undefined;
+});
+
 function formatFileSize(bytes: number): string {
   if (bytes === 0) return '0 Bytes';
   const k = 1024;
   const sizes = ['Bytes', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+}
+
+function formatModelSize(gb: number): string {
+  if (gb < 1) {
+    const mb = gb * 1024;
+    return `${mb.toFixed(2)} MB`;
+  }
+  return `${gb.toFixed(2)} GB`;
 }
 
 async function handleUpload() {
@@ -528,6 +558,43 @@ header {
   padding: 1rem;
   background: #f8f9fa;
   border-radius: 4px;
+}
+
+.storage-info p {
+  margin: 0.5rem 0;
+}
+
+.storage-info .file-size-info {
+  color: #495057;
+  font-size: 0.9rem;
+}
+
+.storage-info .import-source {
+  color: #6c757d;
+  font-size: 0.85rem;
+  font-style: italic;
+}
+
+.storage-uri-value {
+  word-break: break-all;
+  background: #f8f9fa;
+  padding: 0.5rem;
+  border-radius: 4px;
+  display: inline-block;
+  max-width: 100%;
+}
+
+.no-storage-info {
+  margin-bottom: 1rem;
+  padding: 1rem;
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 4px;
+}
+
+.no-storage-info .info-message {
+  margin: 0;
+  color: #856404;
 }
 
 .file-upload-section {

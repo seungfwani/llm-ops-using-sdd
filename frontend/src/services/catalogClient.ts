@@ -86,6 +86,24 @@ export const catalogClient = {
     return response.data;
   },
 
+  async importFromHuggingFace(payload: {
+    hf_model_id: string;
+    name?: string;
+    version?: string;
+    model_type?: string;
+    owner_team?: string;
+    hf_token?: string;
+  }): Promise<Envelope<CatalogModel>> {
+    const response = await apiClient.post<Envelope<CatalogModel>>(
+      "/catalog/models/import-from-huggingface",
+      payload,
+      {
+        timeout: 1800000, // 30 minutes timeout for Hugging Face import (large models can take time)
+      }
+    );
+    return response.data;
+  },
+
   // Dataset methods
   async listDatasets(): Promise<Envelope<CatalogDataset>> {
     const response = await apiClient.get<Envelope<CatalogDataset>>("/catalog/datasets");

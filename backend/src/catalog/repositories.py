@@ -35,6 +35,17 @@ class ModelCatalogRepository:
         self.session.delete(entry)
         return True
 
+    def get_by_name_type_version(
+        self, name: str, model_type: str, version: str
+    ) -> models.ModelCatalogEntry | None:
+        """Get a model catalog entry by name, type, and version combination."""
+        stmt = select(models.ModelCatalogEntry).where(
+            models.ModelCatalogEntry.name == name,
+            models.ModelCatalogEntry.type == model_type,
+            models.ModelCatalogEntry.version == version,
+        )
+        return self.session.execute(stmt).scalar_one_or_none()
+
 
 class DatasetRepository:
     def __init__(self, session: Session):

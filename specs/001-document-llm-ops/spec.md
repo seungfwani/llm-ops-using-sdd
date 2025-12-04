@@ -250,6 +250,26 @@ can be rolled back without affecting other teams.
    request to the appropriate external provider (OpenAI, Ollama, etc.) based on
    the model's metadata, handles API responses and errors consistently, and
    tracks token usage for cost management.
+8. **Given** a developer deploys a serving endpoint with a specific runtime image
+   (e.g., vLLM or TGI), **When** the platform detects the runtime type from the
+   image name, **Then** it automatically configures runtime-specific arguments,
+   environment variables, and health probes for optimal model serving.
+9. **Given** a model is registered with Hugging Face model ID in metadata, **When**
+   a developer deploys it using TGI runtime, **Then** the platform uses the
+   Hugging Face model ID for direct download, avoiding S3 download and init
+   container overhead.
+10. **Given** a serving endpoint is deployed without GPU resources (CPU-only mode),
+    **When** the platform configures the deployment, **Then** it automatically
+    adjusts resource limits, sets CPU-specific environment variables, and configures
+    runtime arguments for CPU mode (e.g., `--device cpu` for vLLM).
+11. **Given** a serving endpoint deployment fails due to pod scheduling issues,
+    **When** a user checks the endpoint status, **Then** the platform reports
+    "deploying" status with details about scheduling failures (e.g., insufficient
+    resources, node selector mismatches).
+12. **Given** KServe is enabled in the platform configuration, **When** a developer
+    deploys a serving endpoint, **Then** the platform creates a KServe InferenceService
+    CRD instead of raw Kubernetes Deployment, and inference requests are routed through
+    KServe's predictor service.
 
 ---
 
@@ -637,6 +657,105 @@ unauthorized access.
     and finish reasons.
   - Support inference parameters (temperature, max_tokens) in the request.
   - Apply prompt templates if configured for the endpoint.
+- **FR-006m**: The serving subsystem MUST support automatic runtime detection and
+  configuration for different serving runtimes (vLLM, Text Generation Inference).
+  The platform MUST:
+  - Automatically detect the serving runtime type from the container image name
+    (e.g., "vllm" in image name indicates vLLM runtime, "text-generation" or "tgi"
+    indicates TGI runtime).
+  - Configure runtime-specific command arguments:
+    - **vLLM**: `--model`, `--host`, `--port`, `--served-model-name` arguments.
+      For CPU mode, `--device cpu` MUST be specified BEFORE `--model` to prevent
+      device type inference failures.
+    - **TGI**: `--model-id` (for Hugging Face model ID), `--hostname`, `--port`
+      arguments. TGI prefers Hugging Face model IDs over S3 URIs.
+  - Extract Hugging Face model ID from model metadata (`huggingface_model_id` field)
+    when available, especially for TGI deployments.
+  - Support fallback mechanisms when Hugging Face model ID is not available
+    (e.g., init container for S3 download, local path configuration).
+- **FR-006n**: The serving subsystem MUST configure runtime-specific environment
+  variables for optimal model serving. The platform MUST:
+  - **For TGI (Text Generation Inference)**:
+    - Set `HF_HUB_DOWNLOAD_TIMEOUT` (default: 1800 seconds) for large model downloads
+    - Configure `HF_HOME` to use ephemeral storage (`/tmp/hf_cache`) to prevent OOM
+    - Disable progress bars (`HF_HUB_DISABLE_PROGRESS_BARS=1`) to reduce memory usage
+    - Enable hf-transfer (`HF_HUB_ENABLE_HF_TRANSFER=1`) for faster downloads
+    - Disable telemetry (`HF_HUB_DISABLE_TELEMETRY=1`)
+    - Configure PyTorch CUDA allocation (`PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512`)
+    - For CPU mode: Disable Triton (`DISABLE_TRITON=1`, `MAMBA_DISABLE_TRITON=1`)
+      and disable torch compile (`TORCH_COMPILE_DISABLE=1`) to prevent driver errors
+  - **For vLLM**:
+    - Set `VLLM_LOGGING_LEVEL=DEBUG` for debugging device type issues
+    - For CPU mode: Set `VLLM_USE_CPU=1`, `CUDA_VISIBLE_DEVICES=""`,
+      `NVIDIA_VISIBLE_DEVICES=""`, and `VLLM_CPU_KVCACHE_SPACE=4` (GB)
+  - **Common environment variables**:
+    - `MODEL_STORAGE_URI`: S3 URI to model files
+    - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`: From Kubernetes secrets
+    - `AWS_ENDPOINT_URL`: From Kubernetes ConfigMap
+    - `AWS_DEFAULT_REGION`: Default region for S3 access
+- **FR-006o**: The serving subsystem MUST support init containers for model download
+  when required. The platform MUST:
+  - Use init containers for TGI deployments when Hugging Face model ID is not available
+    in model metadata, downloading model files from S3 to a shared volume before
+    the main container starts.
+  - Configure init containers with:
+    - AWS CLI image (`amazon/aws-cli:latest`) for S3 access
+    - Object storage credentials from Kubernetes secrets
+    - Separate resource limits (memory: 2Gi/4Gi, CPU: 1/2) to prevent OOM during
+      download
+    - EmptyDir volume (size limit: 100Gi, configurable) for sharing files with
+      main container
+  - Log warnings when TGI is deployed without Hugging Face model ID, recommending
+    Hugging Face import to get `huggingface_model_id` in metadata.
+  - Skip init container when Hugging Face model ID is available (TGI downloads
+    directly from Hugging Face Hub).
+- **FR-006p**: The serving subsystem MUST configure health probes appropriately for
+  different runtimes. The platform MUST:
+  - Configure liveness and readiness probes on `/health` and `/ready` endpoints
+    (port 8000) for all serving containers.
+  - **For TGI deployments**:
+    - Set longer initial delay (300 seconds) to allow model download and loading
+    - Increase failure thresholds (5 for liveness, 10 for readiness) to tolerate
+      long download times
+    - Use longer period (10 seconds) for readiness checks during download
+  - **For vLLM deployments**:
+    - Set shorter initial delay (120 seconds for liveness, 60 seconds for readiness)
+    - Use standard failure thresholds (3) and periods (5-10 seconds)
+  - Ensure probes do not interfere with model loading and allow sufficient time
+    for large model downloads.
+- **FR-006q**: The serving subsystem MUST normalize route paths for consistent
+  Ingress configuration. The platform MUST:
+  - Strip leading and trailing whitespace from route paths
+  - Ensure routes start with `/` (absolute paths)
+  - Remove trailing slashes (except for root path `/`)
+  - Normalize routes before creating Ingress resources to prevent routing issues
+- **FR-006r**: The serving subsystem MUST provide accurate endpoint status by checking
+  actual pod status. The platform MUST:
+  - Check pod phases (Pending, Running, Failed, Error) to determine endpoint health
+  - Detect scheduling issues (Unschedulable, Insufficient resources) and report
+    as "deploying" status
+  - Count ready pods vs. total pods to determine "healthy", "degraded", or "failed"
+    status
+  - Support both KServe InferenceService pods (labeled with
+    `serving.kserve.io/inferenceservice={endpoint_name}`) and raw Deployment pods
+    (labeled with `app={endpoint_name}`)
+  - Fall back to KServe condition status or Deployment status if pod status is
+    unavailable
+  - Map pod status to endpoint status: "healthy" (all pods running and ready),
+    "degraded" (some pods ready), "failed" (any pod failed), "deploying" (pods
+    pending or creating)
+- **FR-006s**: The serving subsystem MUST configure image pull policy appropriately.
+  The platform MUST:
+  - Set `imagePullPolicy: IfNotPresent` for serving containers to avoid pulling
+    latest from remote registry when local image exists, reducing ImagePullBackOff
+    errors during frequent redeployments
+  - Allow users to override image pull policy if needed for specific deployments
+- **FR-006t**: The serving subsystem MUST pass model metadata to deployment functions.
+  The platform MUST:
+  - Extract model metadata from catalog entries and pass to deployment functions
+  - Use metadata fields such as `huggingface_model_id` for runtime configuration
+  - Support additional metadata fields for future runtime-specific configurations
+  - Preserve metadata integrity during deployment and redeployment operations
 - **FR-007**: Prompt management MUST support versioned templates, A/B testing,
   and quick rollback while capturing experiment outcomes and reviewer approvals.
 - **FR-008**: Every `/llm-ops/v1` endpoint MUST reply with HTTP 200 +
@@ -1092,27 +1211,51 @@ deployment:
 
 - **Endpoint Rollback**: `POST /llm-ops/v1/serving/endpoints/{endpointId}/rollback`
   - Reverts an endpoint to its previous deployment version
-  - Maintains deployment history for rollback operations
+  - For KServe InferenceServices: Scales down replicas to 0 (minReplicas=0, maxReplicas=0)
+  - For raw Deployments: Scales down replicas to 0
   - Updates endpoint status and Kubernetes resources accordingly
+  - Maintains deployment history for rollback operations
 
 - **Endpoint Redeployment**: `POST /llm-ops/v1/serving/endpoints/{endpointId}/redeploy`
   - Redeploys an endpoint with the same or updated configuration
-  - Supports optional parameters: `useGpu` (boolean) and `servingRuntimeImage` (string)
+  - Supports optional query parameters:
+    - `useGpu` (boolean): Override GPU setting
+    - `servingRuntimeImage` (string): Override runtime image
+    - `cpuRequest`, `cpuLimit`, `memoryRequest`, `memoryLimit` (string): Override resource limits
   - Allows configuration updates without full endpoint recreation
   - Preserves existing configuration unless explicitly overridden
+  - Works with both KServe InferenceServices and raw Deployments
 
 - **Endpoint Deletion**: `DELETE /llm-ops/v1/serving/endpoints/{endpointId}`
   - Deletes both the database record and associated Kubernetes resources
+  - For KServe InferenceServices: Deletes InferenceService CRD (automatically cleans up resources)
+  - For raw Deployments: Deletes Deployment, Service, HPA, and Ingress resources
   - Handles partial failures gracefully (e.g., if Kubernetes resources are
     already deleted)
   - Logs deletion operations to the audit log
+
+- **Endpoint Status**: `GET /llm-ops/v1/serving/endpoints/{endpointId}`
+  - Retrieves endpoint status by checking actual pod status for accuracy
+  - For KServe: Checks InferenceService status and pod phases
+  - For raw Deployments: Checks Deployment status and pod phases
+  - Returns status: "healthy", "degraded", "failed", or "deploying"
+  - Includes replica counts (total, ready, available)
 
 - **Runtime Image Tracking**: Serving endpoints store and return the `runtimeImage`
   field to track which container image is used for each deployment. This supports
   debugging, version tracking, and ensures consistent redeployments.
 
-These APIs support **FR-006j** and **FR-006k**, providing complete endpoint
-lifecycle management.
+- **KServe Support**: When `use_kserve=true` is configured, endpoints are deployed
+  as KServe InferenceService CRDs instead of raw Kubernetes Deployments. The
+  platform automatically:
+  - Creates InferenceService with proper predictor configuration
+  - Configures autoscaling (minReplicas, maxReplicas)
+  - Sets route annotation for ingress routing
+  - Handles KServe-specific status checking and rollback operations
+
+These APIs support **FR-006j**, **FR-006k**, **FR-006m**, **FR-006n**, **FR-006p**,
+and **FR-006r**, providing complete endpoint lifecycle management with support for
+both KServe and raw Kubernetes deployments.
 
 ### Training API
 
@@ -1240,8 +1383,15 @@ The platform provides a unified inference API for chat completions:
   - Accepts chat completion requests with message history
   - Supports inference parameters: `temperature` (0.0-2.0), `max_tokens` (1-4000)
   - Automatically routes requests to the appropriate backend:
-    - Internal models: Routes to Kubernetes pods via HTTP
-    - External models: Routes to external API clients (OpenAI, Ollama, etc.)
+    - **Internal models (KServe)**: Routes to KServe InferenceService predictor
+      service (`{endpoint-name}-predictor-default.{namespace}.svc.cluster.local`)
+      using OpenAI-compatible API at `/v1/chat/completions`
+    - **Internal models (raw Deployment)**: Routes to Kubernetes Service
+      (`{endpoint-name}-svc.{namespace}.svc.cluster.local:8000`) using
+      OpenAI-compatible API at `/v1/chat/completions`
+    - **External models**: Routes to external API clients (OpenAI, Ollama, etc.)
+  - Supports local development override via `serving_local_base_url` setting
+    (e.g., port-forwarded service at `http://localhost:8001`)
   - Applies prompt templates if configured for the endpoint
   - Returns standardized responses with:
     - Message choices (role, content, finish_reason)
@@ -1250,14 +1400,29 @@ The platform provides a unified inference API for chat completions:
 
 - **Route Resolution**: The API automatically resolves route names to serving
   endpoints by searching across all environments (dev, stg, prod), preferring
-  healthy endpoints.
+  healthy endpoints. Routes are normalized (leading/trailing whitespace removed,
+  absolute path ensured) before matching.
+
+- **KServe Inference**: When KServe is enabled, inference requests are routed
+  to KServe InferenceService predictor pods. KServe automatically handles:
+  - Load balancing across predictor replicas
+  - Autoscaling based on traffic
+  - Canary deployments and traffic splitting (future)
+  - Standardized inference API endpoints
+
+- **Raw Deployment Inference**: When KServe is disabled, inference requests are
+  routed directly to Kubernetes Service endpoints. The platform assumes:
+  - Serving runtime exposes OpenAI-compatible API at `/v1/chat/completions`
+  - Service is accessible via cluster DNS
+  - Health probes are configured for endpoint availability
 
 - **External Model Support**: External models are automatically detected based
   on model metadata and routed to the appropriate provider client, maintaining
   consistent response format and error handling.
 
-This functionality supports **FR-006l**, providing a unified interface for
-model inference regardless of deployment type.
+This functionality supports **FR-006l**, **FR-006m**, and **FR-006q**, providing
+a unified interface for model inference regardless of deployment type (KServe,
+raw Kubernetes, or external API).
 
 ### Additional Governance APIs
 
@@ -1304,21 +1469,36 @@ management capabilities.
   - **KServe Integration**: The platform uses KServe (Kubernetes-native model serving
     framework) for deploying internal models. KServe provides standardized inference
     APIs, automatic scaling, canary deployments, and traffic splitting capabilities.
-    KServe is enabled by default (`use_kserve=true`) but can be disabled to use raw
-    Kubernetes Deployments for legacy compatibility.
+    KServe is disabled by default (`use_kserve=false`) but can be enabled to use
+    KServe InferenceService CRDs instead of raw Kubernetes Deployments. When KServe
+    is disabled, the platform falls back to raw Kubernetes Deployments for legacy
+    compatibility.
+  - **KServe InferenceService CRD**: When KServe is enabled, the platform creates
+    `InferenceService` CustomResources (API version `serving.kserve.io/v1beta1`)
+    instead of raw Deployments. KServe automatically manages Deployments, Services,
+    and autoscaling based on the InferenceService spec. The InferenceService includes:
+    - Predictor container configuration (image, args, env, resources)
+    - Min/max replicas for autoscaling
+    - Route annotation (`serving.kserve.io/route`) for ingress routing
+    - Resource requests and limits (CPU, memory, GPU)
+  - **KServe Status Checking**: The platform checks KServe InferenceService status
+    by querying the CustomResource status field, including:
+    - Ready condition status
+    - Component replicas (predictor readyReplicas, availableReplicas)
+    - Pod status for accurate health reporting
+  - **KServe Route Annotation**: Routes are stored in InferenceService annotations
+    (`serving.kserve.io/route`) and normalized before storage (leading/trailing
+    whitespace removed, absolute path ensured).
   - **Model Loading from Object Storage**: Internal models are loaded directly
     from object storage (MinIO/S3) using the `storage_uri` stored in the catalog
     entry. No separate container image build process is required for model files.
   - **Model Serving Runtime**: The platform uses a configurable model serving
-    runtime (default: `python:3.11-slim` for local testing, `ghcr.io/vllm/vllm:latest`
-    for production) that can load models from object storage at container startup.
-    The runtime image is configurable via `serving_runtime_image` setting (supports
-    vLLM, Text Generation Inference, etc.). The platform MUST handle cases where
-    the specified image does not exist (ImagePullBackOff errors) by providing
-    clear error messages and alternative image options.
-  - **KServe InferenceService**: When KServe is enabled, the platform creates
-    `InferenceService` CustomResources instead of raw Deployments. KServe automatically
-    manages Deployments, Services, and autoscaling based on the InferenceService spec.
+    runtime (default: `ghcr.io/huggingface/text-generation-inference:latest` for
+    TGI) that can load models from object storage at container startup. The runtime
+    image is configurable via `serving_runtime_image` setting (supports vLLM, Text
+    Generation Inference, etc.). The platform MUST handle cases where the specified
+    image does not exist (ImagePullBackOff errors) by providing clear error messages
+    and alternative image options.
   - **Object Storage Access**: Serving containers receive object storage credentials
     and endpoint configuration via Kubernetes secrets (`llm-ops-object-store-credentials`)
     and ConfigMaps (`llm-ops-object-store-config`). The `MODEL_STORAGE_URI` environment
@@ -1327,11 +1507,20 @@ management capabilities.
     model entry has a `storage_uri` (model files must be uploaded via
     `POST /catalog/models/{model_id}/upload`).
   - **Container Image Registry**: The serving runtime images (vLLM, TGI, etc.)
-    are pulled from public container registries (Docker Hub, Hugging Face, etc.)
-    or can be configured to use private registries via Kubernetes image pull secrets.
+    are pulled from public container registries (Docker Hub, Hugging Face, GitHub
+    Container Registry, etc.) or can be configured to use private registries via
+    Kubernetes image pull secrets.
   - **KServe Prerequisites**: KServe must be installed in the Kubernetes cluster
-    before deploying models. The platform assumes KServe is installed in the
-    `kserve` namespace (configurable via `kserve_namespace` setting).
+    before deploying models with `use_kserve=true`. The platform assumes KServe is
+    installed in the `kserve` namespace (configurable via `kserve_namespace` setting).
+    KServe requires Knative Serving and Istio for full functionality, but the platform
+    can work with minimal KServe installation (InferenceService CRD only).
+  - **KServe Rollback**: When rolling back KServe InferenceServices, the platform
+    scales down replicas to 0 (minReplicas=0, maxReplicas=0) instead of deleting
+    the resource, allowing for quick restoration if needed.
+  - **KServe Deletion**: When deleting KServe InferenceServices, the platform uses
+    the CustomObjectsApi to delete the InferenceService CRD, which automatically
+    cleans up associated Kubernetes resources (Deployments, Services, etc.).
   - **Environment Configuration**: The platform uses environment variables for
     configuration, loaded from a `.env` file in the backend directory. A template
     file `env.example` is provided with all available configuration options. The

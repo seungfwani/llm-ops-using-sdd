@@ -20,6 +20,10 @@ class ServingEndpointRequest(BaseModel):
     promptPolicyId: Optional[str] = Field(default=None)
     useGpu: Optional[bool] = Field(default=None, description="Whether to request GPU resources. If not provided, uses default from settings")
     servingRuntimeImage: Optional[str] = Field(default=None, description="Container image for model serving runtime (e.g., vLLM, TGI). If not provided, uses default from settings")
+    cpuRequest: Optional[str] = Field(default=None, description="CPU request (e.g., '2', '1000m'). If not provided, uses default from settings")
+    cpuLimit: Optional[str] = Field(default=None, description="CPU limit (e.g., '4', '2000m'). If not provided, uses default from settings")
+    memoryRequest: Optional[str] = Field(default=None, description="Memory request (e.g., '4Gi', '2G'). If not provided, uses default from settings")
+    memoryLimit: Optional[str] = Field(default=None, description="Memory limit (e.g., '8Gi', '4G'). If not provided, uses default from settings")
 
 
 class ServingEndpointResponse(BaseModel):
@@ -33,6 +37,11 @@ class ServingEndpointResponse(BaseModel):
     status: str
     minReplicas: int
     maxReplicas: int
+    useGpu: Optional[bool] = None
+    cpuRequest: Optional[str] = None
+    cpuLimit: Optional[str] = None
+    memoryRequest: Optional[str] = None
+    memoryLimit: Optional[str] = None
     createdAt: datetime
 
     class Config:

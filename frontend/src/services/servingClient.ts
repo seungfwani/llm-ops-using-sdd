@@ -13,6 +13,10 @@ export interface ServingEndpointRequest {
   promptPolicyId?: string;
   useGpu?: boolean; // Whether to request GPU resources. If not provided, uses default from settings
   servingRuntimeImage?: string; // Container image for model serving runtime (e.g., vLLM, TGI). If not provided, uses default from settings
+  cpuRequest?: string; // CPU request (e.g., '2', '1000m'). If not provided, uses default from settings
+  cpuLimit?: string; // CPU limit (e.g., '4', '2000m'). If not provided, uses default from settings
+  memoryRequest?: string; // Memory request (e.g., '4Gi', '2G'). If not provided, uses default from settings
+  memoryLimit?: string; // Memory limit (e.g., '8Gi', '4G'). If not provided, uses default from settings
 }
 
 export interface ServingEndpoint {
@@ -80,13 +84,33 @@ export const servingClient = {
     return response.data;
   },
 
-  async redeployEndpoint(endpointId: string, useGpu?: boolean, servingRuntimeImage?: string): Promise<EnvelopeServingEndpoint> {
+  async redeployEndpoint(
+    endpointId: string,
+    useGpu?: boolean,
+    servingRuntimeImage?: string,
+    cpuRequest?: string,
+    cpuLimit?: string,
+    memoryRequest?: string,
+    memoryLimit?: string
+  ): Promise<EnvelopeServingEndpoint> {
     const params = new URLSearchParams();
     if (useGpu !== undefined) {
       params.append("useGpu", useGpu.toString());
     }
     if (servingRuntimeImage !== undefined) {
       params.append("servingRuntimeImage", servingRuntimeImage);
+    }
+    if (cpuRequest !== undefined && cpuRequest.trim()) {
+      params.append("cpuRequest", cpuRequest.trim());
+    }
+    if (cpuLimit !== undefined && cpuLimit.trim()) {
+      params.append("cpuLimit", cpuLimit.trim());
+    }
+    if (memoryRequest !== undefined && memoryRequest.trim()) {
+      params.append("memoryRequest", memoryRequest.trim());
+    }
+    if (memoryLimit !== undefined && memoryLimit.trim()) {
+      params.append("memoryLimit", memoryLimit.trim());
     }
     const queryString = params.toString();
     const url = `/serving/endpoints/${endpointId}/redeploy${queryString ? `?${queryString}` : ""}`;

@@ -72,6 +72,11 @@ class ServingDeployer:
         namespace: str = "default",
         serving_runtime_image: Optional[str] = None,
         use_gpu: Optional[bool] = None,
+        cpu_request: Optional[str] = None,
+        cpu_limit: Optional[str] = None,
+        memory_request: Optional[str] = None,
+        memory_limit: Optional[str] = None,
+        model_metadata: Optional[dict] = None,
     ) -> str:
         """
         Deploy a serving endpoint to Kubernetes with HPA.
@@ -86,6 +91,10 @@ class ServingDeployer:
             namespace: Kubernetes namespace
             serving_runtime_image: Container image for model serving runtime (e.g., vLLM, TGI)
             use_gpu: Whether to request GPU resources. If None, uses settings.use_gpu
+            cpu_request: CPU request (e.g., '2', '1000m'). If None, uses default from settings
+            cpu_limit: CPU limit (e.g., '4', '2000m'). If None, uses default from settings
+            memory_request: Memory request (e.g., '4Gi', '2G'). If None, uses default from settings
+            memory_limit: Memory limit (e.g., '8Gi', '4G'). If None, uses default from settings
 
         Returns:
             Deployment UID
@@ -115,42 +124,47 @@ class ServingDeployer:
                 namespace=namespace,
                 serving_runtime_image=serving_runtime_image,
                 use_gpu=use_gpu,
+                model_metadata=model_metadata,
             )
         
         # Fallback to raw Deployment (legacy mode)
         # Create Deployment with model serving runtime
         # The runtime (vLLM/TGI) will load models from object storage at startup
         
-        # Build resource requirements based on GPU setting and settings
+        # Build resource requirements
+        # Priority: explicit parameters > settings defaults based on GPU setting
         if use_gpu:
             resource_requests = {
-                "memory": settings.serving_memory_request,
-                "cpu": settings.serving_cpu_request,
+                "memory": memory_request or settings.serving_memory_request,
+                "cpu": cpu_request or settings.serving_cpu_request,
                 "nvidia.com/gpu": "1"
             }
             resource_limits = {
-                "memory": settings.serving_memory_limit,
-                "cpu": settings.serving_cpu_limit,
+                "memory": memory_limit or settings.serving_memory_limit,
+                "cpu": cpu_limit or settings.serving_cpu_limit,
                 "nvidia.com/gpu": "1"
             }
         else:
             # CPU-only deployment with reduced resources
             resource_requests = {
-                "memory": settings.serving_cpu_only_memory_request,
-                "cpu": settings.serving_cpu_only_cpu_request,
+                "memory": memory_request or settings.serving_cpu_only_memory_request,
+                "cpu": cpu_request or settings.serving_cpu_only_cpu_request,
             }
             resource_limits = {
-                "memory": settings.serving_cpu_only_memory_limit,
-                "cpu": settings.serving_cpu_only_cpu_limit,
+                "memory": memory_limit or settings.serving_cpu_only_memory_limit,
+                "cpu": cpu_limit or settings.serving_cpu_only_cpu_limit,
             }
         
         # Determine if this is a vLLM image (check image name)
         is_vllm = "vllm" in serving_runtime_image.lower()
         
-        # Build command arguments for vLLM
-        # vLLM requires --model argument and supports S3 paths directly
+        # Determine if this is a TGI image (check image name)
+        is_tgi = "text-generation" in serving_runtime_image.lower() or "tgi" in serving_runtime_image.lower()
+        
+        # Build command arguments for vLLM or TGI
         container_args = None
         if is_vllm:
+            # vLLM requires --model argument and supports S3 paths directly
             # For CPU mode, device must be specified BEFORE model argument
             # to prevent device type inference from failing
             if not use_gpu:
@@ -167,6 +181,30 @@ class ServingDeployer:
                     "--host", "0.0.0.0",
                     "--port", "8000",
                     "--served-model-name", endpoint_name,
+                ]
+        elif is_tgi:
+            # TGI uses --model-id for Hugging Face model ID
+            # Try to extract Hugging Face model ID from metadata
+            hf_model_id = None
+            if model_metadata and isinstance(model_metadata, dict):
+                hf_model_id = model_metadata.get("huggingface_model_id")
+            
+            if hf_model_id:
+                # Use Hugging Face model ID - TGI will download it
+                container_args = [
+                    "--model-id", hf_model_id,
+                    "--hostname", "0.0.0.0",
+                    "--port", "8000",
+                ]
+                logger.info(f"Using Hugging Face model ID for TGI: {hf_model_id}")
+            else:
+                # Fallback: TGI may not work well without HF model ID
+                logger.warning("No Hugging Face model ID found in metadata for TGI")
+                logger.warning("TGI requires Hugging Face model ID. Model may fail to load.")
+                # Still try to set MODEL_ID env var as fallback
+                container_args = [
+                    "--hostname", "0.0.0.0",
+                    "--port", "8000",
                 ]
         
         # Build environment variables list
@@ -208,6 +246,33 @@ class ServingDeployer:
             ),
         ]
         
+        # Add TGI-specific environment variables for better download handling
+        if is_tgi:
+            # Increase download timeout and retry settings
+            env_vars.append(client.V1EnvVar(name="HF_HUB_DOWNLOAD_TIMEOUT", value="1800"))  # 30 minutes timeout
+            env_vars.append(client.V1EnvVar(name="HF_HUB_DISABLE_EXPERIMENTAL_WARNING", value="1"))
+            # Set Hugging Face cache directory to use ephemeral storage (if available)
+            # This helps prevent OOM during download by using disk cache
+            # Use HF_HOME only (TRANSFORMERS_CACHE is deprecated)
+            env_vars.append(client.V1EnvVar(name="HF_HOME", value="/tmp/hf_cache"))
+            # Disable progress bars to reduce memory usage during download
+            env_vars.append(client.V1EnvVar(name="HF_HUB_DISABLE_PROGRESS_BARS", value="1"))
+            # Use streaming download to reduce memory footprint
+            env_vars.append(client.V1EnvVar(name="HF_HUB_ENABLE_HF_TRANSFER", value="1"))  # Faster downloads
+            # Set low memory mode
+            env_vars.append(client.V1EnvVar(name="HF_HUB_DISABLE_TELEMETRY", value="1"))
+            # Reduce memory usage during model loading
+            env_vars.append(client.V1EnvVar(name="PYTORCH_CUDA_ALLOC_CONF", value="max_split_size_mb:512"))
+            
+            # CPU mode specific: Disable Triton to prevent driver initialization errors
+            if not use_gpu:
+                # Disable Triton (used by Mamba models) in CPU mode
+                env_vars.append(client.V1EnvVar(name="DISABLE_TRITON", value="1"))
+                # Prevent Mamba from trying to use Triton
+                env_vars.append(client.V1EnvVar(name="MAMBA_DISABLE_TRITON", value="1"))
+                # Use CPU fallback for operations
+                env_vars.append(client.V1EnvVar(name="TORCH_COMPILE_DISABLE", value="1"))
+        
         # Add vLLM-specific environment variables
         if is_vllm:
             # Enable debug logging for vLLM (helps diagnose device type issues)
@@ -225,6 +290,104 @@ class ServingDeployer:
                 # Prevent vLLM from trying to detect GPU
                 env_vars.append(client.V1EnvVar(name="NVIDIA_VISIBLE_DEVICES", value=""))
         
+        # For TGI, check if we need init container (only if no HF model ID)
+        init_containers = []
+        volumes = []
+        volume_mounts = []
+        
+        if is_tgi:
+            # Check if we have Hugging Face model ID (already set in container_args above)
+            # If we have HF model ID, TGI will download directly - no init container needed
+            hf_model_id_in_args = container_args and "--model-id" in container_args
+            
+            if not hf_model_id_in_args:
+                # No HF model ID - try to use init container to download from S3
+                # But TGI doesn't work well with local paths, so this is a fallback
+                logger.warning("TGI without Hugging Face model ID may not work correctly")
+                logger.warning("Consider importing model from Hugging Face to get huggingface_model_id in metadata")
+                
+                # Create init container to download model from S3 to shared volume
+                # This prevents OOM during model download in the main container
+                model_local_path = "/models/model"
+                
+                # Create volume for sharing model files between init and main containers
+                volumes.append(
+                    client.V1Volume(
+                        name="model-storage",
+                        empty_dir=client.V1EmptyDirVolumeSource(size_limit="100Gi"),  # Adjust based on model size
+                    )
+                )
+                
+                # Volume mount for both containers
+                volume_mount = client.V1VolumeMount(
+                    name="model-storage",
+                    mount_path=model_local_path,
+                )
+                volume_mounts.append(volume_mount)
+                
+                # Init container to download from S3
+                init_container = client.V1Container(
+                    name=f"{endpoint_name}-model-downloader",
+                    image="amazon/aws-cli:latest",  # AWS CLI image for S3 access
+                    command=["/bin/sh"],
+                    args=[
+                        "-c",
+                        f"""
+                        set -e
+                        echo "Downloading model from {model_storage_uri}..."
+                        # Extract bucket and prefix from S3 URI
+                        BUCKET=$(echo {model_storage_uri} | sed 's|s3://||' | cut -d'/' -f1)
+                        PREFIX=$(echo {model_storage_uri} | sed 's|s3://||' | cut -d'/' -f2-)
+                        echo "Bucket: $BUCKET, Prefix: $PREFIX"
+                        # Download all files recursively
+                        aws s3 sync s3://$BUCKET/$PREFIX {model_local_path} --endpoint-url $AWS_ENDPOINT_URL
+                        echo "Model download completed"
+                        ls -lah {model_local_path}
+                        """,
+                    ],
+                    env=[
+                        client.V1EnvVar(
+                            name="AWS_ACCESS_KEY_ID",
+                            value_from=client.V1EnvVarSource(
+                                secret_key_ref=client.V1SecretKeySelector(
+                                    name="llm-ops-object-store-credentials",
+                                    key="access-key-id",
+                                )
+                            ),
+                        ),
+                        client.V1EnvVar(
+                            name="AWS_SECRET_ACCESS_KEY",
+                            value_from=client.V1EnvVarSource(
+                                secret_key_ref=client.V1SecretKeySelector(
+                                    name="llm-ops-object-store-credentials",
+                                    key="secret-access-key",
+                                )
+                            ),
+                        ),
+                        client.V1EnvVar(
+                            name="AWS_ENDPOINT_URL",
+                            value_from=client.V1EnvVarSource(
+                                config_map_key_ref=client.V1ConfigMapKeySelector(
+                                    name="llm-ops-object-store-config",
+                                    key="endpoint-url",
+                                )
+                            ),
+                        ),
+                        client.V1EnvVar(name="AWS_DEFAULT_REGION", value="us-east-1"),
+                    ],
+                    volume_mounts=[volume_mount],
+                    resources=client.V1ResourceRequirements(
+                        requests={"memory": "2Gi", "cpu": "1"},
+                        limits={"memory": "4Gi", "cpu": "2"},  # Separate resources for download
+                    ),
+                )
+                init_containers.append(init_container)
+                
+                # Set MODEL_ID env var to local path as fallback
+                if not container_args:
+                    container_args = []
+                env_vars.append(client.V1EnvVar(name="MODEL_ID", value=model_local_path))
+        
         container = client.V1Container(
             name=f"{endpoint_name}-serving",
             image=serving_runtime_image,
@@ -236,19 +399,20 @@ class ServingDeployer:
                 limits=resource_limits,
             ),
             env=env_vars,
+            volume_mounts=volume_mounts,
             liveness_probe=client.V1Probe(
                 http_get=client.V1HTTPGetAction(path="/health", port=8000),
-                initial_delay_seconds=120,  # Longer delay for model loading (vLLM can take time)
+                initial_delay_seconds=300 if is_tgi else 120,  # Longer delay for TGI model download (5 min)
                 period_seconds=10,
                 timeout_seconds=5,
-                failure_threshold=3,
+                failure_threshold=5 if is_tgi else 3,  # More retries for TGI
             ),
             readiness_probe=client.V1Probe(
                 http_get=client.V1HTTPGetAction(path="/ready", port=8000),
-                initial_delay_seconds=60,  # Longer delay for model loading
-                period_seconds=5,
-                timeout_seconds=3,
-                failure_threshold=3,
+                initial_delay_seconds=300 if is_tgi else 60,  # Longer delay for TGI model download (5 min)
+                period_seconds=10 if is_tgi else 5,  # Check less frequently during download
+                timeout_seconds=5,
+                failure_threshold=10 if is_tgi else 3,  # More retries for TGI (allow up to 5 min download)
             ),
         )
 
@@ -261,7 +425,11 @@ class ServingDeployer:
                 metadata=client.V1ObjectMeta(
                     labels={"app": endpoint_name, "endpoint-id": deployment_id}
                 ),
-                spec=client.V1PodSpec(containers=[container]),
+                spec=client.V1PodSpec(
+                    containers=[container],
+                    init_containers=init_containers if init_containers else None,
+                    volumes=volumes if volumes else None,
+                ),
             ),
         )
 
@@ -376,6 +544,7 @@ class ServingDeployer:
         namespace: str = "default",
         serving_runtime_image: str = "vllm/vllm-openai:latest",
         use_gpu: bool = True,
+        model_metadata: Optional[dict] = None,
     ) -> str:
         """
         Deploy a serving endpoint using KServe InferenceService CRD.
@@ -451,6 +620,9 @@ class ServingDeployer:
             else:
                 container_args = None
 
+            # Detect TGI image
+            is_tgi_kserve = "text-generation" in serving_runtime_image.lower() or "tgi" in serving_runtime_image.lower()
+
             # Base environment (S3/object store access)
             env_vars = [
                 {
@@ -490,6 +662,73 @@ class ServingDeployer:
                     "value": "us-east-1",  # Default region, can be made configurable
                 },
             ]
+
+            # Add TGI-specific environment variables for better download handling
+            if is_tgi_kserve:
+                # Try to extract Hugging Face model ID from metadata if available
+                hf_model_id = None
+                if model_metadata and isinstance(model_metadata, dict):
+                    hf_model_id = model_metadata.get("huggingface_model_id")
+                
+                env_vars.extend([
+                    {
+                        "name": "HF_HUB_DOWNLOAD_TIMEOUT",
+                        "value": "1800",  # 30 minutes timeout
+                    },
+                    {
+                        "name": "HF_HUB_DISABLE_EXPERIMENTAL_WARNING",
+                        "value": "1",
+                    },
+                    {
+                        "name": "HF_HOME",
+                        "value": "/tmp/hf_cache",  # Use ephemeral storage for cache
+                    },
+                    {
+                        "name": "HF_HUB_DISABLE_PROGRESS_BARS",
+                        "value": "1",  # Disable progress bars to reduce memory usage
+                    },
+                    {
+                        "name": "HF_HUB_ENABLE_HF_TRANSFER",
+                        "value": "1",  # Faster downloads with hf-transfer
+                    },
+                    {
+                        "name": "HF_HUB_DISABLE_TELEMETRY",
+                        "value": "1",
+                    },
+                    {
+                        "name": "PYTORCH_CUDA_ALLOC_CONF",
+                        "value": "max_split_size_mb:512",  # Reduce memory usage
+                    },
+                ])
+                
+                # CPU mode specific: Disable Triton to prevent driver initialization errors
+                if not use_gpu:
+                    env_vars.extend([
+                        {
+                            "name": "DISABLE_TRITON",
+                            "value": "1",
+                        },
+                        {
+                            "name": "MAMBA_DISABLE_TRITON",
+                            "value": "1",
+                        },
+                        {
+                            "name": "TORCH_COMPILE_DISABLE",
+                            "value": "1",
+                        },
+                    ])
+                
+                # Set MODEL_ID for TGI
+                if hf_model_id:
+                    env_vars.append({
+                        "name": "MODEL_ID",
+                        "value": hf_model_id,
+                    })
+                    logger.info(f"Using Hugging Face model ID for TGI (KServe): {hf_model_id}")
+                else:
+                    # TGI requires MODEL_ID - if not available, this will fail
+                    logger.warning("No Hugging Face model ID found in metadata for TGI (KServe)")
+                    logger.warning("TGI requires MODEL_ID environment variable. Model may fail to load.")
 
             # Add vLLM‑specific environment variables only when using a vLLM image
             if is_vllm:

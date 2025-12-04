@@ -88,3 +88,14 @@ class EnvelopeDatasetList(BaseModel):
     message: str = ""
     data: Optional[List[DatasetResponse]] = None
 
+
+class HuggingFaceImportRequest(BaseModel):
+    """Request schema for importing a model from Hugging Face."""
+
+    hf_model_id: str = Field(..., description="Hugging Face model ID (e.g., 'microsoft/DialoGPT-small')")
+    name: Optional[str] = Field(None, description="Model name (defaults to last part of hf_model_id)")
+    version: str = Field(default="1.0.0", description="Model version")
+    model_type: str = Field(default="base", pattern="^(base|fine-tuned|external)$", description="Model type")
+    owner_team: str = Field(default="ml-platform", description="Owner team name")
+    hf_token: Optional[str] = Field(None, description="Hugging Face API token (for gated models)")
+

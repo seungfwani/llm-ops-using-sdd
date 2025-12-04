@@ -109,6 +109,58 @@
               If set, this image will be used on the next redeploy and recorded on the endpoint. Leave empty to keep current/default image.
             </p>
           </dd>
+
+          <dt>CPU Request Override</dt>
+          <dd>
+            <input
+              v-model="redeployCpuRequest"
+              type="text"
+              placeholder="e.g., 2 or 1000m"
+              class="resource-input"
+            />
+            <p class="help-text">
+              CPU request for the next redeploy (e.g., '2' for 2 cores, '1000m' for 1000 millicores). Leave empty to keep current/default.
+            </p>
+          </dd>
+
+          <dt>CPU Limit Override</dt>
+          <dd>
+            <input
+              v-model="redeployCpuLimit"
+              type="text"
+              placeholder="e.g., 4 or 2000m"
+              class="resource-input"
+            />
+            <p class="help-text">
+              CPU limit for the next redeploy (e.g., '4' for 4 cores, '2000m' for 2000 millicores). Leave empty to keep current/default.
+            </p>
+          </dd>
+
+          <dt>Memory Request Override</dt>
+          <dd>
+            <input
+              v-model="redeployMemoryRequest"
+              type="text"
+              placeholder="e.g., 4Gi or 2G"
+              class="resource-input"
+            />
+            <p class="help-text">
+              Memory request for the next redeploy (e.g., '4Gi' for 4 gibibytes, '2G' for 2 gigabytes). Leave empty to keep current/default.
+            </p>
+          </dd>
+
+          <dt>Memory Limit Override</dt>
+          <dd>
+            <input
+              v-model="redeployMemoryLimit"
+              type="text"
+              placeholder="e.g., 8Gi or 4G"
+              class="resource-input"
+            />
+            <p class="help-text">
+              Memory limit for the next redeploy (e.g., '8Gi' for 8 gibibytes, '4G' for 4 gigabytes). Leave empty to keep current/default.
+            </p>
+          </dd>
         </dl>
       </div>
 
@@ -160,6 +212,10 @@ const redeploying = ref(false);
 const redeployGpuOverride = ref<string>('');
 const runtimeImageSelection = ref<string>('');
 const customRuntimeImage = ref<string>('');
+const redeployCpuRequest = ref<string>('');
+const redeployCpuLimit = ref<string>('');
+const redeployMemoryRequest = ref<string>('');
+const redeployMemoryLimit = ref<string>('');
 
 async function fetchEndpoint() {
   const endpointId = route.params.id as string;
@@ -230,10 +286,20 @@ async function handleRedeploy() {
       runtimeImageOverride = runtimeImageSelection.value;
     }
 
+    // Prepare CPU/memory overrides (only include if set)
+    const cpuRequestOverride = redeployCpuRequest.value.trim() || undefined;
+    const cpuLimitOverride = redeployCpuLimit.value.trim() || undefined;
+    const memoryRequestOverride = redeployMemoryRequest.value.trim() || undefined;
+    const memoryLimitOverride = redeployMemoryLimit.value.trim() || undefined;
+
     const response = await servingClient.redeployEndpoint(
       endpoint.value.id,
       useGpuOverride,
-      runtimeImageOverride
+      runtimeImageOverride,
+      cpuRequestOverride,
+      cpuLimitOverride,
+      memoryRequestOverride,
+      memoryLimitOverride
     );
     if (response.status === "success") {
       alert('Endpoint redeployment started successfully. Status will update shortly.');

@@ -37,6 +37,10 @@ class ServingService:
         prompt_policy_id: Optional[str] = None,
         use_gpu: Optional[bool] = None,
         serving_runtime_image: Optional[str] = None,
+        cpu_request: Optional[str] = None,
+        cpu_limit: Optional[str] = None,
+        memory_request: Optional[str] = None,
+        memory_limit: Optional[str] = None,
     ) -> catalog_models.ServingEndpoint:
         """
         Deploy an approved model to a serving endpoint.
@@ -50,6 +54,11 @@ class ServingService:
             autoscale_policy: HPA configuration
             prompt_policy_id: Optional prompt template ID
             use_gpu: Whether to request GPU resources. If None, uses settings.use_gpu
+            serving_runtime_image: Container image for serving runtime
+            cpu_request: CPU request (e.g., '2', '1000m'). If None, uses default from settings
+            cpu_limit: CPU limit (e.g., '4', '2000m'). If None, uses default from settings
+            memory_request: Memory request (e.g., '4Gi', '2G'). If None, uses default from settings
+            memory_limit: Memory limit (e.g., '8Gi', '4G'). If None, uses default from settings
 
         Returns:
             Created ServingEndpoint entity
@@ -79,6 +88,9 @@ class ServingService:
         # Priority: explicit parameter > global default (TGI/vLLM, etc.)
         effective_runtime_image = serving_runtime_image or settings.serving_runtime_image
 
+        # Determine use_gpu value: explicit parameter > settings default
+        effective_use_gpu = use_gpu if use_gpu is not None else settings.use_gpu
+        
         # Create endpoint entity
         endpoint = catalog_models.ServingEndpoint(
             id=uuid4(),
@@ -91,6 +103,11 @@ class ServingService:
             max_replicas=max_replicas,
             autoscale_policy=autoscale_policy,
             prompt_policy_id=prompt_policy_id,
+            use_gpu=effective_use_gpu,
+            cpu_request=cpu_request,
+            cpu_limit=cpu_limit,
+            memory_request=memory_request,
+            memory_limit=memory_limit,
         )
 
         endpoint = self.endpoint_repo.create(endpoint)
@@ -130,6 +147,11 @@ class ServingService:
                     namespace=namespace,
                     use_gpu=use_gpu,
                     serving_runtime_image=effective_runtime_image,
+                    cpu_request=cpu_request,
+                    cpu_limit=cpu_limit,
+                    memory_request=memory_request,
+                    memory_limit=memory_limit,
+                    model_metadata=model_entry.model_metadata,
                 )
                 # Store rollback plan (previous deployment state)
                 endpoint.rollback_plan = f"Previous deployment UID: {k8s_uid}"
@@ -227,8 +249,12 @@ class ServingService:
         endpoint_id: str,
         use_gpu: Optional[bool] = None,
         serving_runtime_image: Optional[str] = None,
+        cpu_request: Optional[str] = None,
+        cpu_limit: Optional[str] = None,
+        memory_request: Optional[str] = None,
+        memory_limit: Optional[str] = None,
     ) -> catalog_models.ServingEndpoint:
-        """Redeploy an existing serving endpoint with the same configuration."""
+        """Redeploy an existing serving endpoint with the same or updated configuration."""
         endpoint = self.endpoint_repo.get(endpoint_id)
         if not endpoint:
             raise ValueError(f"Endpoint {endpoint_id} not found")
@@ -275,10 +301,30 @@ class ServingService:
                 or settings.serving_runtime_image
             )
 
-            # Persist chosen runtime image on endpoint
-            endpoint.runtime_image = effective_runtime_image
+            # Determine use_gpu: explicit override -> existing endpoint value -> global setting
+            effective_use_gpu = (
+                use_gpu
+                if use_gpu is not None
+                else endpoint.use_gpu
+                if endpoint.use_gpu is not None
+                else settings.use_gpu
+            )
 
-            # Redeploy with same configuration (or new image if provided)
+            # Determine resource settings: explicit override -> existing endpoint value -> None (will use settings defaults in deployer)
+            effective_cpu_request = cpu_request or endpoint.cpu_request
+            effective_cpu_limit = cpu_limit or endpoint.cpu_limit
+            effective_memory_request = memory_request or endpoint.memory_request
+            effective_memory_limit = memory_limit or endpoint.memory_limit
+
+            # Persist chosen settings on endpoint
+            endpoint.runtime_image = effective_runtime_image
+            endpoint.use_gpu = effective_use_gpu
+            endpoint.cpu_request = effective_cpu_request
+            endpoint.cpu_limit = effective_cpu_limit
+            endpoint.memory_request = effective_memory_request
+            endpoint.memory_limit = effective_memory_limit
+
+            # Redeploy with same configuration (or new image/resources if provided)
             k8s_uid = self.deployer.deploy_endpoint(
                 endpoint_name=endpoint_name,
                 model_storage_uri=model_entry.storage_uri,
@@ -287,8 +333,13 @@ class ServingService:
                 max_replicas=endpoint.max_replicas,
                 autoscale_policy=endpoint.autoscale_policy,
                 namespace=namespace,
-                use_gpu=use_gpu,
+                use_gpu=effective_use_gpu,
                 serving_runtime_image=effective_runtime_image,
+                cpu_request=effective_cpu_request,
+                cpu_limit=effective_cpu_limit,
+                memory_request=effective_memory_request,
+                memory_limit=effective_memory_limit,
+                model_metadata=model_entry.model_metadata,
             )
             
             # Update endpoint status

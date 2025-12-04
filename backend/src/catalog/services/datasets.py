@@ -20,12 +20,49 @@ from catalog import models as orm_models
 from catalog.repositories import DatasetRepository
 from core.clients.object_store import get_object_store_client
 from core.settings import get_settings
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class DatasetService:
     def __init__(self, session: Session):
         self.session = session
         self.repo = DatasetRepository(session)
+
+    def _ensure_bucket_exists(self, s3_client, bucket_name: str) -> None:
+        """Ensure bucket exists, create if it doesn't."""
+        try:
+            # Check if bucket exists
+            s3_client.head_bucket(Bucket=bucket_name)
+            logger.debug(f"Bucket '{bucket_name}' already exists")
+        except s3_client.exceptions.ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code == "404":
+                # Bucket doesn't exist, create it
+                logger.info(f"Bucket '{bucket_name}' does not exist, creating...")
+                try:
+                    # For MinIO, we might need to handle location constraint differently
+                    # Try without location constraint first (MinIO doesn't require it)
+                    try:
+                        s3_client.create_bucket(Bucket=bucket_name)
+                    except s3_client.exceptions.ClientError as create_error:
+                        # If that fails, try with location constraint (for S3)
+                        error_code = create_error.response.get("Error", {}).get("Code", "")
+                        if error_code == "IllegalLocationConstraintException":
+                            # For S3, we might need to specify region
+                            # But for MinIO, we can ignore this
+                            pass
+                        else:
+                            raise
+                    logger.info(f"Bucket '{bucket_name}' created successfully")
+                except Exception as create_e:
+                    logger.error(f"Failed to create bucket '{bucket_name}': {create_e}")
+                    raise ValueError(f"Failed to create bucket '{bucket_name}': {create_e}")
+            else:
+                # Other error (permission denied, etc.)
+                logger.error(f"Error checking bucket '{bucket_name}': {e}")
+                raise
 
     def list_datasets(self) -> Sequence[orm_models.DatasetRecord]:
         return self.repo.list()
@@ -108,9 +145,13 @@ class DatasetService:
         # Upload to object storage
         settings = get_settings()
         s3_client = get_object_store_client()
-        # Extract bucket from endpoint or use default
-        # For MinIO, bucket is typically "datasets" or configured separately
-        bucket_name = getattr(settings, 'object_store_bucket', None) or "datasets"
+        # Use unified bucket per namespace
+        bucket_name = settings.object_store_bucket or settings.training_namespace
+        
+        # Ensure bucket exists before uploading
+        self._ensure_bucket_exists(s3_client, bucket_name)
+        
+        # Folder structure: datasets/{dataset_id}/{version}/
         storage_prefix = f"datasets/{dataset_id}/{dataset.version}/"
 
         uploaded_files = []

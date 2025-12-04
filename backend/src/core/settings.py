@@ -52,8 +52,14 @@ class Settings(BaseSettings):
     # Use HTTPS for object storage (set to true for production S3)
     object_store_secure: bool = False
     
-    # Object storage bucket name for models
-    object_store_models_bucket: str = "models"
+    # Object storage bucket name (unified bucket per namespace)
+    # Format: llm-ops-{namespace} (e.g., llm-ops-dev, llm-ops-stg, llm-ops-prod)
+    # If not set, will be derived from training_namespace
+    # Folder structure within bucket:
+    #   - models/{model_id}/{version}/
+    #   - datasets/{dataset_id}/{version}/
+    #   - training/{job_id}/
+    object_store_bucket: str | None = None
     
     # =========================================================================
     # Application Configuration
@@ -111,20 +117,26 @@ class Settings(BaseSettings):
     # CPU and memory requests/limits when GPU is enabled
     # Format: "1" (1 core), "500m" (0.5 core), "2Gi" (2 gibibytes), "512Mi" (512 mebibytes)
     # Adjust based on your cluster capacity
+    # Note: Model download during startup may require additional memory
+    # Increase memory_limit if you see OOM kills during model download
+    # TGI model downloads can use significant memory - increase if needed
     serving_cpu_request: str = "1"  # CPU request
     serving_cpu_limit: str = "2"  # CPU limit
     serving_memory_request: str = "2Gi"  # Memory request
-    serving_memory_limit: str = "4Gi"  # Memory limit
+    serving_memory_limit: str = "16Gi"  # Memory limit (increased for large model downloads)
     
     # =========================================================================
     # Serving Resource Limits (CPU-only)
     # =========================================================================
     # CPU and memory requests/limits when GPU is disabled
     # Use smaller values for local development
+    # Note: Model download during startup may require additional memory
+    # Increase memory_limit if you see OOM kills during model download
+    # TGI model downloads can use significant memory even in CPU mode
     serving_cpu_only_cpu_request: str = "1"  # CPU request for CPU-only deployment
     serving_cpu_only_cpu_limit: str = "2"  # CPU limit for CPU-only deployment
     serving_cpu_only_memory_request: str = "1Gi"  # Memory request for CPU-only deployment
-    serving_cpu_only_memory_limit: str = "2Gi"  # Memory limit for CPU-only deployment
+    serving_cpu_only_memory_limit: str = "8Gi"  # Memory limit (increased for large model downloads)
 
     # Optional override for local development: if set, internal inference calls
     # will use this base URL instead of Kubernetes cluster DNS.
@@ -195,9 +207,28 @@ class Settings(BaseSettings):
     # Interval in seconds for checking training job statuses (default: 30 seconds)
     # Set to 0 to disable automatic status checking
     training_job_status_sync_interval: int = 30
+    
+    # =========================================================================
+    # Hugging Face Import Configuration
+    # =========================================================================
+    # Maximum model size in GB that can be imported from Hugging Face Hub
+    # Set to 0 or negative value to disable size limit
+    # Default: 5 GB
+    huggingface_max_download_size_gb: float = 5.0
 
 
 @lru_cache()
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    # If object_store_bucket is not set, derive it from training_namespace
+    if settings.object_store_bucket is None:
+        # training_namespace is already in format "llm-ops-{env}"
+        settings.object_store_bucket = settings.training_namespace
+    return settings
+
+
+def get_object_store_bucket() -> str:
+    """Get the unified bucket name for object storage."""
+    settings = get_settings()
+    return settings.object_store_bucket or settings.training_namespace
 

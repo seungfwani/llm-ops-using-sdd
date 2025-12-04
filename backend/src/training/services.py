@@ -583,10 +583,10 @@ class TrainingJobService:
         import re
         sanitized_name = re.sub(r'[^a-z0-9-]', '', sanitized_name)
         
-        bucket_name = settings.object_store_models_bucket
-        # Storage path should be just the model name and version, not include "models/" prefix
-        # since the bucket name already indicates it's for models
-        storage_path = f"{sanitized_name}/{model_version}/"
+        bucket_name = settings.object_store_bucket or settings.training_namespace
+        # Folder structure: models/{sanitized_name}/{version}/
+        # This is for model catalog entries created by training jobs
+        storage_path = f"models/{sanitized_name}/{model_version}/"
         storage_uri = f"s3://{bucket_name}/{storage_path}"
         
         logger.info(f"Generated storage URI: {storage_uri} for model {model_name} v{model_version}")
