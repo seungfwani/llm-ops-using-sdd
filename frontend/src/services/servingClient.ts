@@ -9,6 +9,7 @@ export interface ServingEndpointRequest {
   autoscalePolicy?: {
     cpuUtilization?: number;
     targetLatencyMs?: number;
+    gpuUtilization?: number;
   };
   promptPolicyId?: string;
   useGpu?: boolean; // Whether to request GPU resources. If not provided, uses default from settings
@@ -17,6 +18,7 @@ export interface ServingEndpointRequest {
   cpuLimit?: string; // CPU limit (e.g., '4', '2000m'). If not provided, uses default from settings
   memoryRequest?: string; // Memory request (e.g., '4Gi', '2G'). If not provided, uses default from settings
   memoryLimit?: string; // Memory limit (e.g., '8Gi', '4G'). If not provided, uses default from settings
+  servingFramework?: string; // Serving framework name (e.g., "kserve", "ray_serve")
 }
 
 export interface ServingEndpoint {
@@ -28,7 +30,53 @@ export interface ServingEndpoint {
   status: string;
   minReplicas: number;
   maxReplicas: number;
+  useGpu?: boolean;
+  cpuRequest?: string;
+  cpuLimit?: string;
+  memoryRequest?: string;
+  memoryLimit?: string;
   createdAt: string;
+}
+
+export interface ServingDeployment {
+  id: string;
+  serving_endpoint_id: string;
+  serving_framework: string;
+  framework_resource_id: string;
+  framework_namespace: string;
+  replica_count: number;
+  min_replicas: number;
+  max_replicas: number;
+  autoscaling_metrics?: {
+    targetLatencyMs?: number;
+    gpuUtilization?: number;
+  };
+  resource_requests?: Record<string, string>;
+  resource_limits?: Record<string, string>;
+  framework_status?: Record<string, any>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ServingFramework {
+  name: string;
+  display_name: string;
+  enabled: boolean;
+  capabilities: string[];
+}
+
+export interface EnvelopeServingDeployment {
+  status: "success" | "fail";
+  message: string;
+  data?: ServingDeployment;
+}
+
+export interface EnvelopeServingFrameworks {
+  status: "success" | "fail";
+  message: string;
+  data?: {
+    frameworks: ServingFramework[];
+  };
 }
 
 export interface EnvelopeServingEndpoint {
@@ -121,6 +169,40 @@ export const servingClient = {
   async deleteEndpoint(endpointId: string): Promise<EnvelopeServingEndpoint> {
     const response = await apiClient.delete<EnvelopeServingEndpoint>(
       `/serving/endpoints/${endpointId}`
+    );
+    return response.data;
+  },
+
+  async getDeployment(endpointId: string): Promise<EnvelopeServingDeployment> {
+    const response = await apiClient.get<EnvelopeServingDeployment>(
+      `/serving/endpoints/${endpointId}/deployment`
+    );
+    return response.data;
+  },
+
+  async updateDeployment(
+    endpointId: string,
+    update: {
+      min_replicas?: number;
+      max_replicas?: number;
+      autoscaling_metrics?: {
+        targetLatencyMs?: number;
+        gpuUtilization?: number;
+      };
+      resource_requests?: Record<string, string>;
+      resource_limits?: Record<string, string>;
+    }
+  ): Promise<EnvelopeServingDeployment> {
+    const response = await apiClient.patch<EnvelopeServingDeployment>(
+      `/serving/endpoints/${endpointId}/deployment`,
+      update
+    );
+    return response.data;
+  },
+
+  async listFrameworks(): Promise<EnvelopeServingFrameworks> {
+    const response = await apiClient.get<EnvelopeServingFrameworks>(
+      "/serving/frameworks"
     );
     return response.data;
   },

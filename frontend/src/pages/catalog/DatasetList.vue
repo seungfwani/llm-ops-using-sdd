@@ -7,8 +7,8 @@
     <header>
       <h1>Dataset Catalog</h1>
       <div class="header-actions">
-        <button @click="fetchDatasets" :disabled="loading">Refresh</button>
-        <router-link to="/catalog/datasets/new" class="btn-primary">Create New Dataset</router-link>
+        <button @click="fetchDatasets" :disabled="loading" class="btn-secondary">Refresh</button>
+        <router-link to="/catalog/datasets/new" class="btn-primary">New Dataset</router-link>
       </div>
     </header>
 

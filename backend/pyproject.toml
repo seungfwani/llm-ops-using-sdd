@@ -22,6 +22,9 @@ prometheus-client = "^0.20.0"
 alembic = "^1.13.2"
 boto3 = "^1.34.162"
 kubernetes = "^29.0.0"
+dvc = {extras = ["s3"], version = "^3.48.0"}
+huggingface-hub = "^0.24.0"
+argo-workflows = "^6.5.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.2.1"

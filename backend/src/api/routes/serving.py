@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Optional
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -9,6 +10,9 @@ from sqlalchemy.orm import Session
 from core.database import get_session
 from serving import schemas
 from serving.serving_service import ServingService
+from services.serving_deployment_service import ServingDeploymentService
+from integrations.serving.factory import ServingFrameworkFactory
+from services.integration_config import IntegrationConfigService
 
 router = APIRouter(prefix="/llm-ops/v1/serving", tags=["serving"])
 
@@ -16,6 +20,11 @@ router = APIRouter(prefix="/llm-ops/v1/serving", tags=["serving"])
 def get_serving_service(session: Session = Depends(get_session)) -> ServingService:
     """Dependency to get serving service."""
     return ServingService(session)
+
+
+def get_serving_deployment_service(session: Session = Depends(get_session)) -> ServingDeploymentService:
+    """Dependency to get serving deployment service."""
+    return ServingDeploymentService(session)
 
 
 @router.get("/endpoints", response_model=schemas.EnvelopeServingEndpointList)
@@ -317,6 +326,151 @@ def delete_endpoint(
         return schemas.EnvelopeServingEndpoint(
             status="fail",
             message=f"Failed to delete endpoint: {str(e)}",
+            data=None,
+        )
+
+
+@router.get("/endpoints/{endpointId}/deployment", response_model=schemas.EnvelopeServingDeployment)
+def get_deployment(
+    endpointId: str,
+    deployment_service: ServingDeploymentService = Depends(get_serving_deployment_service),
+) -> schemas.EnvelopeServingDeployment:
+    """Get serving deployment details for an endpoint."""
+    try:
+        deployment = deployment_service.get_deployment(UUID(endpointId))
+        if not deployment:
+            return schemas.EnvelopeServingDeployment(
+                status="fail",
+                message=f"Deployment not found for endpoint {endpointId}",
+                data=None,
+            )
+        
+        return schemas.EnvelopeServingDeployment(
+            status="success",
+            message="",
+            data=schemas.ServingDeploymentResponse(
+                id=str(deployment.id),
+                serving_endpoint_id=str(deployment.serving_endpoint_id),
+                serving_framework=deployment.serving_framework,
+                framework_resource_id=deployment.framework_resource_id,
+                framework_namespace=deployment.framework_namespace,
+                replica_count=deployment.replica_count,
+                min_replicas=deployment.min_replicas,
+                max_replicas=deployment.max_replicas,
+                autoscaling_metrics=deployment.autoscaling_metrics,
+                resource_requests=deployment.resource_requests,
+                resource_limits=deployment.resource_limits,
+                framework_status=deployment.framework_status,
+                created_at=deployment.created_at,
+                updated_at=deployment.updated_at,
+            ),
+        )
+    except ValueError as e:
+        return schemas.EnvelopeServingDeployment(
+            status="fail",
+            message=str(e),
+            data=None,
+        )
+    except Exception as e:
+        return schemas.EnvelopeServingDeployment(
+            status="fail",
+            message=f"Failed to get deployment: {str(e)}",
+            data=None,
+        )
+
+
+@router.patch("/endpoints/{endpointId}/deployment", response_model=schemas.EnvelopeServingDeployment)
+def update_deployment(
+    endpointId: str,
+    request: schemas.UpdateDeploymentRequest,
+    deployment_service: ServingDeploymentService = Depends(get_serving_deployment_service),
+) -> schemas.EnvelopeServingDeployment:
+    """Update serving deployment configuration."""
+    try:
+        deployment = deployment_service.update_deployment(
+            endpoint_id=UUID(endpointId),
+            min_replicas=request.min_replicas,
+            max_replicas=request.max_replicas,
+            resource_requests=request.resource_requests,
+            resource_limits=request.resource_limits,
+        )
+        
+        return schemas.EnvelopeServingDeployment(
+            status="success",
+            message="Deployment updated successfully",
+            data=schemas.ServingDeploymentResponse(
+                id=str(deployment.id),
+                serving_endpoint_id=str(deployment.serving_endpoint_id),
+                serving_framework=deployment.serving_framework,
+                framework_resource_id=deployment.framework_resource_id,
+                framework_namespace=deployment.framework_namespace,
+                replica_count=deployment.replica_count,
+                min_replicas=deployment.min_replicas,
+                max_replicas=deployment.max_replicas,
+                autoscaling_metrics=deployment.autoscaling_metrics,
+                resource_requests=deployment.resource_requests,
+                resource_limits=deployment.resource_limits,
+                framework_status=deployment.framework_status,
+                created_at=deployment.created_at,
+                updated_at=deployment.updated_at,
+            ),
+        )
+    except ValueError as e:
+        return schemas.EnvelopeServingDeployment(
+            status="fail",
+            message=str(e),
+            data=None,
+        )
+    except Exception as e:
+        return schemas.EnvelopeServingDeployment(
+            status="fail",
+            message=f"Failed to update deployment: {str(e)}",
+            data=None,
+        )
+
+
+@router.get("/frameworks", response_model=schemas.EnvelopeServingFrameworks)
+def list_frameworks(
+    session: Session = Depends(get_session),
+) -> schemas.EnvelopeServingFrameworks:
+    """List available serving frameworks and their capabilities."""
+    try:
+        integration_config = IntegrationConfigService(session)
+        supported_frameworks = ServingFrameworkFactory.get_supported_frameworks()
+        
+        frameworks = []
+        for framework_name in supported_frameworks:
+            config = integration_config.get_config("serving", framework_name)
+            enabled = config.get("enabled", False) if config else False
+            
+            # Map framework names to display names
+            display_names = {
+                "kserve": "KServe",
+                "ray_serve": "Ray Serve",
+            }
+            
+            # Define capabilities per framework
+            capabilities_map = {
+                "kserve": ["autoscaling", "canary_deployment", "gpu_support", "multi_framework"],
+                "ray_serve": ["autoscaling", "gpu_support", "distributed_serving"],
+            }
+            
+            frameworks.append(schemas.ServingFramework(
+                name=framework_name,
+                display_name=display_names.get(framework_name, framework_name.title()),
+                enabled=enabled,
+                capabilities=capabilities_map.get(framework_name, []),
+            ))
+        
+        return schemas.EnvelopeServingFrameworks(
+            status="success",
+            message="",
+            data={"frameworks": frameworks},
+        )
+    except Exception as e:
+        return schemas.EnvelopeServingFrameworks(
+            status="fail",
+            message=f"Failed to list frameworks: {str(e)}",
             data=None,
         )
 

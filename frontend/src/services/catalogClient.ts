@@ -11,6 +11,17 @@ export type CatalogModel = {
   storage_uri?: string;
 };
 
+export type RegistryModelLink = {
+  id: string;
+  model_catalog_id: string;
+  registry_type: string;
+  registry_model_id: string;
+  registry_repo_url: string;
+  registry_version?: string | null;
+  imported: boolean;
+  sync_status: string;
+};
+
 export type CatalogDataset = {
   id: string;
   name: string;
@@ -23,6 +34,32 @@ export type CatalogDataset = {
   approved_at?: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type DatasetVersion = {
+  id: string;
+  dataset_record_id: string;
+  versioning_system: string;
+  version_id: string;
+  parent_version_id?: string | null;
+  version_tag?: string | null;
+  checksum: string;
+  storage_uri: string;
+  diff_summary?: Record<string, unknown> | null;
+  file_count: number;
+  total_size_bytes: number;
+  compression_ratio?: number | null;
+  created_at: string;
+  created_by: string;
+};
+
+export type DatasetVersionDiff = {
+  added_files: string[];
+  removed_files: string[];
+  modified_files: string[];
+  added_rows: number;
+  removed_rows: number;
+  schema_changes: Record<string, unknown>;
 };
 
 export interface Envelope<T> {
@@ -104,6 +141,59 @@ export const catalogClient = {
     return response.data;
   },
 
+  async importFromRegistry(payload: {
+    registry_type: string;
+    registry_model_id: string;
+    version?: string | null;
+    name?: string | null;
+    model_version?: string;
+    model_type?: string;
+    owner_team?: string;
+  }): Promise<Envelope<CatalogModel>> {
+    const response = await apiClient.post<Envelope<CatalogModel>>(
+      "/catalog/models/import",
+      payload,
+      {
+        timeout: 1800000,
+      }
+    );
+    return response.data;
+  },
+
+  async exportToRegistry(
+    modelId: string,
+    payload: {
+      registry_type: string;
+      registry_model_id?: string;
+      repository_name?: string;
+      private?: boolean;
+      version_tag?: string;
+      metadata?: Record<string, unknown>;
+    }
+  ): Promise<Envelope<RegistryModelLink>> {
+    const response = await apiClient.post<Envelope<RegistryModelLink>>(
+      `/catalog/models/${modelId}/export`,
+      payload
+    );
+    return response.data;
+  },
+
+  async getRegistryLinks(modelId: string): Promise<Envelope<RegistryModelLink>> {
+    const response = await apiClient.get<Envelope<RegistryModelLink>>(
+      `/catalog/models/${modelId}/registry-links`
+    );
+    return response.data;
+  },
+
+  async checkRegistryUpdates(
+    modelId: string
+  ): Promise<Envelope<{ updates_available: boolean; registry_links: any[] }>> {
+    const response = await apiClient.post<
+      Envelope<{ updates_available: boolean; registry_links: any[] }>
+    >(`/catalog/models/${modelId}/check-updates`);
+    return response.data;
+  },
+
   // Dataset methods
   async listDatasets(): Promise<Envelope<CatalogDataset>> {
     const response = await apiClient.get<Envelope<CatalogDataset>>("/catalog/datasets");
@@ -161,6 +251,52 @@ export const catalogClient = {
   async updateDatasetStatus(datasetId: string, status: string): Promise<Envelope<CatalogDataset>> {
     const response = await apiClient.patch<Envelope<CatalogDataset>>(
       `/catalog/datasets/${datasetId}/status?status=${status}`
+    );
+    return response.data;
+  },
+
+  // Dataset versioning methods
+  async listDatasetVersions(datasetId: string): Promise<Envelope<DatasetVersion>> {
+    const response = await apiClient.get<Envelope<DatasetVersion>>(
+      `/catalog/datasets/${datasetId}/versions`
+    );
+    return response.data;
+  },
+
+  async createDatasetVersion(
+    datasetId: string,
+    payload: { version_tag?: string; parent_version_id?: string | null }
+  ): Promise<Envelope<DatasetVersion>> {
+    const response = await apiClient.post<Envelope<DatasetVersion>>(
+      `/catalog/datasets/${datasetId}/versions`,
+      payload
+    );
+    return response.data;
+  },
+
+  async getDatasetVersionDiff(
+    datasetId: string,
+    versionId: string,
+    baseVersionId: string
+  ): Promise<Envelope<DatasetVersionDiff>> {
+    const response = await apiClient.get<Envelope<DatasetVersionDiff>>(
+      `/catalog/datasets/${datasetId}/versions/${versionId}/diff`,
+      {
+        params: {
+          baseVersionId,
+        },
+      }
+    );
+    return response.data;
+  },
+
+  async restoreDatasetVersion(
+    datasetId: string,
+    versionId: string
+  ): Promise<Envelope<DatasetVersion>> {
+    const response = await apiClient.post<Envelope<DatasetVersion>>(
+      `/catalog/datasets/${datasetId}/versions/${versionId}/restore`,
+      {}
     );
     return response.data;
   },

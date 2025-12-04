@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from catalog import models as catalog_models
 from catalog.services.catalog import CatalogService
 from core.settings import get_settings
+from services.experiment_tracking_service import ExperimentTrackingService
 from training.repositories import ExperimentMetricRepository, TrainingJobRepository
 from training.scheduler import KubernetesScheduler
 
@@ -26,6 +27,7 @@ class TrainingJobService:
         self.metric_repo = ExperimentMetricRepository(session)
         self.scheduler = KubernetesScheduler()
         self.session = session
+        self.experiment_tracking = ExperimentTrackingService(session)
     
     @staticmethod
     def _detect_local_api_url() -> str:
@@ -255,6 +257,24 @@ class TrainingJobService:
             job.started_at = datetime.utcnow()
             job = self.job_repo.update(job)
             logger.info(f"Training job {job.id} submitted to Kubernetes with UID {k8s_uid}")
+            
+            # Create experiment run in MLflow
+            try:
+                experiment_name = None
+                if model_entry_id:
+                    model_entry = self.session.get(catalog_models.ModelCatalogEntry, model_entry_id)
+                    if model_entry:
+                        experiment_name = f"{model_entry.name}-{model_entry.version}"
+                
+                self.experiment_tracking.create_experiment_run(
+                    training_job_id=job.id,
+                    experiment_name=experiment_name,
+                    run_name=f"run-{job.id}",
+                    parameters=hyperparameters or {},
+                )
+            except Exception as e:
+                logger.warning(f"Failed to create experiment run for job {job.id}: {e}")
+                # Graceful degradation - continue without experiment tracking
         except Exception as e:
             logger.error(f"Failed to submit job {job.id} to scheduler: {e}")
             job.status = "failed"
@@ -304,6 +324,17 @@ class TrainingJobService:
                         job.completed_at = datetime.utcnow()
                     self.job_repo.update(job)
                     logger.info(f"Updated job {job.id} status to succeeded")
+                    
+                    # Update experiment run status
+                    try:
+                        self.experiment_tracking.update_run_status(
+                            training_job_id=job.id,
+                            status="completed",
+                            end_time=job.completed_at,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to update experiment run status: {e}")
+                    
                     updated = True
                     
                     # Auto-register output model if enabled
@@ -359,6 +390,17 @@ class TrainingJobService:
                         job.completed_at = datetime.utcnow()
                     self.job_repo.update(job)
                     logger.info(f"Updated job {job.id} status to failed")
+                    
+                    # Update experiment run status
+                    try:
+                        self.experiment_tracking.update_run_status(
+                            training_job_id=job.id,
+                            status="failed",
+                            end_time=job.completed_at,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to update experiment run status: {e}")
+                    
                     updated = True
             elif k8s_status_str == "running" and job.status == "queued":
                 job.status = "running"
@@ -518,7 +560,19 @@ class TrainingJobService:
             recorded_at=datetime.utcnow(),
         )
         try:
-            return self.metric_repo.create(metric)
+            metric = self.metric_repo.create(metric)
+            
+            # Forward metric to MLflow
+            try:
+                self.experiment_tracking.log_metrics(
+                    training_job_id=job_uuid,
+                    metrics={name: value},
+                )
+            except Exception as e:
+                logger.warning(f"Failed to log metric to MLflow: {e}")
+                # Graceful degradation - continue without MLflow
+            
+            return metric
         except Exception as e:
             logger.error(f"Failed to save metric {name} for job {job_id}: {e}")
             raise

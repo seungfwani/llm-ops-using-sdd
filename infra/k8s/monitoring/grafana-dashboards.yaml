@@ -46,6 +46,15 @@ data:
                 "legendFormat": "{{status}}"
               }
             ]
+          },
+          {
+            "title": "Integration Status (MLflow / KServe / Argo / DVC)",
+            "targets": [
+              {
+                "expr": "llm_ops_integration_status",
+                "legendFormat": "{{integration_type}}:{{tool_name}}"
+              }
+            ]
           }
         ]
       }

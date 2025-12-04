@@ -1,11 +1,15 @@
 <template>
   <div id="app">
     <nav>
+      <router-link to="/getting-started">Getting Started</router-link> |
       <router-link to="/catalog/models">Models</router-link> |
       <router-link to="/catalog/datasets">Datasets</router-link> |
       <router-link to="/training/jobs">Training</router-link> |
+      <router-link to="/experiments/search">Experiments</router-link> |
       <router-link to="/serving/endpoints">Serving</router-link> |
-      <router-link to="/governance/policies">Governance</router-link>
+      <router-link to="/workflows/pipelines">Workflows</router-link> |
+      <router-link to="/governance/policies">Governance</router-link> |
+      <router-link to="/admin/integrations">Admin</router-link>
     </nav>
     <main>
       <router-view />

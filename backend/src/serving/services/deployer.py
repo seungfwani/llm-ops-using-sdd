@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import logging
 from typing import Optional
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
 from core.settings import get_settings
+from integrations.serving.factory import ServingFrameworkFactory
+from services.integration_config import IntegrationConfigService
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -114,7 +116,7 @@ class ServingDeployer:
 
         # Use KServe InferenceService if enabled, otherwise use raw Deployment
         if settings.use_kserve:
-            return self._deploy_with_kserve(
+            return self._deploy_with_kserve_adapter(
                 endpoint_name=endpoint_name,
                 model_storage_uri=model_storage_uri,
                 route=route,
@@ -124,6 +126,10 @@ class ServingDeployer:
                 namespace=namespace,
                 serving_runtime_image=serving_runtime_image,
                 use_gpu=use_gpu,
+                cpu_request=cpu_request,
+                cpu_limit=cpu_limit,
+                memory_request=memory_request,
+                memory_limit=memory_limit,
                 model_metadata=model_metadata,
             )
         
@@ -533,7 +539,143 @@ class ServingDeployer:
             logger.error(f"Failed to deploy {endpoint_name}: {e}")
             raise
 
-    def _deploy_with_kserve(
+    def _deploy_with_kserve_adapter(
+        self,
+        endpoint_name: str,
+        model_storage_uri: str,
+        route: str,
+        min_replicas: int,
+        max_replicas: int,
+        autoscale_policy: Optional[dict] = None,
+        namespace: str = "default",
+        serving_runtime_image: str = "vllm/vllm-openai:latest",
+        use_gpu: bool = True,
+        cpu_request: Optional[str] = None,
+        cpu_limit: Optional[str] = None,
+        memory_request: Optional[str] = None,
+        memory_limit: Optional[str] = None,
+        model_metadata: Optional[dict] = None,
+    ) -> str:
+        """
+        Deploy a serving endpoint using KServe adapter.
+
+        Args:
+            endpoint_name: Unique name for the InferenceService (format: "serving-{uuid}" or "endpoint-{uuid}")
+            model_storage_uri: S3 URI to model files
+            route: Ingress route path (used for annotation, will be normalized)
+            min_replicas: Minimum number of replicas
+            max_replicas: Maximum number of replicas
+            autoscale_policy: HPA configuration
+            namespace: Kubernetes namespace
+            serving_runtime_image: Container image for model serving runtime
+            use_gpu: Whether to request GPU resources
+            cpu_request: CPU request
+            cpu_limit: CPU limit
+            memory_request: Memory request
+            memory_limit: Memory limit
+            model_metadata: Model metadata
+
+        Returns:
+            InferenceService UID
+        """
+        # Normalize route path
+        route = self._normalize_route(route)
+
+        try:
+            # Extract endpoint ID from endpoint_name (format: "serving-{uuid}" or "endpoint-{uuid}")
+            endpoint_id_str = endpoint_name.replace("serving-", "").replace("endpoint-", "")
+            try:
+                endpoint_id = UUID(endpoint_id_str)
+            except ValueError:
+                # If UUID extraction fails, generate a new one
+                logger.warning(f"Could not extract UUID from endpoint_name {endpoint_name}, generating new UUID")
+                endpoint_id = uuid4()
+            
+            # Get integration config (requires session, but we don't have one here)
+            # For now, use settings-based config
+            # TODO: Refactor to pass IntegrationConfigService or session
+            config = {
+                "namespace": namespace,
+                "enabled": settings.use_kserve,
+            }
+            
+            # Create KServe adapter
+            adapter = ServingFrameworkFactory.create_adapter("kserve", config)
+            
+            # Build resource requests/limits
+            resource_requests = {}
+            resource_limits = {}
+            
+            if use_gpu:
+                resource_requests = {
+                    "memory": memory_request or settings.serving_memory_request,
+                    "cpu": cpu_request or settings.serving_cpu_request,
+                    "nvidia.com/gpu": "1",
+                }
+                resource_limits = {
+                    "memory": memory_limit or settings.serving_memory_limit,
+                    "cpu": cpu_limit or settings.serving_cpu_limit,
+                    "nvidia.com/gpu": "1",
+                }
+            else:
+                resource_requests = {
+                    "memory": memory_request or settings.serving_cpu_only_memory_request,
+                    "cpu": cpu_request or settings.serving_cpu_only_cpu_request,
+                }
+                resource_limits = {
+                    "memory": memory_limit or settings.serving_cpu_only_memory_limit,
+                    "cpu": cpu_limit or settings.serving_cpu_only_cpu_limit,
+                }
+            
+            # Extract model name from metadata or use endpoint name
+            model_name = endpoint_name
+            if model_metadata and isinstance(model_metadata, dict):
+                model_name = model_metadata.get("name", endpoint_name)
+            
+            # Convert autoscale_policy to autoscaling_metrics format expected by adapter
+            autoscaling_metrics = None
+            if autoscale_policy:
+                autoscaling_metrics = {}
+                if "targetLatencyMs" in autoscale_policy:
+                    autoscaling_metrics["targetLatencyMs"] = autoscale_policy["targetLatencyMs"]
+                if "gpuUtilization" in autoscale_policy:
+                    autoscaling_metrics["gpuUtilization"] = autoscale_policy["gpuUtilization"]
+            
+            # Deploy using adapter
+            deployment_info = adapter.deploy(
+                endpoint_id=endpoint_id,
+                model_uri=model_storage_uri,
+                model_name=model_name,
+                namespace=namespace,
+                resource_requests=resource_requests,
+                resource_limits=resource_limits,
+                min_replicas=min_replicas,
+                max_replicas=max_replicas,
+                autoscaling_metrics=autoscaling_metrics,
+            )
+            
+            # Return framework resource ID as UID (for compatibility)
+            logger.info(f"Created KServe InferenceService {deployment_info['framework_resource_id']} via adapter")
+            return deployment_info["framework_resource_id"]
+            
+        except Exception as e:
+            logger.error(f"Failed to deploy KServe InferenceService {endpoint_name} via adapter: {e}")
+            # Fallback to legacy implementation if adapter fails
+            logger.warning("Falling back to legacy KServe deployment")
+            return self._deploy_with_kserve_legacy(
+                endpoint_name=endpoint_name,
+                model_storage_uri=model_storage_uri,
+                route=route,
+                min_replicas=min_replicas,
+                max_replicas=max_replicas,
+                autoscale_policy=autoscale_policy,
+                namespace=namespace,
+                serving_runtime_image=serving_runtime_image,
+                use_gpu=use_gpu,
+                model_metadata=model_metadata,
+            )
+    
+    def _deploy_with_kserve_legacy(
         self,
         endpoint_name: str,
         model_storage_uri: str,
@@ -547,7 +689,7 @@ class ServingDeployer:
         model_metadata: Optional[dict] = None,
     ) -> str:
         """
-        Deploy a serving endpoint using KServe InferenceService CRD.
+        Legacy deployment using KServe InferenceService CRD (fallback).
 
         Args:
             endpoint_name: Unique name for the InferenceService
@@ -859,52 +1001,76 @@ class ServingDeployer:
     def _get_kserve_status(
         self, endpoint_name: str, namespace: str = "default"
     ) -> Optional[dict]:
-        """Retrieve KServe InferenceService status."""
+        """Retrieve KServe InferenceService status using adapter."""
         try:
-            inference_service = self.custom_api.get_namespaced_custom_object(
-                group="serving.kserve.io",
-                version="v1beta1",
-                namespace=namespace,
-                plural="inferenceservices",
-                name=endpoint_name,
-            )
-            
-            status = inference_service.get("status", {})
-            conditions = status.get("conditions", [])
-            
-            # Find Ready condition
-            ready_condition = next(
-                (c for c in conditions if c.get("type") == "Ready"),
-                None
-            )
-            
-            ready_status = ready_condition.get("status", "Unknown") if ready_condition else "Unknown"
-            
-            # Check actual pod status for more accurate status
-            pod_status = self._check_pod_status(endpoint_name, namespace, is_kserve=True)
-            
-            # Determine final status: prefer pod status, fall back to KServe condition
-            if pod_status:
-                final_status = pod_status
-            elif ready_status == "True":
-                final_status = "healthy"
-            elif ready_status == "False":
-                final_status = "degraded"
-            else:
-                final_status = "deploying"
-            
-            return {
-                "uid": inference_service.get("metadata", {}).get("uid", ""),
-                "replicas": status.get("components", {}).get("predictor", {}).get("replicas", 0),
-                "ready_replicas": status.get("components", {}).get("predictor", {}).get("readyReplicas", 0),
-                "available_replicas": status.get("components", {}).get("predictor", {}).get("availableReplicas", 0),
-                "status": final_status,
+            # Try to use adapter first
+            config = {
+                "namespace": namespace,
+                "enabled": settings.use_kserve,
             }
-        except ApiException as e:
-            if e.status == 404:
-                return None
-            logger.error(f"Failed to get KServe InferenceService status for {endpoint_name}: {e}")
-            raise
+            adapter = ServingFrameworkFactory.create_adapter("kserve", config)
+            
+            status_info = adapter.get_deployment_status(
+                framework_resource_id=endpoint_name,
+                namespace=namespace,
+            )
+            
+            # Map adapter status to deployer format
+            return {
+                "uid": endpoint_name,  # Use endpoint_name as UID for compatibility
+                "replicas": status_info.get("replicas", 0),
+                "ready_replicas": status_info.get("ready_replicas", 0),
+                "available_replicas": status_info.get("ready_replicas", 0),
+                "status": status_info.get("status", "deploying"),
+            }
+        except Exception as e:
+            logger.warning(f"Failed to get KServe status via adapter: {e}, falling back to legacy")
+            # Fallback to legacy implementation
+            try:
+                inference_service = self.custom_api.get_namespaced_custom_object(
+                    group="serving.kserve.io",
+                    version="v1beta1",
+                    namespace=namespace,
+                    plural="inferenceservices",
+                    name=endpoint_name,
+                )
+                
+                status = inference_service.get("status", {})
+                conditions = status.get("conditions", [])
+                
+                # Find Ready condition
+                ready_condition = next(
+                    (c for c in conditions if c.get("type") == "Ready"),
+                    None
+                )
+                
+                ready_status = ready_condition.get("status", "Unknown") if ready_condition else "Unknown"
+                
+                # Check actual pod status for more accurate status
+                pod_status = self._check_pod_status(endpoint_name, namespace, is_kserve=True)
+                
+                # Determine final status: prefer pod status, fall back to KServe condition
+                if pod_status:
+                    final_status = pod_status
+                elif ready_status == "True":
+                    final_status = "healthy"
+                elif ready_status == "False":
+                    final_status = "degraded"
+                else:
+                    final_status = "deploying"
+                
+                return {
+                    "uid": inference_service.get("metadata", {}).get("uid", ""),
+                    "replicas": status.get("components", {}).get("predictor", {}).get("replicas", 0),
+                    "ready_replicas": status.get("components", {}).get("predictor", {}).get("readyReplicas", 0),
+                    "available_replicas": status.get("components", {}).get("predictor", {}).get("availableReplicas", 0),
+                    "status": final_status,
+                }
+            except ApiException as api_e:
+                if api_e.status == 404:
+                    return None
+                logger.error(f"Failed to get KServe InferenceService status for {endpoint_name}: {api_e}")
+                raise
 
     def rollback_endpoint(
         self, endpoint_name: str, namespace: str = "default"

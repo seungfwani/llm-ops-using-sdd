@@ -1,7 +1,7 @@
 <template>
   <section class="endpoint-detail">
     <header>
-      <h1>Serving Endpoint Details</h1>
+      <h1>Serving Endpoint Detail</h1>
       <router-link to="/serving/endpoints" class="btn-back">← Back to List</router-link>
     </header>
 
@@ -59,6 +59,47 @@
       </div>
 
       <div class="detail-section">
+        <h2>Framework Information</h2>
+        <dl class="detail-list" v-if="deployment">
+          <dt>Serving Framework</dt>
+          <dd>
+            <span class="framework-badge">{{ deployment.serving_framework }}</span>
+          </dd>
+          
+          <dt>Framework Resource ID</dt>
+          <dd class="monospace">{{ deployment.framework_resource_id }}</dd>
+          
+          <dt>Framework Namespace</dt>
+          <dd class="monospace">{{ deployment.framework_namespace }}</dd>
+          
+          <dt>Current Replicas</dt>
+          <dd>{{ deployment.replica_count }}</dd>
+          
+          <dt>Autoscaling Metrics</dt>
+          <dd v-if="deployment.autoscaling_metrics && Object.keys(deployment.autoscaling_metrics).length > 0">
+            <ul style="margin: 0; padding-left: 20px;">
+              <li v-if="deployment.autoscaling_metrics.targetLatencyMs">
+                Target Latency: {{ deployment.autoscaling_metrics.targetLatencyMs }}ms
+              </li>
+              <li v-if="deployment.autoscaling_metrics.gpuUtilization">
+                GPU Utilization: {{ deployment.autoscaling_metrics.gpuUtilization }}%
+              </li>
+            </ul>
+          </dd>
+          <dd v-else class="text-muted">Not configured</dd>
+          
+          <dt>Framework Status</dt>
+          <dd>
+            <pre v-if="deployment.framework_status" class="status-json">{{ JSON.stringify(deployment.framework_status, null, 2) }}</pre>
+            <span v-else class="text-muted">Not available</span>
+          </dd>
+        </dl>
+        <div v-else class="text-muted">
+          No framework deployment information available. This endpoint may be using legacy deployment.
+        </div>
+      </div>
+
+      <div class="detail-section">
         <h2>Scaling Configuration</h2>
         <dl class="detail-list">
           <dt>Min Replicas</dt>
@@ -69,6 +110,10 @@
           
           <dt>Replica Range</dt>
           <dd>{{ endpoint.minReplicas }} - {{ endpoint.maxReplicas }}</dd>
+          <template v-if="deployment">
+            <dt>Current Replicas</dt>
+            <dd>{{ deployment.replica_count }}</dd>
+          </template>
         </dl>
       </div>
 
@@ -199,11 +244,12 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { servingClient, type ServingEndpoint } from '@/services/servingClient';
+import { servingClient, type ServingEndpoint, type ServingDeployment } from '@/services/servingClient';
 
 const route = useRoute();
 const router = useRouter();
 const endpoint = ref<ServingEndpoint | null>(null);
+const deployment = ref<ServingDeployment | null>(null);
 const loading = ref(false);
 const error = ref('');
 const rollingBack = ref(false);
@@ -252,6 +298,20 @@ async function fetchEndpoint() {
     } else {
       error.value = response.message || "Failed to load endpoint";
       endpoint.value = null;
+    }
+    
+    // Fetch deployment information
+    try {
+      const deploymentResponse = await servingClient.getDeployment(endpointId);
+      if (deploymentResponse.status === "success" && deploymentResponse.data) {
+        deployment.value = deploymentResponse.data;
+      } else {
+        deployment.value = null;
+      }
+    } catch (e) {
+      // Deployment info is optional, don't fail if it's not available
+      console.warn("Failed to load deployment info:", e);
+      deployment.value = null;
     }
   } catch (e) {
     error.value = `Error: ${e}`;
@@ -622,6 +682,27 @@ header {
 .text-muted {
   color: #6c757d;
   font-style: italic;
+}
+
+.framework-badge {
+  padding: 0.25rem 0.5rem;
+  background: #007bff;
+  color: white;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  display: inline-block;
+}
+
+.status-json {
+  background: #f8f9fa;
+  padding: 0.5rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  max-height: 200px;
+  overflow: auto;
+  margin: 0;
 }
 
 .loading,

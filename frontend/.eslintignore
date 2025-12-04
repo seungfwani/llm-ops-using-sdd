@@ -1,6 +1,12 @@
 node_modules/
 dist/
 coverage/
+*.log
+*.tsbuildinfo
+
+node_modules/
+dist/
+coverage/
 vite.config.ts
 playwright.config.ts
 

@@ -10,13 +10,27 @@ from catalog.schemas import (
     EnvelopeDatasetList,
     EnvelopeModelCatalog,
     EnvelopeModelCatalogList,
+    EnvelopeRegistryModel,
+    EnvelopeRegistryModelList,
     HuggingFaceImportRequest,
+    ImportModelRequest,
+    ExportModelRequest,
     ModelCatalogCreate,
     ModelCatalogResponse,
+    RegistryModelResponse,
+    DatasetVersionCreate,
+    DatasetVersionResponse,
+    EnvelopeDatasetVersion,
+    EnvelopeDatasetVersionList,
+    DatasetVersionDiffResponse,
+    EnvelopeDatasetVersionDiff,
 )
 from pydantic import BaseModel
 from catalog.services import CatalogService, DatasetService
+from services.model_registry_service import ModelRegistryService
+from services.data_versioning_service import DataVersioningService
 from core.database import get_session
+from uuid import UUID
 
 router = APIRouter(prefix="/llm-ops/v1/catalog", tags=["catalog"])
 
@@ -231,9 +245,23 @@ async def upload_dataset_files(
 ) -> EnvelopeDataset:
     """Upload dataset files (CSV, JSONL, Parquet) to object storage."""
     service = DatasetService(session)
+    versioning_service = DataVersioningService(session)
     try:
         result = await service.upload_dataset_files(dataset_id, files)
         dataset = result["dataset"]
+
+        # Automatically create a new dataset version after successful upload (T124)
+        try:
+            versioning_service.create_version(
+                dataset_record_id=UUID(dataset_id),
+                dataset_uri=dataset.storage_uri,
+                created_by="system",  # TODO: propagate user identity from auth
+            )
+        except Exception:
+            # Graceful degradation: log and continue without failing upload
+            # (actual logging handled inside service/adapter)
+            pass
+
         return EnvelopeDataset(
             status="success",
             message="Dataset files uploaded successfully",
@@ -495,6 +523,384 @@ def import_from_huggingface(
         return EnvelopeModelCatalog(
             status="fail",
             message=f"Import failed: {str(exc)}",
+            data=None,
+        )
+
+
+@router.post("/models/import", response_model=EnvelopeModelCatalog)
+def import_model_from_registry(
+    request: ImportModelRequest,
+    session=Depends(get_session),
+) -> EnvelopeModelCatalog:
+    """Import a model from an external registry into the platform catalog."""
+    service = ModelRegistryService(session)
+    try:
+        entry = service.import_model_from_registry(
+            registry_type=request.registry_type,
+            registry_model_id=request.registry_model_id,
+            name=request.name,
+            version=request.model_version,
+            model_type=request.model_type,
+            owner_team=request.owner_team,
+            registry_version=request.version,
+        )
+        return EnvelopeModelCatalog(
+            status="success",
+            message="Model imported successfully from registry",
+            data=ModelCatalogResponse(
+                id=str(entry.id),
+                name=entry.name,
+                version=entry.version,
+                type=entry.type,
+                status=entry.status,
+                owner_team=entry.owner_team,
+                metadata=entry.model_metadata,
+                storage_uri=entry.storage_uri,
+            ),
+        )
+    except Exception as exc:
+        return EnvelopeModelCatalog(
+            status="fail",
+            message=str(exc),
+            data=None,
+        )
+
+
+@router.post(
+    "/models/{model_id}/export",
+    response_model=EnvelopeRegistryModel,
+)
+def export_model_to_registry(
+    model_id: str,
+    request: ExportModelRequest,
+    session=Depends(get_session),
+) -> EnvelopeRegistryModel:
+    """Export a platform catalog model to an external registry."""
+    service = ModelRegistryService(session)
+    try:
+        target_model_id = request.registry_model_id
+        if not target_model_id:
+            # 기본값: catalog 이름을 기반으로 registry 식별자 유추
+            catalog_service = CatalogService(session)
+            entry = catalog_service.get_entry(model_id)
+            if not entry:
+                return EnvelopeRegistryModel(
+                    status="fail",
+                    message=f"Model {model_id} not found",
+                    data=None,
+                )
+            target_model_id = f"{entry.name}".replace("_", "-")
+
+        registry_model = service.export_model_to_registry(
+            model_catalog_id=model_id,
+            registry_type=request.registry_type,
+            registry_model_id=target_model_id,
+            metadata=request.metadata,
+        )
+        return EnvelopeRegistryModel(
+            status="success",
+            message="Model exported successfully to registry",
+            data=RegistryModelResponse(
+                id=str(registry_model.id),
+                model_catalog_id=str(registry_model.model_catalog_id),
+                registry_type=registry_model.registry_type,
+                registry_model_id=registry_model.registry_model_id,
+                registry_repo_url=registry_model.registry_repo_url,
+                registry_version=registry_model.registry_version,
+                imported=registry_model.imported,
+                sync_status=registry_model.sync_status,
+            ),
+        )
+    except Exception as exc:
+        return EnvelopeRegistryModel(
+            status="fail",
+            message=str(exc),
+            data=None,
+        )
+
+
+@router.get(
+    "/models/{model_id}/registry-links",
+    response_model=EnvelopeRegistryModelList,
+)
+def get_model_registry_links(
+    model_id: str,
+    session=Depends(get_session),
+) -> EnvelopeRegistryModelList:
+    """Get all registry links for a catalog model."""
+    service = ModelRegistryService(session)
+    try:
+        links = service.get_registry_links(model_id)
+        return EnvelopeRegistryModelList(
+            status="success",
+            message="",
+            data=[
+                RegistryModelResponse(
+                    id=str(link.id),
+                    model_catalog_id=str(link.model_catalog_id),
+                    registry_type=link.registry_type,
+                    registry_model_id=link.registry_model_id,
+                    registry_repo_url=link.registry_repo_url,
+                    registry_version=link.registry_version,
+                    imported=link.imported,
+                    sync_status=link.sync_status,
+                )
+                for link in links
+            ],
+        )
+    except Exception as exc:
+        return EnvelopeRegistryModelList(
+            status="fail",
+            message=str(exc),
+            data=None,
+        )
+
+
+@router.post("/models/{model_id}/check-updates")
+def check_model_registry_updates(
+    model_id: str,
+    session=Depends(get_session),
+) -> dict:
+    """Check if registry models linked to a catalog model have updates available."""
+    service = ModelRegistryService(session)
+    try:
+        updates = service.check_registry_updates(model_catalog_id=model_id)
+        return {
+            "status": "success",
+            "message": "",
+            "data": updates,
+        }
+    except Exception as exc:
+        return {
+            "status": "fail",
+            "message": str(exc),
+            "data": None,
+        }
+
+
+@router.post(
+    "/datasets/{dataset_id}/versions",
+    response_model=EnvelopeDatasetVersion,
+    status_code=201,
+)
+def create_dataset_version(
+    dataset_id: str,
+    payload: DatasetVersionCreate,
+    session=Depends(get_session),
+) -> EnvelopeDatasetVersion:
+    """Create a new dataset version using DVC."""
+    versioning_service = DataVersioningService(session)
+    dataset_service = DatasetService(session)
+    
+    try:
+        # Get dataset to get storage URI
+        dataset = dataset_service.repo.get(dataset_id)
+        if not dataset:
+            return EnvelopeDatasetVersion(
+                status="fail",
+                message=f"Dataset {dataset_id} not found",
+                data=None,
+            )
+        
+        # Create version
+        version = versioning_service.create_version(
+            dataset_record_id=UUID(dataset_id),
+            dataset_uri=dataset.storage_uri,
+            version_tag=payload.version_tag,
+            parent_version_id=UUID(payload.parent_version_id) if payload.parent_version_id else None,
+            created_by="system",  # TODO: Get from auth context
+        )
+        
+        return EnvelopeDatasetVersion(
+            status="success",
+            message="Dataset version created successfully",
+            data=DatasetVersionResponse(
+                id=str(version.id),
+                dataset_record_id=str(version.dataset_record_id),
+                versioning_system=version.versioning_system,
+                version_id=version.version_id,
+                parent_version_id=str(version.parent_version_id) if version.parent_version_id else None,
+                version_tag=version.version_tag,
+                checksum=version.checksum,
+                storage_uri=version.storage_uri,
+                diff_summary=version.diff_summary,
+                file_count=version.file_count,
+                total_size_bytes=version.total_size_bytes,
+                compression_ratio=version.compression_ratio,
+                created_at=version.created_at,
+                created_by=version.created_by,
+            ),
+        )
+    except ValueError as exc:
+        return EnvelopeDatasetVersion(
+            status="fail",
+            message=str(exc),
+            data=None,
+        )
+    except Exception as exc:
+        return EnvelopeDatasetVersion(
+            status="fail",
+            message=f"Failed to create dataset version: {str(exc)}",
+            data=None,
+        )
+
+
+@router.get(
+    "/datasets/{dataset_id}/versions",
+    response_model=EnvelopeDatasetVersionList,
+)
+def list_dataset_versions(
+    dataset_id: str,
+    session=Depends(get_session),
+) -> EnvelopeDatasetVersionList:
+    """List all versions for a dataset (T121)."""
+    versioning_service = DataVersioningService(session)
+    try:
+        versions = versioning_service.list_versions(
+            dataset_record_id=UUID(dataset_id),
+        )
+        return EnvelopeDatasetVersionList(
+            status="success",
+            message="",
+            data=[
+                DatasetVersionResponse(
+                    id=str(v.id),
+                    dataset_record_id=str(v.dataset_record_id),
+                    versioning_system=v.versioning_system,
+                    version_id=v.version_id,
+                    parent_version_id=str(v.parent_version_id) if v.parent_version_id else None,
+                    version_tag=v.version_tag,
+                    checksum=v.checksum,
+                    storage_uri=v.storage_uri,
+                    diff_summary=v.diff_summary,
+                    file_count=v.file_count,
+                    total_size_bytes=v.total_size_bytes,
+                    compression_ratio=v.compression_ratio,
+                    created_at=v.created_at,
+                    created_by=v.created_by,
+                )
+                for v in versions
+            ],
+        )
+    except ValueError as exc:
+        return EnvelopeDatasetVersionList(
+            status="fail",
+            message=str(exc),
+            data=None,
+        )
+    except Exception as exc:
+        return EnvelopeDatasetVersionList(
+            status="fail",
+            message=f"Failed to list dataset versions: {str(exc)}",
+            data=None,
+        )
+
+
+@router.get(
+    "/datasets/{dataset_id}/versions/{version_id}/diff",
+    response_model=EnvelopeDatasetVersionDiff,
+)
+def get_dataset_version_diff(
+    dataset_id: str,
+    version_id: str,
+    baseVersionId: str = Query(..., alias="baseVersionId"),
+    session=Depends(get_session),
+) -> EnvelopeDatasetVersionDiff:
+    """Get diff between two dataset versions (T122)."""
+    versioning_service = DataVersioningService(session)
+    try:
+        diff = versioning_service.calculate_diff(
+            version_id=UUID(version_id),
+            base_version_id=UUID(baseVersionId),
+            dataset_record_id=UUID(dataset_id),
+        )
+        diff_response = DatasetVersionDiffResponse(
+            added_files=diff.get("added_files", []),
+            removed_files=diff.get("removed_files", []),
+            modified_files=diff.get("modified_files", []),
+            added_rows=diff.get("added_rows", 0),
+            removed_rows=diff.get("removed_rows", 0),
+            schema_changes=diff.get("schema_changes", {}),
+        )
+        return EnvelopeDatasetVersionDiff(
+            status="success",
+            message="",
+            data=diff_response,
+        )
+    except ValueError as exc:
+        return EnvelopeDatasetVersionDiff(
+            status="fail",
+            message=str(exc),
+            data=None,
+        )
+    except Exception as exc:
+        return EnvelopeDatasetVersionDiff(
+            status="fail",
+            message=f"Failed to calculate dataset version diff: {str(exc)}",
+            data=None,
+        )
+
+
+@router.post(
+    "/datasets/{dataset_id}/versions/{version_id}/restore",
+    response_model=EnvelopeDatasetVersion,
+)
+def restore_dataset_version(
+    dataset_id: str,
+    version_id: str,
+    session=Depends(get_session),
+) -> EnvelopeDatasetVersion:
+    """Restore dataset to a specific version (T123)."""
+    versioning_service = DataVersioningService(session)
+    try:
+        # Perform restore operation
+        versioning_service.restore_version(
+            version_id=UUID(version_id),
+            dataset_record_id=UUID(dataset_id),
+        )
+
+        # Return the restored version metadata
+        version = versioning_service.get_version(
+            version_id=UUID(version_id),
+            dataset_record_id=UUID(dataset_id),
+        )
+        if not version:
+            return EnvelopeDatasetVersion(
+                status="fail",
+                message=f"Version {version_id} not found after restore",
+                data=None,
+            )
+
+        return EnvelopeDatasetVersion(
+            status="success",
+            message="Dataset version restored successfully",
+            data=DatasetVersionResponse(
+                id=str(version.id),
+                dataset_record_id=str(version.dataset_record_id),
+                versioning_system=version.versioning_system,
+                version_id=version.version_id,
+                parent_version_id=str(version.parent_version_id) if version.parent_version_id else None,
+                version_tag=version.version_tag,
+                checksum=version.checksum,
+                storage_uri=version.storage_uri,
+                diff_summary=version.diff_summary,
+                file_count=version.file_count,
+                total_size_bytes=version.total_size_bytes,
+                compression_ratio=version.compression_ratio,
+                created_at=version.created_at,
+                created_by=version.created_by,
+            ),
+        )
+    except ValueError as exc:
+        return EnvelopeDatasetVersion(
+            status="fail",
+            message=str(exc),
+            data=None,
+        )
+    except Exception as exc:
+        return EnvelopeDatasetVersion(
+            status="fail",
+            message=f"Failed to restore dataset version: {str(exc)}",
             data=None,
         )
 

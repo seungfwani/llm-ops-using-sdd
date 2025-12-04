@@ -215,6 +215,49 @@ class Settings(BaseSettings):
     # Set to 0 or negative value to disable size limit
     # Default: 5 GB
     huggingface_max_download_size_gb: float = 5.0
+    
+    # =========================================================================
+    # Open Source Integration Configuration
+    # =========================================================================
+    # Integration feature flags (enable/disable integrations)
+    experiment_tracking_enabled: bool = False
+    experiment_tracking_system: str = "mlflow"  # Options: "mlflow", "wandb", etc.
+    serving_framework_enabled: bool = False
+    serving_framework_default: str = "kserve"  # Options: "kserve", "ray_serve", etc.
+    workflow_orchestration_enabled: bool = False
+    workflow_orchestration_system: str = "argo_workflows"  # Options: "argo_workflows", "kubeflow", etc.
+    model_registry_enabled: bool = False
+    model_registry_default: str = "huggingface"  # Options: "huggingface", "modelscope", etc.
+    data_versioning_enabled: bool = False
+    data_versioning_system: str = "dvc"  # Options: "dvc", "lakefs", etc.
+    
+    # Environment identifier (dev, stg, prod)
+    environment: str = "dev"
+    
+    # MLflow Configuration
+    mlflow_tracking_uri: AnyHttpUrl | None = None  # e.g., http://mlflow-service.mlflow.svc.cluster.local:5000
+    mlflow_enabled: bool = False
+    mlflow_backend_store_uri: str | None = None  # PostgreSQL URI for MLflow backend
+    mlflow_default_artifact_root: str | None = None  # S3 URI for MLflow artifacts
+    
+    # KServe Configuration (enhanced)
+    kserve_namespace: str = "kserve"  # Already exists, keeping for reference
+    
+    # Argo Workflows Configuration
+    argo_workflows_enabled: bool = False
+    argo_workflows_namespace: str = "argo"
+    argo_workflows_controller_service: str = "argo-workflows-server.argo.svc.cluster.local:2746"
+    
+    # Hugging Face Hub Configuration
+    huggingface_hub_enabled: bool = False
+    huggingface_hub_token: SecretStr | None = None  # Optional, for private repos
+    huggingface_hub_cache_dir: str = "/tmp/hf_cache"
+    
+    # DVC Configuration
+    dvc_enabled: bool = False
+    dvc_remote_name: str = "minio"
+    dvc_remote_url: str | None = None  # e.g., s3://datasets-dvc
+    dvc_cache_dir: str = "/tmp/dvc-cache"
 
 
 @lru_cache()

@@ -134,6 +134,56 @@
         </div>
       </div>
 
+      <div v-if="experimentRun" class="job-experiment-card">
+        <h2>Experiment Tracking</h2>
+        <div class="info-grid">
+          <div class="info-item">
+            <label>Tracking System:</label>
+            <span class="tracking-system-badge">{{ experimentRun.trackingSystem }}</span>
+          </div>
+          <div class="info-item">
+            <label>Experiment Name:</label>
+            <span>{{ experimentRun.experimentName }}</span>
+          </div>
+          <div v-if="experimentRun.runName" class="info-item">
+            <label>Run Name:</label>
+            <span>{{ experimentRun.runName }}</span>
+          </div>
+          <div class="info-item">
+            <label>Status:</label>
+            <span :class="`status-badge status-${experimentRun.status}`">
+              {{ experimentRun.status }}
+            </span>
+          </div>
+          <div v-if="experimentRun.metrics" class="info-item">
+            <label>Latest Metrics:</label>
+            <div class="metrics-preview">
+              <span v-for="(value, name) in experimentRun.metrics" :key="name" class="metric-tag">
+                {{ name }}: {{ value }}
+              </span>
+            </div>
+          </div>
+        </div>
+        <div class="experiment-actions">
+          <a
+            v-if="mlflowUrl"
+            :href="mlflowUrl"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="btn-mlflow"
+          >
+            Open in MLflow UI →
+          </a>
+          <router-link
+            v-if="job.experimentUrl"
+            :to="job.experimentUrl"
+            class="btn-experiment"
+          >
+            View Experiment Details →
+          </router-link>
+        </div>
+      </div>
+
       <div class="job-actions-card">
         <h2>Actions</h2>
         <div class="actions">
@@ -319,11 +369,13 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRoute } from "vue-router";
 import { trainingClient, type TrainingJob } from "@/services/trainingClient";
+import { integrationClient, type ExperimentRun } from "@/services/integrationClient";
 
 const route = useRoute();
 const jobId = route.params.id as string;
 
 const job = ref<TrainingJob | null>(null);
+const experimentRun = ref<ExperimentRun | null>(null);
 const loading = ref(true);
 const error = ref("");
 const cancelling = ref(false);
@@ -332,6 +384,11 @@ const registering = ref(false);
 const showResubmitModal = ref(false);
 const showRegisterModelModal = ref(false);
 let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+const mlflowUrl = computed(() => {
+  if (!experimentRun.value) return null;
+  return integrationClient.getMLflowUIUrl(experimentRun.value);
+});
 
 const registerModelForm = ref({
   modelName: "",
@@ -405,6 +462,17 @@ async function loadJob() {
     const response = await trainingClient.getJob(jobId);
     if (response.status === "success" && response.data) {
       job.value = response.data;
+      
+      // Load experiment run if available
+      try {
+        const expResponse = await integrationClient.getExperimentRun(jobId);
+        if (expResponse.status === "success" && expResponse.data) {
+          experimentRun.value = expResponse.data;
+        }
+      } catch (e) {
+        // Experiment run may not exist yet - this is OK
+        experimentRun.value = null;
+      }
       // Initialize resubmit form with current resource profile if available
       if (job.value.resourceProfile) {
         const rp = job.value.resourceProfile;
@@ -681,7 +749,8 @@ button:disabled {
 .job-timeline-card,
 .job-actions-card,
 .job-resources-card,
-.job-output-model-card {
+.job-output-model-card,
+.job-experiment-card {
   background: white;
   border: 1px solid #e9ecef;
   border-radius: 8px;
@@ -848,6 +917,56 @@ h2 {
 
 .btn-experiment:hover {
   background: #0056b3;
+}
+
+.btn-mlflow {
+  display: inline-block;
+  padding: 12px 24px;
+  background: #0194e2;
+  color: white;
+  text-decoration: none;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.btn-mlflow:hover {
+  background: #0178b8;
+}
+
+.tracking-system-badge {
+  display: inline-block;
+  padding: 4px 8px;
+  background: #e7f3ff;
+  color: #0194e2;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.metrics-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.metric-tag {
+  display: inline-block;
+  padding: 4px 8px;
+  background: #f8f9fa;
+  border: 1px solid #e9ecef;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: monospace;
+}
+
+.experiment-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 15px;
+  flex-wrap: wrap;
 }
 
 .modal-overlay {

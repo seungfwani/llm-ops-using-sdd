@@ -7,8 +7,9 @@
     <header>
       <h1>Model Catalog</h1>
       <div class="header-actions">
-      <button @click="fetchModels" :disabled="loading">Refresh</button>
-        <router-link to="/catalog/models/new" class="btn-primary">Create New Model</router-link>
+        <button @click="fetchModels" :disabled="loading" class="btn-secondary">Refresh</button>
+        <router-link to="/catalog/models/import" class="btn-secondary">Import from Registry</router-link>
+        <router-link to="/catalog/models/new" class="btn-primary">New Model</router-link>
       </div>
     </header>
 
@@ -35,6 +36,14 @@
       <label>
         Owner Team:
         <input v-model="filters.owner_team" @input="debouncedFetch" placeholder="Filter by team" />
+      </label>
+      <label class="search-label">
+        Search:
+        <input
+          v-model="filters.search"
+          @input="debouncedFetch"
+          placeholder="Name, version, or registry ID"
+        />
       </label>
     </div>
 
@@ -94,6 +103,7 @@ const filters = reactive({
   type: '',
   status: '',
   owner_team: '',
+  search: '',
 });
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -117,6 +127,16 @@ const filteredModels = computed(() => {
   if (filters.owner_team) {
     const teamLower = filters.owner_team.toLowerCase();
     result = result.filter(m => m.owner_team.toLowerCase().includes(teamLower));
+  }
+  if (filters.search) {
+    const q = filters.search.toLowerCase();
+    result = result.filter(m => {
+      const inName = m.name.toLowerCase().includes(q);
+      const inVersion = m.version.toLowerCase().includes(q);
+      const hfId =
+        (m.metadata?.huggingface_model_id as string | undefined)?.toLowerCase() || '';
+      return inName || inVersion || (hfId && hfId.includes(q));
+    });
   }
   
   return result;
@@ -220,6 +240,20 @@ header {
 
 .btn-primary:hover {
   background: #0056b3;
+}
+
+.btn-secondary {
+  padding: 0.5rem 1rem;
+  background: #6c757d;
+  color: white;
+  text-decoration: none;
+  border-radius: 4px;
+  border: none;
+  cursor: pointer;
+}
+
+.btn-secondary:hover {
+  background: #5a6268;
 }
 
 .filters {

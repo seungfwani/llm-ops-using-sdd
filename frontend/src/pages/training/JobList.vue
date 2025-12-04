@@ -3,8 +3,8 @@
     <header>
       <h1>Training Jobs</h1>
       <div class="header-actions">
-        <button @click="fetchJobs" :disabled="loading">Refresh</button>
-        <router-link to="/training/jobs/submit" class="btn-primary">Submit New Job</router-link>
+        <button @click="fetchJobs" :disabled="loading" class="btn-secondary">Refresh</button>
+        <router-link to="/training/jobs/submit" class="btn-primary">New Job</router-link>
       </div>
     </header>
 
@@ -206,7 +206,7 @@ header h1 {
   background: #0056b3;
 }
 
-button {
+.btn-secondary {
   padding: 8px 16px;
   background: #6c757d;
   color: white;
@@ -216,11 +216,11 @@ button {
   font-size: 14px;
 }
 
-button:hover:not(:disabled) {
+.btn-secondary:hover:not(:disabled) {
   background: #5a6268;
 }
 
-button:disabled {
+.btn-secondary:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }

@@ -5,7 +5,7 @@
       <router-link to="/catalog/datasets" class="tab-link" active-class="active">Datasets</router-link>
     </div>
     <header>
-      <h1>Model Details</h1>
+      <h1>Model Detail</h1>
       <router-link to="/catalog/models" class="btn-back">← Back to List</router-link>
     </header>
 
@@ -53,6 +53,45 @@
       <div class="detail-section">
         <h2>Metadata</h2>
         <pre class="metadata-display">{{ JSON.stringify(model.metadata, null, 2) }}</pre>
+      </div>
+
+      <div v-if="registryLinks.length" class="detail-section">
+        <h2>Registry Links</h2>
+        <ul class="registry-list">
+          <li v-for="link in registryLinks" :key="link.id" class="registry-item">
+            <div class="registry-main">
+              <span class="registry-type">{{ link.registry_type }}</span>
+              <a
+                v-if="link.registry_repo_url"
+                :href="link.registry_repo_url"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {{ link.registry_model_id }}
+              </a>
+              <span v-else class="monospace">{{ link.registry_model_id }}</span>
+            </div>
+            <div class="registry-meta">
+              <span v-if="link.registry_version" class="badge">
+                version: {{ link.registry_version }}
+              </span>
+              <span class="badge" :class="link.imported ? 'badge-imported' : 'badge-exported'">
+                {{ link.imported ? 'imported' : 'exported' }}
+              </span>
+              <span class="badge" :class="`badge-sync-${link.sync_status}`">
+                {{ link.sync_status }}
+              </span>
+            </div>
+          </li>
+        </ul>
+        <div class="registry-actions">
+          <button class="btn-secondary" :disabled="checkingUpdates" @click="handleCheckUpdates">
+            {{ checkingUpdates ? 'Checking updates...' : 'Check for Registry Updates' }}
+          </button>
+          <p v-if="updatesAvailable" class="update-hint">
+            Updates are available for one or more registry models. Please review in the registry UI.
+          </p>
+        </div>
       </div>
 
       <div class="detail-section">
@@ -121,7 +160,7 @@
       <div class="detail-section">
         <h2>Actions</h2>
         <div class="actions">
-      <label>
+          <label>
             Update Status:
             <select v-model="newStatus" @change="handleStatusUpdate">
               <option value="">Select status...</option>
@@ -129,8 +168,16 @@
               <option value="pending_review">Pending Review</option>
               <option value="approved">Approved</option>
               <option value="rejected">Rejected</option>
-        </select>
-      </label>
+            </select>
+          </label>
+          <button
+            class="btn-secondary"
+            type="button"
+            :disabled="exporting"
+            @click="handleExport"
+          >
+            {{ exporting ? 'Exporting...' : 'Export to Registry' }}
+          </button>
           <button @click="refreshModel" :disabled="loading" class="btn-secondary">
             Refresh
           </button>
@@ -150,7 +197,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { catalogClient, type CatalogModel } from '@/services/catalogClient';
+import { catalogClient, type CatalogModel, type RegistryModelLink } from '@/services/catalogClient';
 
 const route = useRoute();
 const router = useRouter();
@@ -164,6 +211,10 @@ const fileInput = ref<HTMLInputElement | null>(null);
 const uploading = ref(false);
 const uploadProgress = ref(0);
 const deleting = ref(false);
+const exporting = ref(false);
+const registryLinks = ref<RegistryModelLink[]>([]);
+const checkingUpdates = ref(false);
+const updatesAvailable = ref(false);
 
 async function fetchModel() {
   const modelId = route.params.id as string;
@@ -188,6 +239,21 @@ async function fetchModel() {
     model.value = null;
   } finally {
     loading.value = false;
+  }
+}
+
+async function fetchRegistryLinks() {
+  const modelId = route.params.id as string;
+  if (!modelId) return;
+  try {
+    const response = await catalogClient.getRegistryLinks(modelId);
+    if (response.status === 'success' && response.data) {
+      registryLinks.value = Array.isArray(response.data) ? response.data : [response.data];
+    } else {
+      registryLinks.value = [];
+    }
+  } catch {
+    registryLinks.value = [];
   }
 }
 
@@ -221,6 +287,7 @@ async function handleStatusUpdate() {
 
 function refreshModel() {
   fetchModel();
+  fetchRegistryLinks();
 }
 
 function handleFileSelect(event: Event) {
@@ -297,6 +364,58 @@ async function handleUpload() {
     uploadProgress.value = 0;
   } finally {
     uploading.value = false;
+  }
+}
+
+async function handleExport() {
+  if (!model.value) return;
+  const modelId = model.value.id;
+
+  const registryModelId = prompt(
+    'Enter target registry model ID (leave blank to derive from model name):',
+    model.value.name.replace(/_/g, '-')
+  ) || undefined;
+
+  exporting.value = true;
+  try {
+    const response = await catalogClient.exportToRegistry(modelId, {
+      registry_type: 'huggingface',
+      registry_model_id: registryModelId,
+    });
+    if (response.status === 'success') {
+      alert('Model exported to registry successfully');
+      await fetchRegistryLinks();
+    } else {
+      alert(`Export failed: ${response.message}`);
+    }
+  } catch (e) {
+    alert(`Error exporting model: ${e}`);
+  } finally {
+    exporting.value = false;
+  }
+}
+
+async function handleCheckUpdates() {
+  if (!model.value) return;
+  checkingUpdates.value = true;
+  updatesAvailable.value = false;
+  try {
+    const response = await catalogClient.checkRegistryUpdates(model.value.id);
+    if (response.status === 'success' && response.data) {
+      const data = Array.isArray(response.data) ? response.data[0] : response.data;
+      updatesAvailable.value = !!data.updates_available;
+      if (Array.isArray(data.registry_links)) {
+        // sync_status는 ModelRegistryService 쪽에서 이미 업데이트하지만,
+        // 프론트에서도 사용자에게 힌트를 주기 위해 갱신해 둔다.
+        await fetchRegistryLinks();
+      }
+    } else {
+      alert(response.message || 'Failed to check updates');
+    }
+  } catch (e) {
+    alert(`Error checking updates: ${e}`);
+  } finally {
+    checkingUpdates.value = false;
   }
 }
 
@@ -594,6 +713,89 @@ header {
 
 .no-storage-info .info-message {
   margin: 0;
+  color: #856404;
+}
+
+.registry-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.registry-item {
+  display: flex;
+  flex-direction: column;
+  padding: 0.75rem;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  background: #f8f9fa;
+}
+
+.registry-main {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.25rem;
+}
+
+.registry-type {
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #6c757d;
+}
+
+.registry-meta {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.badge {
+  padding: 0.15rem 0.5rem;
+  font-size: 0.75rem;
+  border-radius: 999px;
+  background: #e2e3e5;
+  color: #383d41;
+}
+
+.badge-imported {
+  background: #d4edda;
+  color: #155724;
+}
+
+.badge-exported {
+  background: #d1ecf1;
+  color: #0c5460;
+}
+
+.badge-sync-synced {
+  background: #d4edda;
+  color: #155724;
+}
+
+.badge-sync-out_of_sync {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.badge-sync-never_synced {
+  background: #e2e3e5;
+  color: #383d41;
+}
+
+.registry-actions {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.update-hint {
+  font-size: 0.85rem;
   color: #856404;
 }
 

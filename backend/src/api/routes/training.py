@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from core.database import get_session
+from services.experiment_tracking_service import ExperimentTrackingService
 from training import schemas
 from training.services import TrainingJobService
 
@@ -19,6 +20,11 @@ router = APIRouter(prefix="/llm-ops/v1/training", tags=["training"])
 def get_training_service(session: Session = Depends(get_session)) -> TrainingJobService:
     """Dependency to get training job service."""
     return TrainingJobService(session)
+
+
+def get_experiment_tracking_service(session: Session = Depends(get_session)) -> ExperimentTrackingService:
+    """Dependency to get experiment tracking service."""
+    return ExperimentTrackingService(session)
 
 
 @router.get("/jobs", response_model=schemas.EnvelopeTrainingJobList)
@@ -436,6 +442,199 @@ def register_output_model(
         return schemas.EnvelopeTrainingJob(
             status="fail",
             message=f"Failed to register model: {str(e)}",
+            data=None,
+        )
+
+
+@router.get("/jobs/{jobId}/experiment-run", response_model=schemas.EnvelopeExperimentRun)
+def get_experiment_run(
+    jobId: str,
+    experiment_service: ExperimentTrackingService = Depends(get_experiment_tracking_service),
+) -> schemas.EnvelopeExperimentRun:
+    """Get experiment run for a training job."""
+    try:
+        from uuid import UUID
+        job_uuid = UUID(jobId)
+        experiment_run = experiment_service.get_experiment_run(job_uuid)
+        
+        if not experiment_run:
+            return schemas.EnvelopeExperimentRun(
+                status="fail",
+                message=f"Experiment run not found for training job {jobId}",
+                data=None,
+            )
+        
+        return schemas.EnvelopeExperimentRun(
+            status="success",
+            message="Experiment run retrieved successfully",
+            data=schemas.ExperimentRunResponse(
+                id=str(experiment_run.id),
+                trainingJobId=str(experiment_run.training_job_id),
+                trackingSystem=experiment_run.tracking_system,
+                trackingRunId=experiment_run.tracking_run_id,
+                experimentName=experiment_run.experiment_name,
+                runName=experiment_run.run_name,
+                parameters=experiment_run.parameters,
+                metrics=experiment_run.metrics,
+                artifactUris=list(experiment_run.artifact_uris.values()) if experiment_run.artifact_uris else None,
+                status=experiment_run.status,
+                startTime=experiment_run.start_time,
+                endTime=experiment_run.end_time,
+                createdAt=experiment_run.created_at,
+                updatedAt=experiment_run.updated_at,
+            ),
+        )
+    except ValueError as e:
+        return schemas.EnvelopeExperimentRun(
+            status="fail",
+            message=f"Invalid job ID: {str(e)}",
+            data=None,
+        )
+    except Exception as e:
+        logger.error(f"Failed to get experiment run for job {jobId}: {e}", exc_info=True)
+        return schemas.EnvelopeExperimentRun(
+            status="fail",
+            message=f"Failed to retrieve experiment run: {str(e)}",
+            data=None,
+        )
+
+
+@router.post("/jobs/{jobId}/experiment-run", response_model=schemas.EnvelopeExperimentRun)
+def create_experiment_run(
+    jobId: str,
+    request: schemas.CreateExperimentRunRequest,
+    experiment_service: ExperimentTrackingService = Depends(get_experiment_tracking_service),
+) -> schemas.EnvelopeExperimentRun:
+    """Create experiment run for a training job."""
+    try:
+        from uuid import UUID
+        job_uuid = UUID(jobId)
+        
+        experiment_run = experiment_service.create_experiment_run(
+            training_job_id=job_uuid,
+            experiment_name=request.experimentName,
+            run_name=request.runName,
+            parameters=request.parameters,
+        )
+        
+        return schemas.EnvelopeExperimentRun(
+            status="success",
+            message="Experiment run created successfully",
+            data=schemas.ExperimentRunResponse(
+                id=str(experiment_run.id),
+                trainingJobId=str(experiment_run.training_job_id),
+                trackingSystem=experiment_run.tracking_system,
+                trackingRunId=experiment_run.tracking_run_id,
+                experimentName=experiment_run.experiment_name,
+                runName=experiment_run.run_name,
+                parameters=experiment_run.parameters,
+                metrics=experiment_run.metrics,
+                artifactUris=list(experiment_run.artifact_uris.values()) if experiment_run.artifact_uris else None,
+                status=experiment_run.status,
+                startTime=experiment_run.start_time,
+                endTime=experiment_run.end_time,
+                createdAt=experiment_run.created_at,
+                updatedAt=experiment_run.updated_at,
+            ),
+        )
+    except ValueError as e:
+        return schemas.EnvelopeExperimentRun(
+            status="fail",
+            message=str(e),
+            data=None,
+        )
+    except Exception as e:
+        logger.error(f"Failed to create experiment run for job {jobId}: {e}", exc_info=True)
+        return schemas.EnvelopeExperimentRun(
+            status="fail",
+            message=f"Failed to create experiment run: {str(e)}",
+            data=None,
+        )
+
+
+@router.post("/jobs/{jobId}/experiment-run/metrics", response_model=schemas.EnvelopeMetric)
+def log_experiment_metrics(
+    jobId: str,
+    request: schemas.LogExperimentMetricsRequest,
+    experiment_service: ExperimentTrackingService = Depends(get_experiment_tracking_service),
+) -> schemas.EnvelopeMetric:
+    """Log metrics to experiment run."""
+    try:
+        from uuid import UUID
+        job_uuid = UUID(jobId)
+        
+        experiment_service.log_metrics(
+            training_job_id=job_uuid,
+            metrics=request.metrics,
+            step=request.step,
+        )
+        
+        return schemas.EnvelopeMetric(
+            status="success",
+            message="Metrics logged successfully",
+            data=None,
+        )
+    except ValueError as e:
+        return schemas.EnvelopeMetric(
+            status="fail",
+            message=str(e),
+            data=None,
+        )
+    except Exception as e:
+        logger.error(f"Failed to log metrics for job {jobId}: {e}", exc_info=True)
+        return schemas.EnvelopeMetric(
+            status="fail",
+            message=f"Failed to log metrics: {str(e)}",
+            data=None,
+        )
+
+
+@router.post("/experiments/search", response_model=schemas.EnvelopeExperimentSearch)
+def search_experiments(
+    request: schemas.SearchExperimentsRequest,
+    experiment_service: ExperimentTrackingService = Depends(get_experiment_tracking_service),
+) -> schemas.EnvelopeExperimentSearch:
+    """Search experiments in the tracking system."""
+    try:
+        experiments = experiment_service.search_experiments(
+            experiment_name=request.experimentName,
+            filter_string=request.filterString,
+            max_results=request.maxResults,
+        )
+        
+        experiment_responses = [
+            schemas.ExperimentRunResponse(
+                id=exp.get("run_id", ""),
+                trainingJobId=exp.get("training_job_id", ""),
+                trackingSystem=exp.get("tracking_system", "mlflow"),
+                trackingRunId=exp.get("run_id", ""),
+                experimentName=exp.get("experiment_name", ""),
+                runName=exp.get("run_name"),
+                parameters=exp.get("parameters"),
+                metrics=exp.get("metrics"),
+                artifactUris=exp.get("artifact_uris"),
+                status=exp.get("status", "running"),
+                startTime=exp.get("start_time"),
+                endTime=exp.get("end_time"),
+                createdAt=exp.get("start_time"),
+                updatedAt=exp.get("end_time") or exp.get("start_time"),
+            )
+            for exp in experiments
+        ]
+        
+        return schemas.EnvelopeExperimentSearch(
+            status="success",
+            message="Experiments retrieved successfully",
+            data=schemas.ExperimentSearchResponse(
+                experiments=experiment_responses,
+                total=len(experiment_responses),
+            ),
+        )
+    except Exception as e:
+        logger.error(f"Failed to search experiments: {e}", exc_info=True)
+        return schemas.EnvelopeExperimentSearch(
+            status="fail",
+            message=f"Failed to search experiments: {str(e)}",
             data=None,
         )
 

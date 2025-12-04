@@ -1,6 +1,9 @@
 <template>
   <div class="endpoint-deploy">
-    <h1>Deploy Serving Endpoint</h1>
+    <header>
+      <router-link to="/serving/endpoints" class="back-link">← Back to Endpoints</router-link>
+      <h1>Deploy Serving Endpoint</h1>
+    </header>
     <form @submit.prevent="deployEndpoint">
       <div>
         <label>Model:</label>
@@ -30,6 +33,61 @@
       <div>
         <label>Max Replicas:</label>
         <input v-model.number="form.maxReplicas" type="number" min="1" required />
+      </div>
+      <div>
+        <label>Serving Framework:</label>
+        <select v-model="form.servingFramework">
+          <option value="">Use default (from server settings)</option>
+          <option v-for="framework in frameworks" :key="framework.name" :value="framework.name" :disabled="!framework.enabled">
+            {{ framework.display_name }} {{ framework.enabled ? '' : '(disabled)' }}
+          </option>
+        </select>
+        <small style="display: block; color: #666; margin-top: 5px;">
+          Select the serving framework to use (KServe, Ray Serve, etc.). Leave empty to use server default.
+        </small>
+        <div v-if="selectedFramework" style="margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 4px;">
+          <strong>Capabilities:</strong>
+          <ul style="margin: 5px 0 0 20px; padding: 0;">
+            <li v-for="capability in selectedFramework.capabilities" :key="capability" style="margin: 3px 0;">
+              {{ capability }}
+            </li>
+          </ul>
+        </div>
+      </div>
+      <div>
+        <label>Autoscaling Configuration:</label>
+        <div style="margin-left: 20px; margin-top: 10px;">
+          <div style="margin-bottom: 10px;">
+            <label style="display: flex; align-items: center;">
+              <input v-model.number="form.autoscalePolicy.targetLatencyMs" type="number" min="0" placeholder="Target latency (ms)" style="width: 200px; margin-right: 10px;" />
+              Target Latency (ms)
+            </label>
+            <small style="display: block; color: #666; margin-top: 5px; margin-left: 210px;">
+              Target latency in milliseconds for autoscaling decisions
+            </small>
+          </div>
+          <div style="margin-bottom: 10px;">
+            <label style="display: flex; align-items: center;">
+              <input v-model.number="form.autoscalePolicy.gpuUtilization" type="number" min="0" max="100" placeholder="GPU utilization (%)" style="width: 200px; margin-right: 10px;" />
+              GPU Utilization (%)
+            </label>
+            <small style="display: block; color: #666; margin-top: 5px; margin-left: 210px;">
+              Target GPU utilization percentage (0-100)
+            </small>
+          </div>
+          <div style="margin-bottom: 10px;">
+            <label style="display: flex; align-items: center;">
+              <input v-model.number="form.autoscalePolicy.cpuUtilization" type="number" min="0" max="100" placeholder="CPU utilization (%)" style="width: 200px; margin-right: 10px;" />
+              CPU Utilization (%)
+            </label>
+            <small style="display: block; color: #666; margin-top: 5px; margin-left: 210px;">
+              Target CPU utilization percentage (0-100)
+            </small>
+          </div>
+        </div>
+        <small style="display: block; color: #666; margin-top: 5px;">
+          Configure autoscaling metrics. Leave empty to use default autoscaling behavior.
+        </small>
       </div>
       <div>
         <label>
@@ -89,15 +147,22 @@
           Select the container image for model serving runtime. Different models may require different images.
         </small>
       </div>
-      <button type="submit" :disabled="deploying">Deploy</button>
+      <div class="form-actions">
+        <button type="button" class="btn-secondary" @click="$router.push('/serving/endpoints')" :disabled="deploying">
+          Cancel
+        </button>
+        <button type="submit" class="btn-primary" :disabled="deploying">
+          {{ deploying ? 'Deploying...' : 'Deploy Endpoint' }}
+        </button>
+      </div>
     </form>
     <div v-if="message" :class="messageType">{{ message }}</div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from "vue";
-import { servingClient, type ServingEndpointRequest } from "@/services/servingClient";
+import { ref, reactive, onMounted, computed } from "vue";
+import { servingClient, type ServingEndpointRequest, type ServingFramework } from "@/services/servingClient";
 import { catalogClient } from "@/services/catalogClient";
 
 const form = reactive<ServingEndpointRequest>({
@@ -112,13 +177,25 @@ const form = reactive<ServingEndpointRequest>({
   cpuLimit: "",
   memoryRequest: "",
   memoryLimit: "",
+  servingFramework: "",
+  autoscalePolicy: {
+    targetLatencyMs: undefined,
+    gpuUtilization: undefined,
+    cpuUtilization: undefined,
+  },
 });
 
 const models = ref([]);
+const frameworks = ref<ServingFramework[]>([]);
 const deploying = ref(false);
 const message = ref("");
 const messageType = ref<"success" | "error">("success");
 const customImage = ref("");
+
+const selectedFramework = computed(() => {
+  if (!form.servingFramework) return null;
+  return frameworks.value.find(f => f.name === form.servingFramework) || null;
+});
 
 onMounted(async () => {
   try {
@@ -129,6 +206,15 @@ onMounted(async () => {
     }
   } catch (e) {
     console.error("Failed to load models:", e);
+  }
+
+  try {
+    const frameworksRes = await servingClient.listFrameworks();
+    if (frameworksRes.status === "success" && frameworksRes.data?.frameworks) {
+      frameworks.value = frameworksRes.data.frameworks;
+    }
+  } catch (e) {
+    console.error("Failed to load frameworks:", e);
   }
 });
 
@@ -143,9 +229,32 @@ async function deployEndpoint() {
       route: form.route,
       minReplicas: form.minReplicas,
       maxReplicas: form.maxReplicas,
-      autoscalePolicy: form.autoscalePolicy,
+      autoscalePolicy: undefined,
       promptPolicyId: form.promptPolicyId,
     };
+    
+    // Only include autoscalePolicy if at least one metric is set
+    if (form.autoscalePolicy && (
+      form.autoscalePolicy.targetLatencyMs !== undefined ||
+      form.autoscalePolicy.gpuUtilization !== undefined ||
+      form.autoscalePolicy.cpuUtilization !== undefined
+    )) {
+      request.autoscalePolicy = {};
+      if (form.autoscalePolicy.targetLatencyMs !== undefined) {
+        request.autoscalePolicy.targetLatencyMs = form.autoscalePolicy.targetLatencyMs;
+      }
+      if (form.autoscalePolicy.gpuUtilization !== undefined) {
+        request.autoscalePolicy.gpuUtilization = form.autoscalePolicy.gpuUtilization;
+      }
+      if (form.autoscalePolicy.cpuUtilization !== undefined) {
+        request.autoscalePolicy.cpuUtilization = form.autoscalePolicy.cpuUtilization;
+      }
+    }
+    
+    // Include serving framework if selected
+    if (form.servingFramework && form.servingFramework.trim()) {
+      request.servingFramework = form.servingFramework.trim();
+    }
     // Only include useGpu if it's explicitly set (not undefined)
     if (form.useGpu !== undefined) {
       request.useGpu = form.useGpu;
@@ -198,6 +307,29 @@ async function deployEndpoint() {
   margin: 0 auto;
   padding: 20px;
 }
+
+header {
+  margin-bottom: 20px;
+}
+
+.back-link {
+  display: inline-block;
+  margin-bottom: 10px;
+  color: #007bff;
+  text-decoration: none;
+  font-size: 14px;
+}
+
+.back-link:hover {
+  text-decoration: underline;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+}
+
 form > div {
   margin-bottom: 15px;
 }
@@ -223,14 +355,44 @@ small {
   margin-top: 5px;
   font-size: 0.875rem;
 }
-button {
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.btn-primary,
+.btn-secondary {
   padding: 10px 20px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.btn-primary {
   background: #007bff;
   color: white;
-  border: none;
-  cursor: pointer;
 }
-button:disabled {
+
+.btn-primary:hover:not(:disabled) {
+  background: #0056b3;
+}
+
+.btn-secondary {
+  background: #6c757d;
+  color: white;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: #5a6268;
+}
+
+.btn-primary:disabled,
+.btn-secondary:disabled {
   background: #ccc;
   cursor: not-allowed;
 }

@@ -1,6 +1,12 @@
 <template>
   <div class="policy-list">
-    <h1>Governance Policies</h1>
+    <header class="policy-header">
+      <h1>Governance Policies</h1>
+      <div class="header-actions">
+        <button class="btn-secondary" @click="loadPolicies">Refresh</button>
+        <button class="btn-primary" @click="goToCreatePolicy">New Policy</button>
+      </div>
+    </header>
     <div class="filters">
       <select v-model="filterScope" @change="loadPolicies">
         <option value="">All Scopes</option>
@@ -15,7 +21,6 @@
         <option value="active">Active</option>
         <option value="deprecated">Deprecated</option>
       </select>
-      <button @click="goToCreatePolicy">Create Policy</button>
     </div>
     <div v-if="loading">Loading...</div>
     <div v-else-if="error">{{ error }}</div>
@@ -96,6 +101,16 @@ function formatDate(dateStr?: string): string {
 .policy-list {
   padding: 20px;
 }
+.policy-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.header-actions {
+  display: flex;
+  gap: 8px;
+}
 .filters {
   margin-bottom: 20px;
   display: flex;
@@ -104,12 +119,27 @@ function formatDate(dateStr?: string): string {
 select {
   padding: 8px;
 }
-button {
+.btn-primary {
   padding: 8px 16px;
   background: #007bff;
   color: white;
   border: none;
+  border-radius: 4px;
   cursor: pointer;
+}
+.btn-primary:hover {
+  background: #0056b3;
+}
+.btn-secondary {
+  padding: 8px 16px;
+  background: #6c757d;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.btn-secondary:hover {
+  background: #5a6268;
 }
 table {
   width: 100%;

@@ -141,3 +141,60 @@ class ChatCompletionResponse(BaseModel):
     message: str = ""
     data: Optional[ChatCompletionData] = None
 
+
+class ServingDeploymentResponse(BaseModel):
+    """Response schema for serving deployment operations."""
+
+    id: str
+    serving_endpoint_id: str
+    serving_framework: str
+    framework_resource_id: str
+    framework_namespace: str
+    replica_count: int
+    min_replicas: int
+    max_replicas: int
+    autoscaling_metrics: Optional[dict] = None
+    resource_requests: Optional[dict] = None
+    resource_limits: Optional[dict] = None
+    framework_status: Optional[dict] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class UpdateDeploymentRequest(BaseModel):
+    """Request schema for updating a serving deployment."""
+
+    min_replicas: Optional[int] = Field(None, ge=0)
+    max_replicas: Optional[int] = Field(None, ge=1)
+    autoscaling_metrics: Optional[dict] = None
+    resource_requests: Optional[dict] = None
+    resource_limits: Optional[dict] = None
+
+
+class EnvelopeServingDeployment(BaseModel):
+    """Standard API envelope for serving deployment responses."""
+
+    status: str = Field(..., pattern="^(success|fail)$")
+    message: str = ""
+    data: Optional[ServingDeploymentResponse] = None
+
+
+class ServingFramework(BaseModel):
+    """Response schema for serving framework information."""
+
+    name: str
+    display_name: str
+    enabled: bool
+    capabilities: list[str]
+
+
+class EnvelopeServingFrameworks(BaseModel):
+    """Standard API envelope for serving frameworks list."""
+
+    status: str = Field(..., pattern="^(success|fail)$")
+    message: str = ""
+    data: Optional[dict] = None  # Will contain {"frameworks": list[ServingFramework]}
+

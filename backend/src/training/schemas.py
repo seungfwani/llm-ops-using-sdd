@@ -158,3 +158,74 @@ class RegisterOutputModelRequest(BaseModel):
     ownerTeam: Optional[str] = Field(default="ml-platform", description="Owner team for the model")
     metadata: Optional[dict] = Field(default=None, description="Additional metadata for the model")
 
+
+class ExperimentRunResponse(BaseModel):
+    """Response schema for experiment run."""
+
+    id: str
+    trainingJobId: str
+    trackingSystem: str
+    trackingRunId: str
+    experimentName: str
+    runName: Optional[str] = None
+    parameters: Optional[dict] = None
+    metrics: Optional[dict] = None
+    artifactUris: Optional[list] = None
+    status: str
+    startTime: datetime
+    endTime: Optional[datetime] = None
+    createdAt: datetime
+    updatedAt: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class EnvelopeExperimentRun(BaseModel):
+    """Standard API envelope for experiment run responses."""
+
+    status: str = Field(..., pattern="^(success|fail)$")
+    message: str = ""
+    data: Optional[ExperimentRunResponse] = None
+
+
+class CreateExperimentRunRequest(BaseModel):
+    """Request schema for creating an experiment run."""
+
+    experimentName: Optional[str] = Field(None, description="Experiment name (defaults to model name)")
+    runName: Optional[str] = Field(None, description="Run name/tag")
+    parameters: Optional[dict] = Field(None, description="Parameters to log")
+
+
+class LogExperimentMetricsRequest(BaseModel):
+    """Request schema for logging experiment metrics."""
+
+    metrics: dict = Field(..., description="Dictionary of metric names to values")
+    step: Optional[int] = Field(None, description="Optional step number for time-series metrics")
+
+
+class SearchExperimentsRequest(BaseModel):
+    """Request schema for searching experiments."""
+
+    experimentName: Optional[str] = Field(None, description="Filter by experiment name")
+    filterString: Optional[str] = Field(None, description="Filter expression (tool-specific syntax)")
+    maxResults: int = Field(default=100, ge=1, le=1000, description="Maximum number of results")
+
+
+class ExperimentSearchResponse(BaseModel):
+    """Response schema for experiment search."""
+
+    experiments: list[ExperimentRunResponse]
+    total: int
+
+    class Config:
+        from_attributes = True
+
+
+class EnvelopeExperimentSearch(BaseModel):
+    """Standard API envelope for experiment search responses."""
+
+    status: str = Field(..., pattern="^(success|fail)$")
+    message: str = ""
+    data: Optional[ExperimentSearchResponse] = None
+

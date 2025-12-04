@@ -5,7 +5,7 @@
       <router-link to="/catalog/datasets" class="tab-link" active-class="active">Datasets</router-link>
     </div>
     <header>
-      <h1>Dataset Details</h1>
+      <h1>Dataset Detail</h1>
       <router-link to="/catalog/datasets" class="btn-back">← Back to List</router-link>
     </header>
 
@@ -145,6 +145,70 @@
       </div>
 
       <div class="detail-section">
+        <h2>Data Versioning</h2>
+        <div v-if="versionsLoading" class="loading">Loading dataset versions...</div>
+        <div v-else-if="versionsError" class="error">{{ versionsError }}</div>
+        <div v-else>
+          <div class="version-actions">
+            <button class="btn-secondary" @click="loadVersions" :disabled="versionsLoading">
+              Refresh Versions
+            </button>
+            <button
+              class="btn-primary"
+              @click="createVersion"
+              :disabled="createVersionLoading || !dataset?.storage_uri"
+            >
+              {{ createVersionLoading ? 'Creating Version...' : 'New Version' }}
+            </button>
+            <router-link
+              :to="`/catalog/datasets/${datasetId}/versions/compare`"
+              class="btn-secondary"
+            >
+              Compare Versions
+            </router-link>
+          </div>
+          <p v-if="!versions.length" class="text-muted">
+            No versions found yet. Uploading files or clicking "Create Version Now" will create versions
+            when data versioning is enabled.
+          </p>
+          <table v-else class="versions-table">
+            <thead>
+              <tr>
+                <th>Tag / ID</th>
+                <th>Checksum</th>
+                <th>File Count</th>
+                <th>Total Size</th>
+                <th>Created At</th>
+                <th>Created By</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="version in versions" :key="version.id">
+                <td>
+                  <strong>{{ version.version_tag || version.version_id.slice(0, 8) }}</strong>
+                </td>
+                <td class="monospace">{{ version.checksum.slice(0, 12) }}...</td>
+                <td>{{ version.file_count }}</td>
+                <td>{{ formatFileSize(version.total_size_bytes) }}</td>
+                <td>{{ formatDate(version.created_at) }}</td>
+                <td>{{ version.created_by }}</td>
+                <td>
+                  <button
+                    class="btn-secondary"
+                    @click="restoreVersion(version.id)"
+                    :disabled="restoreLoading"
+                  >
+                    Restore
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="detail-section">
         <h2>File Upload</h2>
         <div class="file-upload-section">
           <label>
@@ -196,7 +260,11 @@
 <script setup lang="ts">
 import { onMounted, ref, computed } from 'vue';
 import { useRoute } from 'vue-router';
-import { catalogClient, type CatalogDataset } from '@/services/catalogClient';
+import {
+  catalogClient,
+  type CatalogDataset,
+  type DatasetVersion,
+} from '@/services/catalogClient';
 
 const route = useRoute();
 const datasetId = computed(() => route.params.id as string);
@@ -219,6 +287,13 @@ const fileInput = ref<HTMLInputElement | null>(null);
 const selectedStatus = ref<string>('draft');
 const statusUpdating = ref(false);
 
+// Data versioning state
+const versions = ref<DatasetVersion[]>([]);
+const versionsLoading = ref(false);
+const versionsError = ref('');
+const createVersionLoading = ref(false);
+const restoreLoading = ref(false);
+
 function getQualityScoreClass(score: number | null): string {
   if (score === null) return 'quality-score na';
   if (score >= 80) return 'quality-score high';
@@ -232,6 +307,14 @@ function formatFileSize(bytes: number): string {
   const sizes = ['Bytes', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+}
+
+function formatDate(value: string): string {
+  try {
+    return new Date(value).toLocaleString();
+  } catch {
+    return value;
+  }
 }
 
 function getApprovalStatus(): string {
@@ -262,6 +345,77 @@ async function fetchDataset() {
     error.value = err instanceof Error ? err.message : 'Failed to fetch dataset';
   } finally {
     loading.value = false;
+  }
+}
+
+async function loadVersions() {
+  versionsLoading.value = true;
+  versionsError.value = '';
+  try {
+    const response = await catalogClient.listDatasetVersions(datasetId.value);
+    if (response.status === 'success' && response.data) {
+      const list = Array.isArray(response.data) ? response.data : [response.data];
+      versions.value = list;
+    } else {
+      versionsError.value =
+        response.message || 'Failed to load dataset versions (data versioning may be disabled)';
+    }
+  } catch (err) {
+    versionsError.value =
+      err instanceof Error ? err.message : 'Failed to load dataset versions (graceful fallback)';
+  } finally {
+    versionsLoading.value = false;
+  }
+}
+
+async function createVersion() {
+  if (!dataset.value?.storage_uri) return;
+  createVersionLoading.value = true;
+  try {
+    const response = await catalogClient.createDatasetVersion(datasetId.value, {});
+    if (response.status === 'success') {
+      await loadVersions();
+      alert('Dataset version created successfully');
+    } else {
+      alert(
+        response.message ||
+          'Failed to create dataset version (data versioning may be disabled or unavailable)'
+      );
+    }
+  } catch (err) {
+    alert(
+      `Failed to create dataset version (graceful fallback): ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+  } finally {
+    createVersionLoading.value = false;
+  }
+}
+
+async function restoreVersion(versionId: string) {
+  if (!confirm('Are you sure you want to restore this dataset version?')) {
+    return;
+  }
+  restoreLoading.value = true;
+  try {
+    const response = await catalogClient.restoreDatasetVersion(datasetId.value, versionId);
+    if (response.status === 'success') {
+      alert('Dataset version restore requested successfully');
+    } else {
+      alert(
+        response.message ||
+          'Failed to restore dataset version (data versioning may be disabled or unavailable)'
+      );
+    }
+  } catch (err) {
+    alert(
+      `Failed to restore dataset version (graceful fallback): ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+  } finally {
+    restoreLoading.value = false;
   }
 }
 
@@ -364,6 +518,7 @@ async function handleUpload() {
       selectedFiles.value = [];
       uploadProgress.value = 0;
       await fetchDataset();
+      await loadVersions();
       await loadValidation();
     } else {
       alert(`Upload failed: ${response.message}`);
@@ -381,6 +536,7 @@ onMounted(async () => {
   if (dataset.value?.storage_uri) {
     await loadPreview();
     await loadValidation();
+    await loadVersions();
   }
 });
 </script>
@@ -674,6 +830,26 @@ header {
 .status-select:disabled {
   background: #f5f5f5;
   cursor: not-allowed;
+}
+
+.versions-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+}
+
+.versions-table th,
+.versions-table td {
+  padding: 0.5rem;
+  border: 1px solid #ddd;
+  text-align: left;
+}
+
+.version-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
 }
 </style>
 
