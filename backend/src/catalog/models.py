@@ -47,6 +47,11 @@ class ModelCatalogEntry(Base):
     storage_uri: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     lineage_dataset_ids: Mapped[Optional[List[str]]] = mapped_column(ARRAY(UUID(as_uuid=True)))
     evaluation_summary: Mapped[Optional[dict]] = mapped_column(JSON)
+    model_family: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        comment="Model family from training-serving-spec.md whitelist (llama, mistral, gemma, bert, etc.) - Required for TrainJobSpec/DeploymentSpec validation"
+    )
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
@@ -81,6 +86,11 @@ class DatasetRecord(Base):
     quality_score: Mapped[Optional[int]] = mapped_column(Integer)
     change_log: Mapped[Optional[str]] = mapped_column(Text)
     owner_team: Mapped[str] = mapped_column(Text, nullable=False)
+    type: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        comment="Dataset type from training-serving-spec.md (pretrain_corpus, sft_pair, rag_qa, rlhf_pair) - Required for TrainJobSpec validation"
+    )
     approved_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -290,6 +300,7 @@ class ServingEndpoint(Base):
     cpu_limit: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     memory_request: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     memory_limit: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    deployment_spec: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, comment="DeploymentSpec JSON from training-serving-spec.md")
     last_health_check: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
     rollback_plan: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), default=datetime.utcnow)

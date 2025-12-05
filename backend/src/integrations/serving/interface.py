@@ -27,6 +27,9 @@ class ServingFrameworkAdapter(BaseAdapter):
         min_replicas: int = 1,
         max_replicas: int = 1,
         autoscaling_metrics: Optional[Dict[str, Any]] = None,
+        serving_runtime_image: Optional[str] = None,
+        model_metadata: Optional[Dict[str, Any]] = None,
+        use_gpu: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Deploy a model serving endpoint.
         

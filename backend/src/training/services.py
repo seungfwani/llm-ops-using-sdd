@@ -10,10 +10,14 @@ from sqlalchemy.orm import Session
 
 from catalog import models as catalog_models
 from catalog.services.catalog import CatalogService
+from core.image_config import get_image_config
 from core.settings import get_settings
 from services.experiment_tracking_service import ExperimentTrackingService
+from training.converters.mlflow_converter import MLflowConverter
 from training.repositories import ExperimentMetricRepository, TrainingJobRepository
 from training.scheduler import KubernetesScheduler
+from training.schemas import TrainJobSpec
+from training.validators.train_job_spec_validator import TrainJobSpecValidator
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -77,6 +81,7 @@ class TrainingJobService:
         output_model_name: Optional[str] = None,
         output_model_version: Optional[str] = None,
         auto_register_output_model: bool = True,
+        train_job_spec: Optional[TrainJobSpec] = None,
     ) -> catalog_models.TrainingJob:
         """
         Submit a training job to the scheduler.
@@ -122,6 +127,27 @@ class TrainingJobService:
         if not dataset.approved_at:
             raise ValueError(f"Dataset {dataset_id} is not approved")
 
+        # If TrainJobSpec is provided, validate it
+        image_config = get_image_config()
+        container_image = None
+        if train_job_spec:
+            # Validate TrainJobSpec
+            base_model_max_seq_len = None
+            if train_job_spec.base_model_ref and model_entry_id:
+                model_entry = self.session.get(catalog_models.ModelCatalogEntry, model_entry_id)
+                if model_entry and model_entry.model_metadata:
+                    base_model_max_seq_len = model_entry.model_metadata.get("max_position_embeddings")
+            
+            TrainJobSpecValidator.validate(train_job_spec, base_model_max_seq_len)
+            
+            # Select container image based on job_type and GPU availability
+            container_image = image_config.get_train_image_with_fallback(
+                train_job_spec.job_type,
+                train_job_spec.use_gpu
+            )
+            
+            logger.info(f"Using container image {container_image} for job_type {train_job_spec.job_type} (use_gpu={train_job_spec.use_gpu})")
+
         # Store output model configuration in resource_profile for later use
         enhanced_resource_profile = resource_profile.copy()
         if "outputModelConfig" not in enhanced_resource_profile:
@@ -142,6 +168,10 @@ class TrainingJobService:
             submitted_by=submitted_by,
             submitted_at=datetime.utcnow(),
         )
+
+        # Store TrainJobSpec if provided
+        if train_job_spec:
+            job.train_job_spec = train_job_spec.model_dump()
 
         job = self.job_repo.create(job)
 
@@ -214,15 +244,22 @@ class TrainingJobService:
                 base_env_vars["AUTO_UPLOAD_MODEL"] = "false"
                 logger.info(f"Model file auto-upload disabled for job {job.id}")
             
+            # Use container image from TrainJobSpec if available, otherwise use resource_profile
+            effective_image = container_image or resource_profile.get("image", "pytorch/pytorch:latest")
+            
             if use_gpu:
                 gpu_count = resource_profile.get("gpuCount", resource_profile.get("gpu_count", 1))
+                if train_job_spec:
+                    gpu_count = train_job_spec.resources.gpus
                 num_nodes = resource_profile.get("numNodes", resource_profile.get("num_nodes", 1))
+                if train_job_spec:
+                    num_nodes = train_job_spec.resources.nodes
                 
                 # For distributed training, use multi-node configuration
                 if job_type == "distributed" or gpu_count > 1 or num_nodes > 1:
                     k8s_uid = self.scheduler.submit_distributed_job(
                         job_name=job_name,
-                        image=resource_profile.get("image", "pytorch/pytorch:latest"),
+                        image=effective_image,
                         gpu_count=gpu_count,
                         num_nodes=num_nodes,
                         gpu_type=resource_profile.get("gpuType", resource_profile.get("gpu_type", "nvidia-tesla-v100")),
@@ -232,7 +269,7 @@ class TrainingJobService:
                 else:
                     k8s_uid = self.scheduler.submit_job(
                         job_name=job_name,
-                        image=resource_profile.get("image", "pytorch/pytorch:latest"),
+                        image=effective_image,
                         gpu_count=gpu_count,
                         gpu_type=resource_profile.get("gpuType", resource_profile.get("gpu_type", "nvidia-tesla-v100")),
                         command=self._build_command(job_type, hyperparameters or {}),
@@ -246,7 +283,7 @@ class TrainingJobService:
                 cpu_env_vars["USE_GPU"] = "false"
                 k8s_uid = self.scheduler.submit_cpu_only_job(
                     job_name=job_name,
-                    image=resource_profile.get("image", "pytorch/pytorch:latest"),
+                    image=effective_image,
                     cpu_cores=cpu_cores,
                     memory=memory,
                     command=self._build_command(job_type, hyperparameters or {}),
@@ -266,11 +303,29 @@ class TrainingJobService:
                     if model_entry:
                         experiment_name = f"{model_entry.name}-{model_entry.version}"
                 
+                # Use TrainJobSpec if available, otherwise use hyperparameters
+                mlflow_params = hyperparameters or {}
+                mlflow_tags = {}
+                
+                # If train_job_spec is stored in job, use it for MLflow conversion
+                if hasattr(job, 'train_job_spec') and job.train_job_spec:
+                    try:
+                        spec = TrainJobSpec(**job.train_job_spec)
+                        mlflow_params = MLflowConverter.to_mlflow_params(spec)
+                        mlflow_tags = MLflowConverter.to_mlflow_tags(spec)
+                        experiment_name = MLflowConverter.get_experiment_name(spec)
+                        run_name = MLflowConverter.get_run_name(spec)
+                    except Exception as e:
+                        logger.warning(f"Failed to convert TrainJobSpec to MLflow format: {e}, using hyperparameters")
+                        run_name = f"run-{job.id}"
+                else:
+                    run_name = f"run-{job.id}"
+                
                 self.experiment_tracking.create_experiment_run(
                     training_job_id=job.id,
                     experiment_name=experiment_name,
-                    run_name=f"run-{job.id}",
-                    parameters=hyperparameters or {},
+                    run_name=run_name,
+                    parameters=mlflow_params,
                 )
             except Exception as e:
                 logger.warning(f"Failed to create experiment run for job {job.id}: {e}")

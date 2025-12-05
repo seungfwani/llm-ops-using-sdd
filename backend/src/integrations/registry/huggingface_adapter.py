@@ -97,11 +97,18 @@ class HuggingFaceAdapter(RegistryAdapter):
                 tool_name="huggingface",
             )
         
+        # Normalize version: empty string or whitespace-only should be None
+        # Hugging Face Hub uses None to mean "default branch" (usually "main")
+        if version is not None:
+            version = version.strip()
+            if not version:
+                version = None
+        
         try:
             from huggingface_hub import snapshot_download, model_info, HfApi
             
             # Get model info
-            logger.info(f"Fetching model info from Hugging Face: {registry_model_id}")
+            logger.info(f"Fetching model info from Hugging Face: {registry_model_id}, revision={version or 'default'}")
             info = model_info(registry_model_id, token=self.token, revision=version)
             
             # Build repository URL
@@ -253,6 +260,12 @@ class HuggingFaceAdapter(RegistryAdapter):
                 message="Hugging Face Hub integration is disabled",
                 tool_name="huggingface",
             )
+        
+        # Normalize version: empty string or whitespace-only should be None
+        if version is not None:
+            version = version.strip()
+            if not version:
+                version = None
         
         try:
             from huggingface_hub import model_info, HfApi
@@ -440,6 +453,11 @@ class HuggingFaceAdapter(RegistryAdapter):
         if hasattr(info, "author"):
             metadata["author"] = info.author
         
+        # Try to infer model_family from model_type or model_id
+        model_family = self._infer_model_family(registry_model_id, info)
+        if model_family:
+            metadata["model_family"] = model_family
+        
         # Try to get model card
         try:
             from huggingface_hub import hf_hub_download
@@ -456,6 +474,45 @@ class HuggingFaceAdapter(RegistryAdapter):
             pass  # README is optional
         
         return metadata
+    
+    def _infer_model_family(
+        self,
+        registry_model_id: str,
+        info,
+    ) -> Optional[str]:
+        """Infer model_family from Hugging Face model info.
+        
+        Args:
+            registry_model_id: Model ID in registry
+            info: Hugging Face model info object
+            
+        Returns:
+            Inferred model_family or None
+        """
+        # Supported model families from training-serving-spec.md
+        supported_families = {"llama", "mistral", "gemma", "bert"}
+        
+        # Try to infer from model_type
+        if hasattr(info, "model_type") and info.model_type:
+            model_type_lower = info.model_type.lower()
+            for family in supported_families:
+                if family in model_type_lower:
+                    return family
+        
+        # Try to infer from model_id (e.g., "meta-llama/Llama-2-7b-chat-hf")
+        model_id_lower = registry_model_id.lower()
+        for family in supported_families:
+            if family in model_id_lower:
+                return family
+        
+        # Try to infer from tags
+        if hasattr(info, "tags") and info.tags:
+            tags_lower = [tag.lower() for tag in info.tags]
+            for family in supported_families:
+                if any(family in tag for tag in tags_lower):
+                    return family
+        
+        return None
     
     def _upload_to_storage(
         self,

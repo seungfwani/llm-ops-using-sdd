@@ -2,7 +2,6 @@
   <div class="experiment-compare">
     <header>
       <h1>Compare Experiments</h1>
-      <router-link to="/training/jobs" class="back-link">← Back to Jobs</router-link>
     </header>
 
     <div class="compare-controls">

@@ -87,6 +87,7 @@ class ModelRegistryService:
         model_type: str = "base",
         owner_team: str = "ml-platform",
         registry_version: Optional[str] = None,
+        model_family: Optional[str] = None,
     ) -> catalog_models.ModelCatalogEntry:
         """Import a model from an open-source registry.
         
@@ -129,50 +130,157 @@ class ModelRegistryService:
         model_id = uuid4()
         logger.info(f"Creating catalog entry for model: {name}")
         
-        # Import model using adapter
-        import_info = adapter.import_model(
-            registry_model_id=registry_model_id,
-            model_catalog_id=model_id,
-            version=registry_version,
-        )
+        # Get model metadata first (without downloading) to determine model_family
+        try:
+            metadata_info = adapter.get_model_metadata(
+                registry_model_id=registry_model_id,
+                version=registry_version,
+            )
+            # Extract basic metadata for initial registration
+            initial_metadata = {
+                "source": "huggingface",
+                "huggingface_model_id": registry_model_id,
+                "registry_version": metadata_info.get("version"),
+            }
+        except Exception as e:
+            logger.warning(f"Failed to get model metadata, using minimal metadata: {e}")
+            initial_metadata = {
+                "source": "huggingface",
+                "huggingface_model_id": registry_model_id,
+            }
         
-        # Create catalog entry with imported metadata
+        # Determine model_family: use provided value, or infer from model_id, or default
+        if model_family:
+            final_model_family = model_family
+        else:
+            # Try to infer from model_id
+            model_id_lower = registry_model_id.lower()
+            supported_families = ["llama", "mistral", "gemma", "bert"]
+            inferred_family = None
+            for family in supported_families:
+                if family in model_id_lower:
+                    inferred_family = family
+                    break
+            final_model_family = inferred_family or "llama"
+            if not inferred_family:
+                logger.warning(f"Could not determine model_family for {registry_model_id}, using 'llama' as default")
+        
+        # Create catalog entry first (without storage_uri - will be updated after download)
         entry = catalog_models.ModelCatalogEntry(
             id=model_id,
             name=name,
             version=version,
             type=model_type,
             owner_team=owner_team,
-            model_metadata=import_info.get("registry_metadata", {}),
-            storage_uri=import_info.get("storage_uri"),
+            model_metadata=initial_metadata,
+            storage_uri=None,  # Will be set after download completes
             status="draft",
+            model_family=final_model_family,
         )
         
         self.catalog_repo.save(entry)
         self.session.commit()
         self.session.refresh(entry)
         
-        # Create registry link record
-        registry_model = catalog_models.RegistryModel(
-            id=uuid4(),
-            model_catalog_id=model_id,
-            registry_type=registry_type,
-            registry_model_id=registry_model_id,
-            registry_repo_url=import_info.get("registry_repo_url", ""),
-            registry_version=import_info.get("registry_version"),
-            imported=True,
-            imported_at=datetime.utcnow(),
-            registry_metadata=import_info.get("registry_metadata"),
-            sync_status="synced",
-            last_sync_check=datetime.utcnow(),
-        )
+        logger.info(f"Model entry created: {model_id}, download will be processed in background")
         
-        self.session.add(registry_model)
-        self.session.commit()
-        self.session.refresh(registry_model)
-        
-        logger.info(f"Successfully imported model {model_id} from {registry_type}: {registry_model_id}")
+        # Return entry immediately - download will be processed in background
         return entry
+    
+    def download_and_update_model(
+        self,
+        model_id: UUID,
+        registry_type: str,
+        registry_model_id: str,
+        registry_version: Optional[str] = None,
+    ) -> None:
+        """Download model from registry and update catalog entry in background.
+        
+        Args:
+            model_id: Model catalog entry ID
+            registry_type: Registry type ("huggingface", etc.)
+            registry_model_id: Model ID in registry
+            registry_version: Optional specific version/tag in registry
+        """
+        from core.database import SessionLocal
+        from catalog.repositories import ModelCatalogRepository
+        
+        # Create new session for background task
+        session = SessionLocal()
+        try:
+            # Create new service instance with new session
+            background_service = ModelRegistryService(session)
+            
+            # Get adapter
+            adapter = background_service._get_adapter(registry_type)
+            if not adapter or not adapter.is_enabled():
+                logger.error(f"Registry {registry_type} is not available for model {model_id}")
+                return
+            
+            # Get model entry
+            catalog_repo = ModelCatalogRepository(session)
+            entry = catalog_repo.get(model_id)
+            if not entry:
+                logger.error(f"Model entry {model_id} not found")
+                return
+            
+            logger.info(f"Starting background download for model {model_id}: {registry_model_id}")
+            
+            # Import model (download and upload to storage)
+            import_info = adapter.import_model(
+                registry_model_id=registry_model_id,
+                model_catalog_id=model_id,
+                version=registry_version,
+            )
+            
+            # Update entry with full metadata and storage_uri
+            from sqlalchemy.orm.attributes import flag_modified
+            
+            registry_metadata = import_info.get("registry_metadata", {})
+            entry.model_metadata.update(registry_metadata)
+            entry.model_metadata["import_status"] = "completed"
+            flag_modified(entry, "model_metadata")  # Tell SQLAlchemy that JSON field was modified
+            
+            entry.storage_uri = import_info.get("storage_uri")
+            
+            # Create registry link record
+            registry_model = catalog_models.RegistryModel(
+                id=uuid4(),
+                model_catalog_id=model_id,
+                registry_type=registry_type,
+                registry_model_id=registry_model_id,
+                registry_repo_url=import_info.get("registry_repo_url", ""),
+                registry_version=import_info.get("registry_version"),
+                imported=True,
+                imported_at=datetime.utcnow(),
+                registry_metadata=import_info.get("registry_metadata"),
+                sync_status="synced",
+                last_sync_check=datetime.utcnow(),
+            )
+            
+            session.add(registry_model)
+            session.commit()
+            session.refresh(entry)
+            session.refresh(registry_model)
+            
+            logger.info(f"Model download completed: {model_id}, storage_uri: {entry.storage_uri}")
+            logger.info(f"Successfully imported model {model_id} from {registry_type}: {registry_model_id}")
+        except Exception as e:
+            # If download fails, update metadata to indicate error
+            logger.error(f"Model download failed for {model_id}: {e}", exc_info=True)
+            try:
+                from sqlalchemy.orm.attributes import flag_modified
+                catalog_repo = ModelCatalogRepository(session)
+                entry = catalog_repo.get(model_id)
+                if entry:
+                    entry.model_metadata["import_error"] = str(e)
+                    entry.model_metadata["import_status"] = "failed"
+                    flag_modified(entry, "model_metadata")
+                    session.commit()
+            except Exception as update_error:
+                logger.error(f"Failed to update error status for {model_id}: {update_error}")
+        finally:
+            session.close()
     
     def export_model_to_registry(
         self,

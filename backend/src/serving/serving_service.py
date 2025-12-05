@@ -9,9 +9,14 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from catalog import models as catalog_models
+from core.image_config import get_image_config
 from core.settings import get_settings
+from serving.converters.kserve_converter import KServeConverter
+from serving.converters.ray_serve_converter import RayServeConverter
 from serving.repositories import ServingEndpointRepository
+from serving.schemas import DeploymentSpec
 from serving.services.deployer import ServingDeployer
+from serving.validators.deployment_spec_validator import DeploymentSpecValidator
 from serving.prompt_router import PromptRouter
 
 logger = logging.getLogger(__name__)
@@ -41,6 +46,7 @@ class ServingService:
         cpu_limit: Optional[str] = None,
         memory_request: Optional[str] = None,
         memory_limit: Optional[str] = None,
+        deployment_spec: Optional[DeploymentSpec] = None,
     ) -> catalog_models.ServingEndpoint:
         """
         Deploy an approved model to a serving endpoint.
@@ -84,12 +90,36 @@ class ServingService:
         if existing:
             raise ValueError(f"Route {route} already exists in {environment}")
         
-        # Determine runtime image for this endpoint
-        # Priority: explicit parameter > global default (TGI/vLLM, etc.)
+        # If DeploymentSpec is provided, validate it and use it for configuration
+        image_config = get_image_config()
         effective_runtime_image = serving_runtime_image or settings.serving_runtime_image
-
-        # Determine use_gpu value: explicit parameter > settings default
         effective_use_gpu = use_gpu if use_gpu is not None else settings.use_gpu
+        
+        if deployment_spec:
+            # Validate DeploymentSpec
+            training_model_family = None
+            model_max_seq_len = None
+            if model_entry.model_metadata:
+                training_model_family = model_entry.model_metadata.get("model_family")
+                model_max_seq_len = model_entry.model_metadata.get("max_position_embeddings")
+            
+            DeploymentSpecValidator.validate(
+                deployment_spec,
+                training_model_family,
+                model_max_seq_len
+            )
+            
+            # Select container image based on serve_target type and GPU availability
+            effective_runtime_image = image_config.get_serve_image_with_fallback(
+                deployment_spec.serve_target,
+                deployment_spec.use_gpu
+            )
+            effective_use_gpu = deployment_spec.use_gpu
+            
+            logger.info(
+                f"Using container image {effective_runtime_image} for serve_target {deployment_spec.serve_target} "
+                f"(use_gpu={deployment_spec.use_gpu})"
+            )
         
         # Create endpoint entity
         endpoint = catalog_models.ServingEndpoint(
@@ -109,6 +139,10 @@ class ServingService:
             memory_request=memory_request,
             memory_limit=memory_limit,
         )
+
+        # Store DeploymentSpec if provided
+        if deployment_spec:
+            endpoint.deployment_spec = deployment_spec.model_dump()
 
         endpoint = self.endpoint_repo.create(endpoint)
 
@@ -152,6 +186,7 @@ class ServingService:
                     memory_request=memory_request,
                     memory_limit=memory_limit,
                     model_metadata=model_entry.model_metadata,
+                    deployment_spec=deployment_spec,
                 )
                 # Store rollback plan (previous deployment state)
                 endpoint.rollback_plan = f"Previous deployment UID: {k8s_uid}"
@@ -165,7 +200,13 @@ class ServingService:
                 try:
                     k8s_status = self.deployer.get_endpoint_status(endpoint_name, namespace=namespace)
                     if k8s_status:
-                        endpoint.status = k8s_status.get("status", "deploying")
+                        # Map adapter status to valid DB status values
+                        adapter_status = k8s_status.get("status", "deploying")
+                        # Ensure status is one of: deploying, healthy, degraded, failed
+                        if adapter_status not in ("deploying", "healthy", "degraded", "failed"):
+                            logger.warning(f"Invalid adapter status '{adapter_status}', defaulting to 'deploying'")
+                            adapter_status = "deploying"
+                        endpoint.status = adapter_status
                         endpoint = self.endpoint_repo.update(endpoint)
                         logger.info(f"Updated endpoint {endpoint.id} status to {endpoint.status} based on Kubernetes status")
                 except Exception as e:
@@ -194,12 +235,17 @@ class ServingService:
                     k8s_status = self.deployer.get_endpoint_status(endpoint_name, namespace=namespace)
                     
                     if k8s_status:
-                        new_status = k8s_status.get("status", endpoint.status)
+                        # Map adapter status to valid DB status values
+                        adapter_status = k8s_status.get("status", endpoint.status)
+                        # Ensure status is one of: deploying, healthy, degraded, failed
+                        if adapter_status not in ("deploying", "healthy", "degraded", "failed"):
+                            logger.warning(f"Invalid adapter status '{adapter_status}', defaulting to current status")
+                            adapter_status = endpoint.status
                         # Only update if status changed to avoid unnecessary DB writes
-                        if new_status != endpoint.status:
-                            endpoint.status = new_status
+                        if adapter_status != endpoint.status:
+                            endpoint.status = adapter_status
                             endpoint = self.endpoint_repo.update(endpoint)
-                            logger.debug(f"Synced endpoint {endpoint_id} status from {endpoint.status} to {new_status}")
+                            logger.debug(f"Synced endpoint {endpoint_id} status from {endpoint.status} to {adapter_status}")
                     else:
                         # Kubernetes resource not found, mark as failed
                         if endpoint.status != "failed":
@@ -253,6 +299,7 @@ class ServingService:
         cpu_limit: Optional[str] = None,
         memory_request: Optional[str] = None,
         memory_limit: Optional[str] = None,
+        deployment_spec: Optional[DeploymentSpec] = None,
     ) -> catalog_models.ServingEndpoint:
         """Redeploy an existing serving endpoint with the same or updated configuration."""
         endpoint = self.endpoint_repo.get(endpoint_id)
@@ -278,6 +325,7 @@ class ServingService:
         endpoint_name = f"serving-{endpoint.id}"
         namespace = f"llm-ops-{endpoint.environment}"
         settings = get_settings()
+        image_config = get_image_config()
         
         try:
             # Delete existing Kubernetes resources
@@ -294,21 +342,100 @@ class ServingService:
                     "Please upload model files before redeploying."
                 )
 
-            # Determine runtime image: explicit override -> existing endpoint value -> global setting
-            effective_runtime_image = (
-                serving_runtime_image
-                or endpoint.runtime_image
-                or settings.serving_runtime_image
-            )
+            # Determine deployment_spec: new spec -> existing endpoint deployment_spec -> reconstruct from metadata
+            effective_deployment_spec = deployment_spec
+            if not effective_deployment_spec:
+                # Try to get existing deployment_spec from endpoint
+                if hasattr(endpoint, 'deployment_spec') and endpoint.deployment_spec:
+                    try:
+                        effective_deployment_spec = DeploymentSpec(**endpoint.deployment_spec)
+                        logger.info(f"Using existing deployment_spec from endpoint {endpoint_id}")
+                    except Exception as e:
+                        logger.warning(f"Failed to parse existing deployment_spec for endpoint {endpoint_id}: {e}, will reconstruct from metadata")
+                        effective_deployment_spec = None
+                
+                # If still no deployment_spec, try to reconstruct from model metadata
+                if not effective_deployment_spec and model_entry.model_metadata:
+                    model_family = model_entry.model_metadata.get("model_family")
+                    job_type = model_entry.model_metadata.get("job_type")
+                    if model_family and job_type:
+                        # Reconstruct basic DeploymentSpec from metadata
+                        # Determine serve_target based on job_type
+                        if job_type == "RAG_TUNING":
+                            serve_target = "RAG"
+                        else:
+                            serve_target = "GENERATION"
+                        
+                        # Determine use_gpu from endpoint or parameter
+                        effective_use_gpu = (
+                            use_gpu
+                            if use_gpu is not None
+                            else endpoint.use_gpu
+                            if endpoint.use_gpu is not None
+                            else settings.use_gpu
+                        )
+                        
+                        # Reconstruct resources
+                        gpus = 1 if effective_use_gpu else 0
+                        
+                        effective_deployment_spec = DeploymentSpec(
+                            model_ref=f"{model_entry.name}-{model_entry.version}",
+                            model_family=model_family,
+                            job_type=job_type,
+                            serve_target=serve_target,
+                            resources={"gpus": gpus, "gpu_memory_gb": 80 if effective_use_gpu else None},
+                            runtime={
+                                "max_concurrent_requests": 256,
+                                "max_input_tokens": model_entry.model_metadata.get("max_position_embeddings", 4096),
+                                "max_output_tokens": 1024,
+                            },
+                            use_gpu=effective_use_gpu,
+                        )
+                        logger.info(f"Reconstructed deployment_spec from model metadata for endpoint {endpoint_id}")
 
-            # Determine use_gpu: explicit override -> existing endpoint value -> global setting
-            effective_use_gpu = (
-                use_gpu
-                if use_gpu is not None
-                else endpoint.use_gpu
-                if endpoint.use_gpu is not None
-                else settings.use_gpu
-            )
+            # If deployment_spec is provided, use it to determine runtime image and use_gpu
+            if effective_deployment_spec:
+                # Validate DeploymentSpec
+                training_model_family = None
+                model_max_seq_len = None
+                if model_entry.model_metadata:
+                    training_model_family = model_entry.model_metadata.get("model_family")
+                    model_max_seq_len = model_entry.model_metadata.get("max_position_embeddings")
+                
+                DeploymentSpecValidator.validate(
+                    effective_deployment_spec,
+                    training_model_family,
+                    model_max_seq_len
+                )
+                
+                # Select container image based on serve_target type and GPU availability
+                effective_runtime_image = image_config.get_serve_image_with_fallback(
+                    effective_deployment_spec.serve_target,
+                    effective_deployment_spec.use_gpu
+                )
+                effective_use_gpu = effective_deployment_spec.use_gpu
+                
+                logger.info(
+                    f"Using container image {effective_runtime_image} for serve_target {effective_deployment_spec.serve_target} "
+                    f"(use_gpu={effective_deployment_spec.use_gpu})"
+                )
+            else:
+                # Fallback to legacy logic if no deployment_spec
+                # Determine runtime image: explicit override -> existing endpoint value -> global setting
+                effective_runtime_image = (
+                    serving_runtime_image
+                    or endpoint.runtime_image
+                    or settings.serving_runtime_image
+                )
+
+                # Determine use_gpu: explicit override -> existing endpoint value -> global setting
+                effective_use_gpu = (
+                    use_gpu
+                    if use_gpu is not None
+                    else endpoint.use_gpu
+                    if endpoint.use_gpu is not None
+                    else settings.use_gpu
+                )
 
             # Determine resource settings: explicit override -> existing endpoint value -> None (will use settings defaults in deployer)
             effective_cpu_request = cpu_request or endpoint.cpu_request
@@ -323,8 +450,12 @@ class ServingService:
             endpoint.cpu_limit = effective_cpu_limit
             endpoint.memory_request = effective_memory_request
             endpoint.memory_limit = effective_memory_limit
+            
+            # Store DeploymentSpec if provided or reconstructed
+            if effective_deployment_spec:
+                endpoint.deployment_spec = effective_deployment_spec.model_dump()
 
-            # Redeploy with same configuration (or new image/resources if provided)
+            # Redeploy with same configuration (or new image/resources/deployment_spec if provided)
             k8s_uid = self.deployer.deploy_endpoint(
                 endpoint_name=endpoint_name,
                 model_storage_uri=model_entry.storage_uri,
@@ -340,6 +471,7 @@ class ServingService:
                 memory_request=effective_memory_request,
                 memory_limit=effective_memory_limit,
                 model_metadata=model_entry.model_metadata,
+                deployment_spec=effective_deployment_spec,
             )
             
             # Update endpoint status
@@ -352,7 +484,13 @@ class ServingService:
             try:
                 k8s_status = self.deployer.get_endpoint_status(endpoint_name, namespace=namespace)
                 if k8s_status:
-                    endpoint.status = k8s_status.get("status", "deploying")
+                    # Map adapter status to valid DB status values
+                    adapter_status = k8s_status.get("status", "deploying")
+                    # Ensure status is one of: deploying, healthy, degraded, failed
+                    if adapter_status not in ("deploying", "healthy", "degraded", "failed"):
+                        logger.warning(f"Invalid adapter status '{adapter_status}', defaulting to 'deploying'")
+                        adapter_status = "deploying"
+                    endpoint.status = adapter_status
                     endpoint = self.endpoint_repo.update(endpoint)
                     logger.info(f"Updated endpoint {endpoint_id} status to {endpoint.status} based on Kubernetes status")
             except Exception as e:

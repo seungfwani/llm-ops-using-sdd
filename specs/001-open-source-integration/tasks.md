@@ -58,6 +58,27 @@
 - [X] T028 Create retry queue mechanism for failed tool operations in backend/src/integrations/retry_queue.py
 - [X] T029 Update backend/src/core/settings.py with all integration environment variables
 - [X] T030 Create integration health check service in backend/src/integrations/health_check.py
+- [X] T168 [P] Create TrainJobSpec schema model in backend/src/training/schemas.py
+- [X] T169 [P] Create DeploymentSpec schema model in backend/src/serving/schemas.py
+- [X] T170 [P] Create model family whitelist validator in backend/src/training/validators/model_family_validator.py
+- [X] T171 [P] Create dataset type compatibility validator in backend/src/training/validators/dataset_compatibility_validator.py
+- [X] T172 [P] Create TrainJobSpec validator in backend/src/training/validators/train_job_spec_validator.py
+- [X] T173 [P] Create DeploymentSpec validator in backend/src/serving/validators/deployment_spec_validator.py
+- [X] T174 [P] Create job type compatibility validator in backend/src/serving/validators/job_type_compatibility_validator.py
+- [X] T175 [P] Create container image configuration manager in backend/src/core/image_config.py
+- [X] T192 [P] Update image_config.py to support GPU/CPU image variants (gpu/cpu keys per job_type)
+- [X] T193 [P] Implement GPU availability detection logic in backend/src/core/image_config.py
+- [X] T194 [P] Implement automatic CPU image fallback when GPU unavailable in backend/src/core/image_config.py
+- [X] T176 [P] Create TrainJobSpec to MLflow converter in backend/src/training/converters/mlflow_converter.py
+- [X] T177 [P] Create TrainJobSpec to Argo Workflow converter in backend/src/training/converters/argo_converter.py
+- [X] T178 [P] Create DeploymentSpec to KServe converter in backend/src/serving/converters/kserve_converter.py
+- [X] T179 [P] Create DeploymentSpec to Ray Serve converter in backend/src/serving/converters/ray_serve_converter.py
+- [X] T180 Create database migration for TrainJobSpec fields in backend/alembic/versions/
+- [X] T181 Create database migration for DeploymentSpec fields in backend/alembic/versions/
+- [X] T182 Update training job service to validate TrainJobSpec before submission in backend/src/training/services.py
+- [X] T183 Update serving service to validate DeploymentSpec before deployment in backend/src/serving/serving_service.py
+- [X] T184 Create re-validation script for existing training jobs in backend/scripts/validate_existing_training_jobs.py
+- [X] T185 Create re-validation script for existing serving endpoints in backend/scripts/validate_existing_serving_endpoints.py
 
 **Checkpoint**: Foundation ready - user story implementation can now begin in parallel
 
@@ -75,6 +96,9 @@
 - [X] T032 [US1] Create MLflow adapter implementation in backend/src/integrations/experiment_tracking/mlflow_adapter.py
 - [X] T033 [US1] Implement MLflow client wrapper in backend/src/integrations/experiment_tracking/mlflow_client.py
 - [X] T034 [US1] Create experiment tracking service in backend/src/services/experiment_tracking_service.py
+- [X] T186 [US1] Update training job service to use TrainJobSpec validator before job submission in backend/src/training/services.py
+- [X] T187 [US1] Update training job service to convert TrainJobSpec to MLflow format using converter in backend/src/training/services.py
+- [X] T195 [US1] Update training job service to select container image from image_config based on job_type and GPU availability (use_gpu flag) in backend/src/training/services.py
 - [X] T035 [US1] Update training job service to create MLflow runs in backend/src/training/services.py
 - [X] T036 [US1] Update training job service to forward metrics to MLflow in backend/src/training/services.py
 - [X] T037 [US1] Update training job service to register artifacts in MLflow in backend/src/training/services.py
@@ -105,6 +129,10 @@
 ### Implementation for User Story 2
 
 - [X] T051 [US2] Create ServingDeployment model in backend/src/catalog/models.py (add to existing models file)
+- [X] T188 [US2] Update serving service to use DeploymentSpec validator before deployment in backend/src/serving/serving_service.py
+- [X] T189 [US2] Update serving deployer to convert DeploymentSpec to KServe format using converter in backend/src/serving/services/deployer.py
+- [X] T190 [US2] Update serving deployer to convert DeploymentSpec to Ray Serve format using converter in backend/src/serving/services/deployer.py
+- [X] T191 [US2] Update serving deployer to select container image from image_config based on serve_target type and GPU availability in backend/src/serving/services/deployer.py
 - [X] T052 [US2] Create KServe adapter implementation in backend/src/integrations/serving/kserve_adapter.py
 - [X] T053 [US2] Create Ray Serve adapter implementation in backend/src/integrations/serving/ray_serve_adapter.py
 - [X] T054 [US2] Create serving framework factory in backend/src/integrations/serving/factory.py
@@ -227,6 +255,29 @@
 
 ---
 
+## Phase 7.5: User Story 6 - Navigation Menu Reorganization with Dropdown Groups (Priority: P2)
+
+**Goal**: Reorganize the top navigation menu into grouped dropdown menus to improve discoverability and reduce visual clutter while maintaining access to all functionality.
+
+**Independent Test**: Access the platform UI, verify the top navigation displays grouped dropdown menus, confirm all existing routes remain accessible, and validate that the active route is properly highlighted.
+
+### Implementation for User Story 6
+
+- [X] T158 [US6] Create navigation menu component with dropdown support in frontend/src/components/NavigationMenu.vue
+- [X] T159 [US6] Define navigation menu structure (Catalog, ML Operations, Governance, Admin, Getting Started) in frontend/src/router/navigation.ts
+- [X] T160 [US6] Implement dropdown menu functionality (hover/click to open, close on outside click) in frontend/src/components/NavigationMenu.vue
+- [X] T161 [US6] Implement active route highlighting for both parent dropdown and submenu items in frontend/src/components/NavigationMenu.vue
+- [X] T162 [US6] Update App.vue to use new NavigationMenu component instead of flat router-links in frontend/src/App.vue
+- [X] T163 [US6] Add responsive navigation styles for mobile/narrow screens in frontend/src/components/NavigationMenu.vue
+- [X] T164 [US6] Implement mobile hamburger menu or collapsible sidebar for small viewports in frontend/src/components/NavigationMenu.vue
+- [X] T165 [US6] Test navigation accessibility (keyboard navigation, screen reader support) in frontend/src/components/NavigationMenu.vue
+- [X] T166 [US6] Verify all existing routes are accessible through new navigation structure (catalog, training, serving, governance, admin, workflows)
+- [X] T167 [US6] Add navigation menu state persistence (maintain dropdown open state when navigating within same group) in frontend/src/components/NavigationMenu.vue
+
+**Checkpoint**: At this point, User Story 6 should be fully functional with improved navigation UX
+
+---
+
 ## Phase 8: Polish & Cross-Cutting Concerns
 
 **Purpose**: Improvements that affect multiple user stories and final integration
@@ -280,11 +331,19 @@
 
 ### User Story Dependencies
 
-- **User Story 1 (P1)**: Can start after Foundational (Phase 2) - No dependencies on other stories
-- **User Story 2 (P1)**: Can start after Foundational (Phase 2) - No dependencies on other stories (KServe already partially integrated)
+- **User Story 1 (P1)**: Can start after Foundational (Phase 2) - Requires TrainJobSpec validators and converters from Phase 2
+- **User Story 2 (P1)**: Can start after Foundational (Phase 2) - Requires DeploymentSpec validators and converters from Phase 2
 - **User Story 3 (P2)**: Can start after Foundational (Phase 2) - May use US1 experiment tracking but independently testable
 - **User Story 4 (P2)**: Can start after Foundational (Phase 2) - No dependencies on other stories
 - **User Story 5 (P3)**: Can start after Foundational (Phase 2) - May use US3 pipelines but independently testable
+- **User Story 6 (P2)**: Can start at any time - No dependencies on other stories, pure frontend UX improvement
+
+### Training-Serving Spec Integration Dependencies
+
+- **TrainJobSpec/DeploymentSpec Validators (Phase 2)**: Must complete before User Story 1 and 2 can use TrainJobSpec/DeploymentSpec validation
+- **TrainJobSpec/DeploymentSpec Converters (Phase 2)**: Must complete before User Story 1 and 2 can convert specs to tool formats
+- **Image Configuration Manager (Phase 2)**: Must complete before User Story 1 and 2 can select container images based on job_type/serve_target
+- **Re-validation Scripts (Phase 2)**: Can run independently after validators are complete, but should run before production deployment
 
 ### Within Each User Story
 
@@ -378,15 +437,27 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 150
+- **Total Tasks**: 196
 - **Setup Phase**: 13 tasks
-- **Foundational Phase**: 17 tasks
-- **User Story 1 (P1)**: 20 tasks
-- **User Story 2 (P1)**: 20 tasks
+- **Foundational Phase**: 39 tasks (17 original + 18 Training-Serving Spec Integration tasks + 4 CPU image support tasks)
+- **User Story 1 (P1)**: 23 tasks (20 original + 2 TrainJobSpec integration tasks + 1 CPU image selection task)
+- **User Story 2 (P1)**: 25 tasks (20 original + 5 DeploymentSpec integration tasks, CPU image selection already included)
 - **User Story 3 (P2)**: 21 tasks
 - **User Story 4 (P2)**: 19 tasks
 - **User Story 5 (P3)**: 19 tasks
+- **User Story 6 (P2)**: 10 tasks
 - **Polish Phase**: 21 tasks
 
-**Suggested MVP Scope**: Phases 1-4 (Setup + Foundational + US1 + US2) = 70 tasks
+**Suggested MVP Scope**: Phases 1-4 (Setup + Foundational + US1 + US2) = 100 tasks
+
+**Training-Serving Spec Integration Tasks Added**:
+- Phase 2: TrainJobSpec/DeploymentSpec validators, converters, image config management (18 tasks)
+- Phase 2: CPU/GPU image variant support for local development (4 tasks: T192-T195)
+- Phase 3: TrainJobSpec validation and conversion integration in User Story 1 (2 tasks)
+- Phase 4: DeploymentSpec validation and conversion integration in User Story 2 (5 tasks)
+
+**CPU Image Support for Local Development**:
+- Phase 2: GPU/CPU image variant configuration, GPU detection, CPU fallback logic (4 tasks)
+- Phase 3: Training job service CPU image selection based on use_gpu flag (1 task)
+- Phase 4: Serving deployer CPU image selection based on GPU availability (already in T191)
 

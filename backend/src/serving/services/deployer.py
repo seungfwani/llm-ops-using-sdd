@@ -10,6 +10,9 @@ from kubernetes.client.rest import ApiException
 
 from core.settings import get_settings
 from integrations.serving.factory import ServingFrameworkFactory
+from serving.converters.kserve_converter import KServeConverter
+from serving.converters.ray_serve_converter import RayServeConverter
+from serving.schemas import DeploymentSpec
 from services.integration_config import IntegrationConfigService
 
 logger = logging.getLogger(__name__)
@@ -79,6 +82,7 @@ class ServingDeployer:
         memory_request: Optional[str] = None,
         memory_limit: Optional[str] = None,
         model_metadata: Optional[dict] = None,
+        deployment_spec: Optional[DeploymentSpec] = None,
     ) -> str:
         """
         Deploy a serving endpoint to Kubernetes with HPA.
@@ -131,6 +135,7 @@ class ServingDeployer:
                 memory_request=memory_request,
                 memory_limit=memory_limit,
                 model_metadata=model_metadata,
+                deployment_spec=deployment_spec,
             )
         
         # Fallback to raw Deployment (legacy mode)
@@ -555,6 +560,7 @@ class ServingDeployer:
         memory_request: Optional[str] = None,
         memory_limit: Optional[str] = None,
         model_metadata: Optional[dict] = None,
+        deployment_spec: Optional[DeploymentSpec] = None,
     ) -> str:
         """
         Deploy a serving endpoint using KServe adapter.
@@ -602,6 +608,33 @@ class ServingDeployer:
             # Create KServe adapter
             adapter = ServingFrameworkFactory.create_adapter("kserve", config)
             
+            # If DeploymentSpec is provided, use KServeConverter to generate InferenceService
+            if deployment_spec:
+                # Convert DeploymentSpec to KServe InferenceService
+                inference_service = KServeConverter.to_kserve_inference_service(
+                    spec=deployment_spec,
+                    container_image=serving_runtime_image,
+                    model_uri=model_storage_uri,
+                    namespace=namespace,
+                    endpoint_name=endpoint_name,
+                )
+                
+                # Deploy InferenceService using Kubernetes CustomObjectsApi
+                try:
+                    created_service = self.custom_api.create_namespaced_custom_object(
+                        group="serving.kserve.io",
+                        version="v1beta1",
+                        namespace=namespace,
+                        plural="inferenceservices",
+                        body=inference_service,
+                    )
+                    logger.info(f"Created KServe InferenceService {created_service['metadata']['name']} from DeploymentSpec")
+                    return created_service["metadata"]["uid"]
+                except ApiException as e:
+                    logger.error(f"Failed to create KServe InferenceService from DeploymentSpec: {e}")
+                    raise
+            
+            # Fallback to adapter-based deployment (legacy)
             # Build resource requests/limits
             resource_requests = {}
             resource_limits = {}
@@ -652,6 +685,9 @@ class ServingDeployer:
                 min_replicas=min_replicas,
                 max_replicas=max_replicas,
                 autoscaling_metrics=autoscaling_metrics,
+                serving_runtime_image=serving_runtime_image,
+                model_metadata=model_metadata,
+                use_gpu=use_gpu,
             )
             
             # Return framework resource ID as UID (for compatibility)

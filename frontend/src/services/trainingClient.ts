@@ -1,5 +1,44 @@
 import apiClient from "./apiClient";
 
+// TrainJobSpec structure (from training-serving-spec.md)
+export interface DatasetRef {
+  name: string;
+  version: string;
+  type: "pretrain_corpus" | "sft_pair" | "rag_qa" | "rlhf_pair";
+  storage_uri: string;
+}
+
+export interface Hyperparams {
+  lr: number;
+  batch_size: number;
+  num_epochs: number;
+  max_seq_len: number;
+  precision: "fp16" | "bf16";
+}
+
+export interface Resources {
+  gpus: number;
+  gpu_type?: string;
+  nodes: number;
+}
+
+export interface OutputSpec {
+  artifact_name: string;
+  save_format: "hf" | "safetensors";
+}
+
+export interface TrainJobSpec {
+  job_type: "PRETRAIN" | "SFT" | "RAG_TUNING" | "RLHF" | "EMBEDDING";
+  model_family: string; // llama, mistral, gemma, bert, etc.
+  base_model_ref?: string | null; // Required for SFT/RAG_TUNING/RLHF, null for PRETRAIN
+  dataset_ref: DatasetRef;
+  hyperparams: Hyperparams;
+  method: "full" | "lora" | "qlora";
+  resources: Resources;
+  output: OutputSpec;
+  use_gpu?: boolean; // For CPU fallback
+}
+
 export interface TrainingJobRequest {
   modelId?: string; // Required for finetune, optional for from_scratch/pretrain
   datasetId: string;
@@ -25,6 +64,8 @@ export interface TrainingJobRequest {
     onStart?: string[];
     onCompletion?: string[];
   };
+  // TrainJobSpec (optional, for training-serving-spec.md compliance)
+  trainJobSpec?: TrainJobSpec;
 }
 
 export interface TrainingJob {

@@ -10,3 +10,4 @@ instruction,response
 "Customer: I want to change my shipping address for an order.","If your order hasn't shipped yet, we can update the shipping address. Please provide your order number and the new shipping address. If the order has already shipped, we won't be able to change the address, but we can help you set up a package intercept or redirect if available through the shipping carrier. Let me know your order number and I'll check the status."
 "Customer: Do you offer international shipping?","Yes, we do offer international shipping to most countries. Shipping costs and delivery times vary by destination. You can check shipping options and costs during checkout by entering your shipping address. Some items may have restrictions for international shipping due to customs regulations. If you have a specific country in mind, I can provide more detailed information about shipping options and estimated delivery times."
 
+

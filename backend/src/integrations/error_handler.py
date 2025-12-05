@@ -106,6 +106,7 @@ def wrap_tool_error(
     tool_name: str,
     operation: str,
     message: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None,
 ) -> IntegrationError:
     """Wrap a tool-specific error in an IntegrationError.
     
@@ -114,6 +115,7 @@ def wrap_tool_error(
         tool_name: Name of the tool
         operation: Operation that failed
         message: Optional custom error message
+        context: Optional context information to include in error details
     
     Returns:
         Wrapped IntegrationError
@@ -123,27 +125,45 @@ def wrap_tool_error(
     
     error_message = message or f"{tool_name} {operation} failed: {str(error)}"
     
-    # Check for common error patterns
+    # Build details dictionary
+    details = {"operation": operation}
+    if context:
+        details.update(context)
+    
+    # Check for specific error types first
+    error_type = type(error).__name__
     error_str = str(error).lower()
+    
+    # Handle Hugging Face specific errors
+    if "RevisionNotFoundError" in error_type or "revision not found" in error_str:
+        # This is not a configuration error, but an invalid revision/version
+        return ToolOperationError(
+            message=f"Invalid model version or revision: {str(error)}",
+            tool_name=tool_name,
+            original_error=error,
+            details=details
+        )
+    
+    # Check for common error patterns
     if "connection" in error_str or "timeout" in error_str or "unreachable" in error_str:
         return ToolUnavailableError(
             message=f"{tool_name} service is unavailable",
             tool_name=tool_name,
             original_error=error,
-            details={"operation": operation}
+            details=details
         )
-    elif "config" in error_str or "invalid" in error_str or "missing" in error_str:
+    elif "config" in error_str or ("invalid" in error_str and "revision" not in error_str and "version" not in error_str) or "missing" in error_str:
         return ToolConfigurationError(
             message=f"{tool_name} configuration error",
             tool_name=tool_name,
             original_error=error,
-            details={"operation": operation}
+            details=details
         )
     else:
         return ToolOperationError(
             message=error_message,
             tool_name=tool_name,
             original_error=error,
-            details={"operation": operation}
+            details=details
         )
 

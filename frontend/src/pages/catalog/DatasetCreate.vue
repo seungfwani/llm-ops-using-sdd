@@ -1,24 +1,34 @@
 <template>
   <section class="dataset-create">
-    <div class="catalog-tabs">
-      <router-link to="/catalog/models" class="tab-link" active-class="active">Models</router-link>
-      <router-link to="/catalog/datasets" class="tab-link" active-class="active">Datasets</router-link>
-    </div>
     <header>
       <h1>Create New Dataset</h1>
-      <router-link to="/catalog/datasets" class="btn-back">← Back to List</router-link>
     </header>
 
     <form @submit.prevent="handleSubmit" class="create-form">
       <div class="form-section">
-        <h2>Basic Information</h2>
+        <h2>Dataset Information</h2>
+        
+        <label>
+          Dataset Type * <span style="color: #dc3545;">*</span>
+          <select v-model="form.type" required>
+            <option value="">Select dataset type</option>
+            <option value="pretrain_corpus">Pretrain Corpus (for pre-training jobs)</option>
+            <option value="sft_pair">SFT Pair (for supervised fine-tuning jobs)</option>
+            <option value="rag_qa">RAG QA (for RAG tuning jobs)</option>
+            <option value="rlhf_pair">RLHF Pair (for reinforcement learning jobs)</option>
+          </select>
+          <small style="display: block; color: #666; margin-top: 5px;">
+            Select the dataset type based on how it will be used. This ensures compatibility with training job types.
+          </small>
+        </label>
+        
         <label>
           Name *
-          <input v-model="form.name" required placeholder="e.g., training-data-v1, benchmark-dataset" />
+          <input v-model="form.name" required placeholder="e.g., korean-web-corpus, enterprise-instruction" />
         </label>
         <label>
           Version *
-          <input v-model="form.version" required placeholder="e.g., 1.0.0, v2" />
+          <input v-model="form.version" required placeholder="e.g., v1, v2" />
         </label>
         <label>
           Owner Team *
@@ -91,6 +101,7 @@ const form = ref({
   version: '',
   owner_team: '',
   change_log: '',
+  type: '',
 });
 
 const selectedFiles = ref<File[]>([]);
@@ -134,6 +145,11 @@ async function handleSubmit() {
     return;
   }
 
+  if (!form.value.type) {
+    error.value = 'Dataset type is required';
+    return;
+  }
+
   submitting.value = true;
   error.value = '';
   successMessage.value = '';
@@ -146,6 +162,7 @@ async function handleSubmit() {
       owner_team: form.value.owner_team,
       change_log: form.value.change_log || undefined,
       storage_uri: '', // Will be set after upload
+      type: form.value.type, // Required field
     });
 
     if (createResponse.status !== 'success' || !createResponse.data) {
@@ -185,47 +202,8 @@ async function handleSubmit() {
   margin: 0 auto;
 }
 
-.catalog-tabs {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 1.5rem;
-  border-bottom: 2px solid #e0e0e0;
-}
-
-.tab-link {
-  padding: 0.75rem 1.5rem;
-  text-decoration: none;
-  color: #666;
-  font-weight: 500;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -2px;
-  transition: all 0.2s;
-}
-
-.tab-link:hover {
-  color: #007bff;
-}
-
-.tab-link.active {
-  color: #007bff;
-  border-bottom-color: #007bff;
-}
-
 header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
   margin-bottom: 2rem;
-}
-
-.btn-back {
-  color: #007bff;
-  text-decoration: none;
-  font-weight: 500;
-}
-
-.btn-back:hover {
-  text-decoration: underline;
 }
 
 .create-form {

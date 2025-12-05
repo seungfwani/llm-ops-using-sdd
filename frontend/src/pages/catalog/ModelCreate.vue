@@ -1,93 +1,90 @@
 <template>
   <section class="model-create">
-    <div class="catalog-tabs">
-      <router-link to="/catalog/models" class="tab-link" active-class="active">Models</router-link>
-      <router-link to="/catalog/datasets" class="tab-link" active-class="active">Datasets</router-link>
-    </div>
     <header>
       <h1>Create New Model</h1>
-      <router-link to="/catalog/models" class="btn-back">← Back to List</router-link>
     </header>
 
-    <!-- Step 1: Select Model Type -->
-    <template v-if="!form.type">
-      <div class="form-section type-selection-section">
-        <h2>Select Model Type</h2>
-        <p>Choose the type of model you want to create:</p>
-        <div class="type-selector">
-          <div class="type-option" @click="form.type = 'base'">
-            <h3>Base Model</h3>
-            <p>Pre-trained models from various sources</p>
-            <ul>
-              <li>Upload model files directly</li>
-              <li>Import from Hugging Face Hub</li>
-              <li>Use existing storage URI</li>
-            </ul>
-          </div>
-          <div class="type-option" @click="form.type = 'fine-tuned'">
-            <h3>Fine-tuned Model</h3>
-            <p>Models fine-tuned on custom datasets</p>
-            <ul>
-              <li>Upload model files directly</li>
-              <li>Import from Hugging Face Hub</li>
-              <li>Link to training job output</li>
-            </ul>
-          </div>
-          <div class="type-option" @click="form.type = 'external'">
-            <h3>External Model</h3>
-            <p>Models accessed via API (OpenAI, Ollama, etc.)</p>
-            <ul>
-              <li>No file upload required</li>
-              <li>Configure provider settings</li>
-            </ul>
-          </div>
-        </div>
-        <div class="form-actions" style="margin-top: 2rem;">
-          <router-link to="/catalog/models" class="btn-secondary">Cancel</router-link>
-        </div>
+    <form @submit.prevent="handleSubmit" class="create-form">
+      <!-- Model Type Selection -->
+      <div class="form-section">
+        <h2>Model Type</h2>
+        <label>
+          Type *
+          <select v-model="form.type" required>
+            <option value="">Select model type</option>
+            <option value="base">Base Model - Pre-trained models from various sources</option>
+            <option value="fine-tuned">Fine-tuned Model - Models fine-tuned on custom datasets</option>
+            <option value="external">External Model - Models accessed via API (OpenAI, Ollama, etc.)</option>
+          </select>
+          <small class="help-text">
+            <span v-if="form.type === 'base'">Base models are pre-trained models that can be used as starting points for fine-tuning.</span>
+            <span v-else-if="form.type === 'fine-tuned'">Fine-tuned models are trained on custom datasets, typically starting from a base model.</span>
+            <span v-else-if="form.type === 'external'">External models are accessed via API and don't require file uploads.</span>
+            <span v-else>Select a model type to continue.</span>
+          </small>
+        </label>
       </div>
-    </template>
-
-    <!-- Step 2: Type-specific configuration -->
-    <template v-else>
-      <form @submit.prevent="handleSubmit" class="create-form">
-        <!-- Base/Fine-tuned Model: Choose import method -->
+        <!-- Base/Fine-tuned Model: File upload section -->
         <div v-if="form.type === 'base' || form.type === 'fine-tuned'" class="form-section">
-          <h2>How would you like to add your model?</h2>
-          <div class="import-method-selector">
-            <label class="method-option">
-              <input 
-                type="radio" 
-                v-model="importMethod" 
-                value="file-upload"
-                @change="resetImportData"
-              />
-              <div class="method-content">
-                <h3>📁 Upload Files</h3>
-                <p>Upload model files directly from your computer</p>
+          <h2>Upload Model Files</h2>
+          <div class="file-upload-section">
+            <label>
+              Model Files
+              <div class="file-upload-area" 
+                   @drop.prevent="handleDrop"
+                   @dragover.prevent="dragover = true"
+                   @dragleave.prevent="dragover = false"
+                   :class="{ 'dragover': dragover }">
+                <input 
+                  type="file" 
+                  ref="fileInput"
+                  @change="handleFileSelect"
+                  multiple
+                  accept=".bin,.safetensors,.json,.txt,.pt,.pth,.onnx"
+                  style="display: none"
+                />
+                <p v-if="selectedFiles.length === 0" class="upload-placeholder">
+                  Drag and drop files here or <button type="button" @click="fileInput?.click()" class="link-button">browse</button>
+                </p>
+                <ul v-else class="file-list">
+                  <li v-for="(file, index) in selectedFiles" :key="index" class="file-item">
+                    <span>{{ file.name }} ({{ formatFileSize(file.size) }})</span>
+                    <button type="button" @click="removeFile(index)" class="remove-file">×</button>
+                  </li>
+                </ul>
               </div>
             </label>
-            <label class="method-option">
-              <input 
-                type="radio" 
-                v-model="importMethod" 
-                value="huggingface"
-                @change="resetImportData"
-              />
-              <div class="method-content">
-                <h3>🤗 Hugging Face</h3>
-                <p>Import automatically from Hugging Face Hub</p>
+            <small class="help-text">Upload model files (weights, config, tokenizer, etc.). Files will be uploaded after model creation.</small>
+            <div v-if="uploadProgress > 0 && uploadProgress < 100" class="upload-progress">
+              <div class="progress-bar">
+                <div class="progress-fill" :style="{ width: uploadProgress + '%' }"></div>
               </div>
-            </label>
+              <p class="progress-text">Uploading... {{ uploadProgress }}%</p>
+            </div>
           </div>
         </div>
 
-        <!-- Basic Information (common for all types) -->
+        <!-- Basic Information -->
         <div class="form-section">
-          <h2>Basic Information</h2>
+          <h2>Model Information</h2>
+          
+          <label>
+            Model Family * <span class="required">*</span>
+            <select v-model="form.model_family" required>
+              <option value="">Select model family</option>
+              <option value="llama">Llama</option>
+              <option value="mistral">Mistral</option>
+              <option value="gemma">Gemma</option>
+              <option value="bert">BERT (for embedding models only)</option>
+            </select>
+            <small class="help-text">
+              Select the model architecture family. This is used to ensure compatibility with training and serving operations.
+            </small>
+          </label>
+          
           <label>
             Name *
-            <input v-model="form.name" required placeholder="e.g., gpt-4, llama-2" />
+            <input v-model="form.name" required placeholder="e.g., llama-3-8b-base, mistral-7b-instruct" />
           </label>
           <label>
             Version *
@@ -190,95 +187,22 @@
         <small class="help-text">Enter dataset IDs used to train/fine-tune this model, separated by commas</small>
       </div>
 
-        <!-- File Upload Method -->
-        <div v-if="(form.type === 'base' || form.type === 'fine-tuned') && importMethod === 'file-upload'" class="form-section">
-          <h2>Upload Model Files</h2>
-          <div class="file-upload-section">
-            <label>
-              Model Files
-              <div class="file-upload-area" 
-                   @drop.prevent="handleDrop"
-                   @dragover.prevent="dragover = true"
-                   @dragleave.prevent="dragover = false"
-                   :class="{ 'dragover': dragover }">
-                <input 
-                  type="file" 
-                  ref="fileInput"
-                  @change="handleFileSelect"
-                  multiple
-                  accept=".bin,.safetensors,.json,.txt,.pt,.pth,.onnx"
-                  style="display: none"
-                />
-                <p v-if="selectedFiles.length === 0" class="upload-placeholder">
-                  Drag and drop files here or <button type="button" @click="fileInput?.click()" class="link-button">browse</button>
-                </p>
-                <ul v-else class="file-list">
-                  <li v-for="(file, index) in selectedFiles" :key="index" class="file-item">
-                    <span>{{ file.name }} ({{ formatFileSize(file.size) }})</span>
-                    <button type="button" @click="removeFile(index)" class="remove-file">×</button>
-                  </li>
-                </ul>
-              </div>
-            </label>
-            <small class="help-text">Upload model files (weights, config, tokenizer, etc.). Files will be uploaded after model creation.</small>
-            <div v-if="uploadProgress > 0 && uploadProgress < 100" class="upload-progress">
-              <div class="progress-bar">
-                <div class="progress-fill" :style="{ width: uploadProgress + '%' }"></div>
-              </div>
-              <p class="progress-text">Uploading... {{ uploadProgress }}%</p>
-            </div>
-          </div>
-        </div>
-
-        <!-- Hugging Face Import Method -->
-        <div v-if="(form.type === 'base' || form.type === 'fine-tuned') && importMethod === 'huggingface'" class="form-section">
-          <h2>Import from Hugging Face</h2>
-          <div class="huggingface-import-section">
-            <label>
-              Hugging Face Model ID *
-              <input
-                v-model="hfImport.hf_model_id"
-                placeholder="e.g., microsoft/DialoGPT-small, meta-llama/Llama-2-7b-chat-hf"
-                class="hf-model-input"
-                required
-              />
-            </label>
-            <label>
-              Hugging Face Token (optional, for gated models)
-              <input
-                v-model="hfImport.hf_token"
-                type="password"
-                placeholder="hf_xxx..."
-              />
-            </label>
-            <small class="help-text">
-              The model will be automatically downloaded from Hugging Face Hub and uploaded to object storage.
-            </small>
-          </div>
-        </div>
 
         <div class="form-actions">
-          <button type="button" @click="resetForm" class="btn-secondary">
-            {{ form.type ? 'Back' : 'Cancel' }}
-          </button>
+          <router-link to="/catalog/models" class="btn-secondary">Cancel</router-link>
           <button 
-            v-if="form.type === 'external' || importMethod"
-            :disabled="loading || hfImporting" 
             type="submit" 
+            :disabled="loading || !form.type" 
             class="btn-primary"
           >
-            {{ loading ? 'Creating...' : hfImporting ? 'Importing...' : getSubmitButtonText() }}
+            {{ loading ? 'Creating...' : 'Create Model' }}
           </button>
         </div>
 
-        <div v-if="message" :class="['message', messageType]">
-          {{ message }}
-        </div>
-        <div v-if="hfImportMessage && importMethod === 'huggingface'" :class="['message', hfImportMessageType]">
-          {{ hfImportMessage }}
-        </div>
-      </form>
-    </template>
+      <div v-if="message" :class="['message', messageType]">
+        {{ message }}
+      </div>
+    </form>
   </section>
 </template>
 
@@ -298,23 +222,13 @@ const uploading = ref(false);
 const uploadProgress = ref(0);
 const createdModelId = ref<string | null>(null);
 
-// Hugging Face import
-const hfImporting = ref(false);
-const hfImportMessage = ref('');
-const hfImportMessageType = ref<'success' | 'error'>('error');
-const hfImport = reactive({
-  hf_model_id: '',
-  hf_token: '',
-});
-
 const form = reactive({
   name: '',
   version: '',
   type: '',
   owner_team: '',
+  model_family: '',
 });
-
-const importMethod = ref<string>(''); // 'file-upload' | 'huggingface' | ''
 
 const metadataText = ref('{}');
 const lineageText = ref('');
@@ -335,13 +249,7 @@ const metadataPlaceholder = computed(() => {
 });
 
 // Reset config when type changes
-watch(() => form.type, (newType, oldType) => {
-  // Reset import method when type changes
-  if (newType !== oldType) {
-    importMethod.value = '';
-    resetImportData();
-  }
-
+watch(() => form.type, (newType) => {
   if (newType !== 'external') {
     externalProvider.value = '';
     externalConfig.model_name = '';
@@ -354,57 +262,29 @@ watch(() => form.type, (newType, oldType) => {
       metadataText.value = '{}';
     }
   }
+  // Reset file selection when type changes
+  selectedFiles.value = [];
 });
 
 function resetForm() {
-  if (form.type) {
-    form.type = '';
-    importMethod.value = '';
-    resetImportData();
-  } else {
-    router.push('/catalog/models');
-  }
-}
-
-function resetImportData() {
-  hfImport.hf_model_id = '';
-  hfImport.hf_token = '';
-  selectedFiles.value = [];
-  hfImportMessage.value = '';
-  message.value = '';
-}
-
-function getSubmitButtonText() {
-  if (form.type === 'external') {
-    return 'Create Model';
-  }
-  if (importMethod.value === 'huggingface') {
-    return 'Import & Create Model';
-  }
-  return 'Create Model';
+  router.push('/catalog/models');
 }
 
 async function handleSubmit() {
-  // If Hugging Face import, use separate handler
-  if ((form.type === 'base' || form.type === 'fine-tuned') && importMethod.value === 'huggingface') {
-    await handleHuggingFaceImport();
-    return;
-  }
-
   loading.value = true;
   message.value = '';
   
   try {
-    // Validate import method for base/fine-tuned
-    if ((form.type === 'base' || form.type === 'fine-tuned') && !importMethod.value) {
-      message.value = 'Please select how you want to add your model';
+    // Validate model_family
+    if (!form.model_family || form.model_family.trim() === '') {
+      message.value = 'Model Family is required';
       messageType.value = 'error';
       loading.value = false;
       return;
     }
 
-    // Validate file upload for file-upload method
-    if (importMethod.value === 'file-upload' && selectedFiles.value.length === 0) {
+    // Validate file upload for base/fine-tuned models
+    if ((form.type === 'base' || form.type === 'fine-tuned') && selectedFiles.value.length === 0) {
       message.value = 'Please select model files to upload';
       messageType.value = 'error';
       loading.value = false;
@@ -533,65 +413,6 @@ function formatFileSize(bytes: number): string {
   return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
 }
 
-async function handleHuggingFaceImport() {
-  if (!hfImport.hf_model_id.trim()) {
-    hfImportMessage.value = 'Hugging Face Model ID is required';
-    hfImportMessageType.value = 'error';
-    return;
-  }
-
-  if (!form.name || !form.version || !form.owner_team) {
-    message.value = 'Please fill in all basic information fields (Name, Version, Owner Team)';
-    messageType.value = 'error';
-    return;
-  }
-
-  hfImporting.value = true;
-  hfImportMessage.value = 'Importing model from Hugging Face... This may take several minutes for large models.';
-  hfImportMessageType.value = 'success';
-  message.value = '';
-
-  try {
-    const response = await catalogClient.importFromHuggingFace({
-      hf_model_id: hfImport.hf_model_id.trim(),
-      name: form.name.trim(),
-      version: form.version.trim(),
-      model_type: form.type,
-      owner_team: form.owner_team.trim(),
-      hf_token: hfImport.hf_token.trim() || undefined,
-    });
-
-    if (response.status === 'success' && response.data) {
-      const modelId = Array.isArray(response.data) ? response.data[0].id : response.data.id;
-      hfImportMessage.value = 'Model imported successfully from Hugging Face!';
-      hfImportMessageType.value = 'success';
-
-      // Redirect to model detail page after a short delay
-      setTimeout(() => {
-        router.push(`/catalog/models/${modelId}`);
-      }, 2000);
-    } else {
-      hfImportMessage.value = response.message || 'Failed to import model from Hugging Face';
-      hfImportMessageType.value = 'error';
-    }
-  } catch (error: any) {
-    // Handle different types of errors
-    if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
-      hfImportMessage.value = 'Import request timed out. The model may be very large. Please check the model status or try again with a smaller model.';
-    } else if (error.response?.data?.message) {
-      hfImportMessage.value = `Import failed: ${error.response.data.message}`;
-    } else if (error.message) {
-      hfImportMessage.value = `Import error: ${error.message}`;
-    } else {
-      hfImportMessage.value = `Error importing model: ${String(error)}`;
-    }
-    hfImportMessageType.value = 'error';
-    console.error('Hugging Face import error:', error);
-  } finally {
-    hfImporting.value = false;
-  }
-}
-
 async function handleFileUpload(modelId: string) {
   if (selectedFiles.value.length === 0) return;
   
@@ -656,49 +477,8 @@ async function handleFileUpload(modelId: string) {
   margin: 0 auto;
 }
 
-.catalog-tabs {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 1.5rem;
-  border-bottom: 2px solid #e0e0e0;
-}
-
-.tab-link {
-  padding: 0.75rem 1.5rem;
-  text-decoration: none;
-  color: #666;
-  font-weight: 500;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -2px;
-  transition: all 0.2s;
-}
-
-.tab-link:hover {
-  color: #007bff;
-}
-
-.tab-link.active {
-  color: #007bff;
-  border-bottom-color: #007bff;
-}
-
 header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
   margin-bottom: 2rem;
-}
-
-.btn-back {
-  padding: 0.5rem 1rem;
-  background: #6c757d;
-  color: white;
-  text-decoration: none;
-  border-radius: 4px;
-}
-
-.btn-back:hover {
-  background: #5a6268;
 }
 
 .create-form {

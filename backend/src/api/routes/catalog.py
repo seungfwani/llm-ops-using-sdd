@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Query
+import logging
+
+from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Query, BackgroundTasks
 from typing import List, Optional
 
 from catalog.schemas import (
@@ -30,9 +32,11 @@ from catalog.services import CatalogService, DatasetService
 from services.model_registry_service import ModelRegistryService
 from services.data_versioning_service import DataVersioningService
 from core.database import get_session
+from integrations.error_handler import IntegrationError, ToolUnavailableError
 from uuid import UUID
 
 router = APIRouter(prefix="/llm-ops/v1/catalog", tags=["catalog"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/models", response_model=EnvelopeModelCatalogList)
@@ -52,6 +56,7 @@ def list_models(session=Depends(get_session)) -> EnvelopeModelCatalogList:
                 owner_team=entry.owner_team,
                 metadata=entry.model_metadata,
                 storage_uri=entry.storage_uri,
+                model_family=entry.model_family,
             )
             for entry in entries
         ],
@@ -80,6 +85,7 @@ def get_model(model_id: str, session=Depends(get_session)) -> EnvelopeModelCatal
             owner_team=entry.owner_team,
             metadata=entry.model_metadata,
             storage_uri=entry.storage_uri,
+            model_family=entry.model_family,
         ),
     )
 
@@ -103,6 +109,7 @@ def create_model(
                 owner_team=entry.owner_team,
                 metadata=entry.model_metadata,
                 storage_uri=entry.storage_uri,
+                model_family=entry.model_family,
             ),
         )
     except ValueError as exc:
@@ -132,6 +139,7 @@ def update_model_status(
                 owner_team=entry.owner_team,
                 metadata=entry.model_metadata,
                 storage_uri=entry.storage_uri,
+                model_family=entry.model_family,
             ),
         )
     except ValueError as exc:
@@ -459,6 +467,7 @@ async def upload_model_files(
                 owner_team=result["entry"].owner_team,
                 metadata=result["entry"].model_metadata,
                 storage_uri=result["entry"].storage_uri,
+                model_family=result["entry"].model_family,
             ),
         )
     except ValueError as exc:
@@ -492,6 +501,7 @@ def import_from_huggingface(
             model_type=request.model_type,
             owner_team=request.owner_team,
             hf_token=request.hf_token,
+            model_family=request.model_family,  # Required for training-serving-spec.md
         )
         return EnvelopeModelCatalog(
             status="success",
@@ -505,7 +515,15 @@ def import_from_huggingface(
                 owner_team=entry.owner_team,
                 metadata=entry.model_metadata,
                 storage_uri=entry.storage_uri,
+                model_family=entry.model_family,
             ),
+        )
+    except IntegrationError as exc:
+        # Use the error message from IntegrationError which is more descriptive
+        return EnvelopeModelCatalog(
+            status="fail",
+            message=exc.message,
+            data=None,
         )
     except ImportError as exc:
         return EnvelopeModelCatalog(
@@ -530,11 +548,16 @@ def import_from_huggingface(
 @router.post("/models/import", response_model=EnvelopeModelCatalog)
 def import_model_from_registry(
     request: ImportModelRequest,
+    background_tasks: BackgroundTasks,
     session=Depends(get_session),
 ) -> EnvelopeModelCatalog:
-    """Import a model from an external registry into the platform catalog."""
+    """Import a model from an external registry into the platform catalog.
+    
+    The model is registered immediately, and the download is processed in the background.
+    """
     service = ModelRegistryService(session)
     try:
+        # Register model in database first (returns immediately)
         entry = service.import_model_from_registry(
             registry_type=request.registry_type,
             registry_model_id=request.registry_model_id,
@@ -543,10 +566,23 @@ def import_model_from_registry(
             model_type=request.model_type,
             owner_team=request.owner_team,
             registry_version=request.version,
+            model_family=request.model_family,
         )
+        
+        # Schedule background download task
+        background_tasks.add_task(
+            service.download_and_update_model,
+            model_id=entry.id,
+            registry_type=request.registry_type,
+            registry_model_id=request.registry_model_id,
+            registry_version=request.version,
+        )
+        
+        logger.info(f"Model {entry.id} registered, download scheduled in background")
+        
         return EnvelopeModelCatalog(
             status="success",
-            message="Model imported successfully from registry",
+            message="Model registered successfully. Download is in progress.",
             data=ModelCatalogResponse(
                 id=str(entry.id),
                 name=entry.name,
@@ -556,12 +592,26 @@ def import_model_from_registry(
                 owner_team=entry.owner_team,
                 metadata=entry.model_metadata,
                 storage_uri=entry.storage_uri,
+                model_family=entry.model_family,
             ),
         )
-    except Exception as exc:
+    except ToolUnavailableError as exc:
+        return EnvelopeModelCatalog(
+            status="fail",
+            message=exc.message,
+            data=None,
+        )
+    except ValueError as exc:
         return EnvelopeModelCatalog(
             status="fail",
             message=str(exc),
+            data=None,
+        )
+    except Exception as exc:
+        logger.error(f"Unexpected error importing model: {exc}", exc_info=True)
+        return EnvelopeModelCatalog(
+            status="fail",
+            message=f"Import failed: {str(exc)}",
             data=None,
         )
 

@@ -41,6 +41,7 @@ class CatalogService:
             lineage_dataset_ids=payload.get("lineage_dataset_ids", []),
             status=payload.get("status", "draft"),
             evaluation_summary=payload.get("evaluation_summary"),
+            model_family=payload["model_family"],  # Model family from training-serving-spec.md (required)
         )
 
         lineage_ids = entry.lineage_dataset_ids or []
@@ -252,6 +253,7 @@ class CatalogService:
         model_type: str = "base",
         owner_team: str = "ml-platform",
         hf_token: Optional[str] = None,
+        model_family: str = None,  # Required for training-serving-spec.md
     ) -> orm_models.ModelCatalogEntry:
         """Import a model from Hugging Face Hub."""
         importer = HuggingFaceImporter(self.session)
@@ -262,6 +264,7 @@ class CatalogService:
             model_type=model_type,
             owner_team=owner_team,
             hf_token=hf_token,
+            model_family=model_family,
         )
 
     def _validate_model_files(self, files: list[UploadFile], model_type: str) -> None:

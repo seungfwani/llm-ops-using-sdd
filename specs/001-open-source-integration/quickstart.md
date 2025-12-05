@@ -242,18 +242,117 @@ poetry add argo-workflows  # If using Argo Python SDK
 
 ---
 
-## 4. Verify Integration
+## 4. Training-Serving Spec Integration
 
-### 4.1 Test Experiment Tracking
+### 4.1 TrainJobSpec Structure
+
+플랫폼은 `docs/training-serving-spec.md`에 정의된 **TrainJobSpec** 구조를 사용합니다:
+
+```yaml
+TrainJobSpec:
+  job_type: PRETRAIN | SFT | RAG_TUNING | RLHF | EMBEDDING
+  model_family: llama | mistral | gemma | bert ...  # Whitelist 검증
+  base_model_ref: null (PRETRAIN) | "model-ref" (SFT/RAG_TUNING/RLHF)
+  dataset_ref:
+    name: string
+    version: string
+    type: pretrain_corpus | sft_pair | rag_qa | rlhf_pair  # job_type과 호환성 검증
+    storage_uri: string
+  hyperparams:
+    lr: float
+    batch_size: int
+    num_epochs: int
+    max_seq_len: int  # base_model.max_position_embeddings 이하여야 함
+    precision: fp16 | bf16
+  method: full | lora | qlora  # PRETRAIN은 full만 허용
+  resources:
+    gpus: int
+    gpu_type: string
+    nodes: int
+  output:
+    artifact_name: string
+    save_format: hf | safetensors
+  use_gpu: bool  # GPU 없으면 자동으로 CPU 이미지로 fallback
+```
+
+**검증 규칙**:
+- ModelFamily whitelist: 지원되는 model_family만 허용
+- Dataset type 호환성: PRETRAIN → pretrain_corpus, SFT → sft_pair 등
+- Base model 요구사항: PRETRAIN은 null, 다른 타입은 필수
+- Method 제약: PRETRAIN은 full만, 다른 타입은 lora/qlora/full 허용
+- Container image: job_type에 따라 자동 선택 (GPU/CPU 자동 fallback)
+
+### 4.2 DeploymentSpec Structure
+
+플랫폼은 **DeploymentSpec** 구조를 사용합니다:
+
+```yaml
+DeploymentSpec:
+  model_ref: string  # 학습된 모델 artifact 참조
+  model_family: string  # Training job의 model_family와 일치해야 함
+  job_type: SFT | RAG_TUNING | RLHF | PRETRAIN | EMBEDDING
+  serve_target: GENERATION | RAG  # job_type과 호환성 검증
+  resources:
+    gpus: int
+    gpu_memory_gb: int
+  runtime:
+    max_concurrent_requests: int
+    max_input_tokens: int  # model.max_position_embeddings 이하여야 함
+    max_output_tokens: int
+  rollout:
+    strategy: blue-green | canary
+    traffic_split: {old: int, new: int}  # canary 시 필수
+  use_gpu: bool  # GPU 없으면 자동으로 CPU 이미지로 fallback
+```
+
+**검증 규칙**:
+- Job type과 serve_target 호환성: RAG_TUNING → RAG, SFT/RLHF → GENERATION
+- Model family 일치: Deployment의 model_family는 training job과 일치해야 함
+- Container image: serve_target에 따라 자동 선택 (GENERATION/RAG, GPU/CPU 자동 fallback)
+
+---
+
+## 5. Verify Integration
+
+### 5.1 Test Experiment Tracking with TrainJobSpec
 
 ```bash
-# Submit a training job
+# Submit a training job with TrainJobSpec structure
 curl -X POST http://localhost:8000/llm-ops/v1/training/jobs \
   -H "Content-Type: application/json" \
   -d '{
     "modelId": "...",
     "datasetId": "...",
-    "jobType": "finetune"
+    "jobType": "finetune",
+    "trainJobSpec": {
+      "job_type": "SFT",
+      "model_family": "llama",
+      "base_model_ref": "llama-3-8b-pretrain-v1",
+      "dataset_ref": {
+        "name": "enterprise-instruction",
+        "version": "v1",
+        "type": "sft_pair",
+        "storage_uri": "s3://llm-datasets/enterprise-instruction/v1"
+      },
+      "hyperparams": {
+        "lr": 0.0001,
+        "batch_size": 4,
+        "num_epochs": 3,
+        "max_seq_len": 4096,
+        "precision": "bf16"
+      },
+      "method": "lora",
+      "resources": {
+        "gpus": 2,
+        "gpu_type": "A100",
+        "nodes": 1
+      },
+      "output": {
+        "artifact_name": "llama-3-8b-sft-v1",
+        "save_format": "hf"
+      },
+      "use_gpu": true
+    }
   }'
 
 # Check experiment run was created
@@ -261,28 +360,53 @@ curl http://localhost:8000/llm-ops/v1/training/jobs/{jobId}/experiment-run
 
 # Verify in MLflow UI
 # Open http://localhost:5000 and check for new experiment run
+# TrainJobSpec fields are automatically converted to MLflow parameters
 ```
 
-### 4.2 Test Serving Integration
+### 5.2 Test Serving Integration with DeploymentSpec
 
 ```bash
-# Deploy a model (uses KServe if enabled)
+# Deploy a model with DeploymentSpec structure (uses KServe if enabled)
 curl -X POST http://localhost:8000/llm-ops/v1/serving/endpoints \
   -H "Content-Type: application/json" \
   -d '{
     "modelId": "...",
     "route": "/test-model",
-    "environment": "dev"
+    "environment": "dev",
+    "deploymentSpec": {
+      "model_ref": "llama-3-8b-sft-v1",
+      "model_family": "llama",
+      "job_type": "SFT",
+      "serve_target": "GENERATION",
+      "resources": {
+        "gpus": 2,
+        "gpu_memory_gb": 80
+      },
+      "runtime": {
+        "max_concurrent_requests": 256,
+        "max_input_tokens": 4096,
+        "max_output_tokens": 1024
+      },
+      "rollout": {
+        "strategy": "canary",
+        "traffic_split": {
+          "old": 90,
+          "new": 10
+        }
+      },
+      "use_gpu": true
+    }
   }'
 
 # Check deployment details
 curl http://localhost:8000/llm-ops/v1/serving/endpoints/{endpointId}/deployment
 
-# Verify KServe InferenceService was created
+# Verify KServe InferenceService was created from DeploymentSpec
 kubectl get inferenceservice -n llm-ops-dev
+kubectl describe inferenceservice {endpoint-name} -n llm-ops-dev
 ```
 
-### 4.3 Test Model Registry
+### 5.3 Test Model Registry
 
 ```bash
 # Import model from Hugging Face Hub
@@ -297,7 +421,7 @@ curl -X POST http://localhost:8000/llm-ops/v1/catalog/models/import \
 curl http://localhost:8000/llm-ops/v1/catalog/models/{modelId}/registry-links
 ```
 
-### 4.4 Test Data Versioning
+### 5.4 Test Data Versioning
 
 ```bash
 # Create dataset version
@@ -316,9 +440,9 @@ curl http://localhost:8000/llm-ops/v1/catalog/datasets/{datasetId}/versions/{ver
 
 ---
 
-## 5. Troubleshooting
+## 6. Troubleshooting
 
-### 5.1 MLflow Connection Issues
+### 6.1 MLflow Connection Issues
 
 ```bash
 # Check MLflow pod status
@@ -332,7 +456,7 @@ kubectl exec -n mlflow deployment/mlflow-server -- \
   psql $MLFLOW_BACKEND_STORE_URI -c "SELECT 1"
 ```
 
-### 5.2 KServe Deployment Issues
+### 6.2 KServe Deployment Issues
 
 ```bash
 # Check KServe controller status
@@ -345,7 +469,7 @@ kubectl describe inferenceservice -n llm-ops-dev {endpoint-name}
 kubectl get pods -n llm-ops-dev -l serving.kserve.io/inferenceservice={endpoint-name}
 ```
 
-### 5.3 Argo Workflows Issues
+### 6.3 Argo Workflows Issues
 
 ```bash
 # Check Argo Workflows controller
@@ -358,7 +482,7 @@ kubectl get workflows -n argo
 argo logs -n argo {workflow-name}
 ```
 
-### 5.4 DVC Storage Issues
+### 6.4 DVC Storage Issues
 
 ```bash
 # Test DVC remote connection
@@ -370,7 +494,30 @@ aws s3 ls s3://datasets-dvc --endpoint-url http://minio-service.minio.svc.cluste
 
 ---
 
-## 6. Next Steps
+### 6.5 TrainJobSpec/DeploymentSpec Validation Issues
+
+```bash
+# Re-validate existing training jobs
+cd backend
+python scripts/validate_existing_training_jobs.py
+
+# Re-validate existing serving endpoints
+python scripts/validate_existing_serving_endpoints.py
+
+# Validate specific job/endpoint
+python scripts/validate_existing_training_jobs.py --job-id {job-id}
+python scripts/validate_existing_serving_endpoints.py --endpoint-id {endpoint-id}
+```
+
+**일반적인 검증 오류**:
+- `Model family 'xxx' is not supported`: 지원되지 않는 model_family 사용
+- `Dataset type 'xxx' is not compatible with job_type 'yyy'`: Dataset type과 job_type 불일치
+- `SFT max_seq_len must be <= base_model.max_position_embeddings`: Sequence length 초과
+- `Serve target 'xxx' is not compatible with job_type 'yyy'`: Serve target과 job_type 불일치
+
+---
+
+## 7. Next Steps
 
 1. **Enable integrations gradually**: Start with dev environment, then staging, then production
 2. **Monitor metrics**: Set up alerts for tool service health and integration failures
@@ -379,7 +526,7 @@ aws s3 ls s3://datasets-dvc --endpoint-url http://minio-service.minio.svc.cluste
 
 ---
 
-## 7. Rollback Procedure
+## 8. Rollback Procedure
 
 If issues arise, disable integrations via feature flags:
 

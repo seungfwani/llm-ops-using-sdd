@@ -9,6 +9,7 @@ export type CatalogModel = {
   owner_team: string;
   metadata: Record<string, unknown>;
   storage_uri?: string;
+  model_family?: string; // Model family from training-serving-spec.md (llama, mistral, gemma, bert, etc.)
 };
 
 export type RegistryModelLink = {
@@ -34,6 +35,7 @@ export type CatalogDataset = {
   approved_at?: string | null;
   created_at: string;
   updated_at: string;
+  type?: string; // Dataset type from training-serving-spec.md (pretrain_corpus, sft_pair, rag_qa, rlhf_pair)
 };
 
 export type DatasetVersion = {
@@ -86,6 +88,7 @@ export const catalogClient = {
     owner_team: string;
     metadata: Record<string, unknown>;
     lineage_dataset_ids?: string[];
+    model_family: string; // Model family from training-serving-spec.md (llama, mistral, gemma, bert, etc.) - Required
   }): Promise<Envelope<CatalogModel>> {
     const response = await apiClient.post<Envelope<CatalogModel>>("/catalog/models", payload);
     return response.data;
@@ -130,6 +133,7 @@ export const catalogClient = {
     model_type?: string;
     owner_team?: string;
     hf_token?: string;
+    model_family: string; // Required for training-serving-spec.md
   }): Promise<Envelope<CatalogModel>> {
     const response = await apiClient.post<Envelope<CatalogModel>>(
       "/catalog/models/import-from-huggingface",
@@ -211,6 +215,7 @@ export const catalogClient = {
     owner_team: string;
     change_log?: string;
     storage_uri?: string;
+    type: string; // Dataset type from training-serving-spec.md (pretrain_corpus, sft_pair, rag_qa, rlhf_pair) - Required
   }): Promise<Envelope<CatalogDataset>> {
     const response = await apiClient.post<Envelope<CatalogDataset>>("/catalog/datasets", payload);
     return response.data;

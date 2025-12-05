@@ -1,7 +1,6 @@
 <template>
   <div class="pipeline-create">
     <header>
-      <router-link to="/workflows/pipelines" class="back-link">← Back to Pipelines</router-link>
       <h1>Create Workflow Pipeline</h1>
     </header>
 

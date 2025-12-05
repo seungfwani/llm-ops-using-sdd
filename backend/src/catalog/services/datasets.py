@@ -88,6 +88,7 @@ class DatasetService:
             change_log=payload.get("change_log"),
             pii_scan_status=payload.get("pii_scan_status", "pending"),
             quality_score=payload.get("quality_score"),
+            type=payload["type"],  # Dataset type from training-serving-spec.md (required)
         )
         self.repo.save(dataset)
         self.session.commit()

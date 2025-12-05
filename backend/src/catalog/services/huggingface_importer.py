@@ -37,6 +37,7 @@ class HuggingFaceImporter:
         model_type: str = "base",
         owner_team: str = "ml-platform",
         hf_token: Optional[str] = None,
+        model_family: str = None,  # Required for training-serving-spec.md
     ) -> orm_models.ModelCatalogEntry:
         """
         Import a model from Hugging Face Hub.
@@ -127,6 +128,7 @@ class HuggingFaceImporter:
             model_metadata=metadata,
             storage_uri=storage_uri,
             status="draft",
+            model_family=model_family,  # Required for training-serving-spec.md
         )
 
         self.models.save(entry)

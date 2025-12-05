@@ -2,7 +2,6 @@
   <div class="job-detail">
     <header>
       <div class="header-left">
-        <router-link to="/training/jobs" class="back-link">← Back to Jobs</router-link>
         <h1>Training Job: {{ jobId.substring(0, 8) }}...</h1>
       </div>
       <div class="header-actions">

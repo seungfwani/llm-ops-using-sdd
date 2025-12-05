@@ -2,7 +2,6 @@
   <section class="endpoint-detail">
     <header>
       <h1>Serving Endpoint Detail</h1>
-      <router-link to="/serving/endpoints" class="btn-back">← Back to List</router-link>
     </header>
 
     <div v-if="loading" class="loading">Loading endpoint details...</div>
@@ -120,8 +119,97 @@
       <div class="detail-section">
         <h2>Runtime Configuration</h2>
         <dl class="detail-list">
-          <dt>GPU Override for Redeploy</dt>
+          <dt>DeploymentSpec for Redeploy</dt>
           <dd>
+            <div style="margin-bottom: 12px;">
+              <label class="checkbox-label">
+                <input 
+                  type="checkbox" 
+                  v-model="showDeploymentSpec"
+                  class="checkbox-input"
+                />
+                <span>Use DeploymentSpec (서빙 생성 페이지와 동일한 방식)</span>
+              </label>
+              <p class="help-text" style="margin-top: 8px;">
+                체크하면 서빙 생성 페이지와 동일한 DeploymentSpec을 사용하여 재배포합니다.
+                기존 endpoint의 deploymentSpec이 있으면 자동으로 로드됩니다.
+              </p>
+            </div>
+            
+            <div v-if="showDeploymentSpec" style="margin-top: 16px; padding: 16px; background: #f8f9fa; border-radius: 4px;">
+              <div class="form-row" style="margin-bottom: 12px;">
+                <div class="form-field">
+                  <label>Model Family <span class="required">*</span></label>
+                  <input v-model="redeployDeploymentSpec.model_family" type="text" placeholder="e.g., llama, mistral" />
+                </div>
+                <div class="form-field">
+                  <label>Job Type <span class="required">*</span></label>
+                  <select v-model="redeployDeploymentSpec.job_type">
+                    <option value="">Select job type</option>
+                    <option value="SFT">SFT</option>
+                    <option value="RAG_TUNING">RAG_TUNING</option>
+                    <option value="RLHF">RLHF</option>
+                    <option value="PRETRAIN">PRETRAIN</option>
+                    <option value="EMBEDDING">EMBEDDING</option>
+                  </select>
+                </div>
+              </div>
+              
+              <div class="form-field" style="margin-bottom: 12px;">
+                <label>Serve Target <span class="required">*</span></label>
+                <select v-model="redeployDeploymentSpec.serve_target">
+                  <option value="">Select serve target</option>
+                  <option value="GENERATION">GENERATION (for SFT/RLHF/PRETRAIN)</option>
+                  <option value="RAG">RAG (for RAG_TUNING only)</option>
+                </select>
+              </div>
+              
+              <div style="margin-bottom: 12px;">
+                <label class="checkbox-label">
+                  <input 
+                    type="checkbox" 
+                    :checked="(redeployDeploymentSpec.resources?.gpus || 0) > 0"
+                    @change="(e) => {
+                      if (!redeployDeploymentSpec.resources) redeployDeploymentSpec.resources = { gpus: 0 };
+                      redeployDeploymentSpec.resources.gpus = (e.target as HTMLInputElement).checked ? 1 : 0;
+                      redeployDeploymentSpec.use_gpu = (e.target as HTMLInputElement).checked;
+                    }"
+                    class="checkbox-input"
+                  />
+                  <span>Use GPU Resources</span>
+                </label>
+              </div>
+              
+              <div v-if="(redeployDeploymentSpec.resources?.gpus || 0) > 0" class="form-row" style="margin-bottom: 12px;">
+                <div class="form-field">
+                  <label>GPU Count <span class="required">*</span></label>
+                  <input v-model.number="redeployDeploymentSpec.resources.gpus" type="number" min="1" />
+                </div>
+                <div class="form-field">
+                  <label>GPU Memory (GB)</label>
+                  <input v-model.number="redeployDeploymentSpec.resources.gpu_memory_gb" type="number" min="0" />
+                </div>
+              </div>
+              
+              <div class="form-row" style="margin-bottom: 12px;">
+                <div class="form-field">
+                  <label>Max Concurrent Requests <span class="required">*</span></label>
+                  <input v-model.number="redeployDeploymentSpec.runtime.max_concurrent_requests" type="number" min="1" />
+                </div>
+                <div class="form-field">
+                  <label>Max Input Tokens <span class="required">*</span></label>
+                  <input v-model.number="redeployDeploymentSpec.runtime.max_input_tokens" type="number" min="1" />
+                </div>
+                <div class="form-field">
+                  <label>Max Output Tokens <span class="required">*</span></label>
+                  <input v-model.number="redeployDeploymentSpec.runtime.max_output_tokens" type="number" min="1" />
+                </div>
+              </div>
+            </div>
+          </dd>
+          
+          <dt v-if="!showDeploymentSpec">GPU Override for Redeploy</dt>
+          <dd v-if="!showDeploymentSpec">
             <select v-model="redeployGpuOverride">
               <option value="">Keep current / default</option>
               <option value="gpu">Force GPU (useGpu=true)</option>
@@ -129,12 +217,12 @@
             </select>
             <p class="help-text">
               Choose whether the next redeploy should force GPU or CPU-only resources.
-              Leave as “Keep current / default” to use the existing/global setting.
+              Leave as "Keep current / default" to use the existing/global setting.
             </p>
           </dd>
 
-          <dt>Override Runtime Image</dt>
-          <dd>
+          <dt v-if="!showDeploymentSpec">Override Runtime Image</dt>
+          <dd v-if="!showDeploymentSpec">
             <select v-model="runtimeImageSelection">
               <option value="">Use current / default</option>
               <option value="vllm/vllm-openai:nightly">vLLM OpenAI (nightly)</option>
@@ -152,10 +240,11 @@
             />
             <p class="help-text">
               If set, this image will be used on the next redeploy and recorded on the endpoint. Leave empty to keep current/default image.
+              <strong>Note:</strong> DeploymentSpec을 사용하면 이미지는 자동으로 선택됩니다.
             </p>
           </dd>
 
-          <dt>CPU Request Override</dt>
+          <dt v-if="!showDeploymentSpec">CPU Request Override</dt>
           <dd>
             <input
               v-model="redeployCpuRequest"
@@ -242,9 +331,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, reactive } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { servingClient, type ServingEndpoint, type ServingDeployment } from '@/services/servingClient';
+import { servingClient, type ServingEndpoint, type ServingDeployment, type DeploymentSpec } from '@/services/servingClient';
 
 const route = useRoute();
 const router = useRouter();
@@ -262,6 +351,8 @@ const redeployCpuRequest = ref<string>('');
 const redeployCpuLimit = ref<string>('');
 const redeployMemoryRequest = ref<string>('');
 const redeployMemoryLimit = ref<string>('');
+const showDeploymentSpec = ref(false);
+const redeployDeploymentSpec = reactive<Partial<DeploymentSpec>>({});
 
 async function fetchEndpoint() {
   const endpointId = route.params.id as string;
@@ -276,6 +367,41 @@ async function fetchEndpoint() {
     const response = await servingClient.getEndpoint(endpointId);
     if (response.status === "success" && response.data) {
       endpoint.value = response.data;
+      
+      // Load existing deploymentSpec if available
+      if (endpoint.value.deploymentSpec) {
+        // Deep copy deploymentSpec to avoid reactivity issues
+        redeployDeploymentSpec.model_ref = endpoint.value.deploymentSpec.model_ref || '';
+        redeployDeploymentSpec.model_family = endpoint.value.deploymentSpec.model_family || '';
+        redeployDeploymentSpec.job_type = endpoint.value.deploymentSpec.job_type;
+        redeployDeploymentSpec.serve_target = endpoint.value.deploymentSpec.serve_target || 'GENERATION';
+        redeployDeploymentSpec.resources = {
+          gpus: endpoint.value.deploymentSpec.resources?.gpus || 0,
+          gpu_memory_gb: endpoint.value.deploymentSpec.resources?.gpu_memory_gb,
+        };
+        redeployDeploymentSpec.runtime = {
+          max_concurrent_requests: endpoint.value.deploymentSpec.runtime?.max_concurrent_requests || 256,
+          max_input_tokens: endpoint.value.deploymentSpec.runtime?.max_input_tokens || 4096,
+          max_output_tokens: endpoint.value.deploymentSpec.runtime?.max_output_tokens || 1024,
+        };
+        redeployDeploymentSpec.use_gpu = endpoint.value.deploymentSpec.use_gpu ?? true;
+        redeployDeploymentSpec.rollout = endpoint.value.deploymentSpec.rollout;
+        showDeploymentSpec.value = true;
+      } else {
+        // Initialize empty deploymentSpec structure
+        redeployDeploymentSpec.model_ref = '';
+        redeployDeploymentSpec.model_family = '';
+        redeployDeploymentSpec.job_type = undefined;
+        redeployDeploymentSpec.serve_target = 'GENERATION';
+        redeployDeploymentSpec.resources = { gpus: 0 };
+        redeployDeploymentSpec.runtime = {
+          max_concurrent_requests: 256,
+          max_input_tokens: 4096,
+          max_output_tokens: 1024,
+        };
+        redeployDeploymentSpec.use_gpu = false;
+      }
+      
       // Initialize runtime image selector based on current endpoint
       if (endpoint.value.runtimeImage) {
         const knownImages = [
@@ -330,20 +456,51 @@ async function handleRedeploy() {
 
   redeploying.value = true;
   try {
+    // Build DeploymentSpec if available (from existing endpoint or user edits)
+    let deploymentSpec: DeploymentSpec | undefined = undefined;
+    
+    // Use existing deploymentSpec from endpoint if available, or use redeployDeploymentSpec if edited
+    if (showDeploymentSpec.value && Object.keys(redeployDeploymentSpec).length > 0) {
+      // Check if all required fields are present
+      if (
+        redeployDeploymentSpec.model_ref &&
+        redeployDeploymentSpec.model_family &&
+        redeployDeploymentSpec.job_type &&
+        redeployDeploymentSpec.serve_target &&
+        redeployDeploymentSpec.resources &&
+        redeployDeploymentSpec.runtime
+      ) {
+        // Set use_gpu based on GPU count
+        redeployDeploymentSpec.use_gpu = (redeployDeploymentSpec.resources.gpus || 0) > 0;
+        deploymentSpec = redeployDeploymentSpec as DeploymentSpec;
+      }
+    } else if (endpoint.value.deploymentSpec) {
+      // Use existing deploymentSpec from endpoint
+      deploymentSpec = endpoint.value.deploymentSpec;
+    }
+
     // Determine GPU override (tri-state: keep / force GPU / force CPU)
+    // If deploymentSpec is provided, use its use_gpu value
     let useGpuOverride: boolean | undefined = undefined;
-    if (redeployGpuOverride.value === 'gpu') {
-      useGpuOverride = true;
-    } else if (redeployGpuOverride.value === 'cpu') {
-      useGpuOverride = false;
+    if (deploymentSpec) {
+      useGpuOverride = deploymentSpec.use_gpu;
+    } else {
+      if (redeployGpuOverride.value === 'gpu') {
+        useGpuOverride = true;
+      } else if (redeployGpuOverride.value === 'cpu') {
+        useGpuOverride = false;
+      }
     }
 
     // Determine runtime image override
+    // If deploymentSpec is provided, runtime image is determined by serve_target and use_gpu
     let runtimeImageOverride: string | undefined;
-    if (runtimeImageSelection.value === 'custom' && customRuntimeImage.value.trim()) {
-      runtimeImageOverride = customRuntimeImage.value.trim();
-    } else if (runtimeImageSelection.value && runtimeImageSelection.value !== 'custom') {
-      runtimeImageOverride = runtimeImageSelection.value;
+    if (!deploymentSpec) {
+      if (runtimeImageSelection.value === 'custom' && customRuntimeImage.value.trim()) {
+        runtimeImageOverride = customRuntimeImage.value.trim();
+      } else if (runtimeImageSelection.value && runtimeImageSelection.value !== 'custom') {
+        runtimeImageOverride = runtimeImageSelection.value;
+      }
     }
 
     // Prepare CPU/memory overrides (only include if set)
@@ -354,12 +511,15 @@ async function handleRedeploy() {
 
     const response = await servingClient.redeployEndpoint(
       endpoint.value.id,
-      useGpuOverride,
-      runtimeImageOverride,
-      cpuRequestOverride,
-      cpuLimitOverride,
-      memoryRequestOverride,
-      memoryLimitOverride
+      {
+        useGpu: useGpuOverride,
+        servingRuntimeImage: runtimeImageOverride,
+        cpuRequest: cpuRequestOverride,
+        cpuLimit: cpuLimitOverride,
+        memoryRequest: memoryRequestOverride,
+        memoryLimit: memoryLimitOverride,
+        deploymentSpec: deploymentSpec,
+      }
     );
     if (response.status === "success") {
       alert('Endpoint redeployment started successfully. Status will update shortly.');
@@ -665,12 +825,66 @@ header {
   cursor: not-allowed;
 }
 
-.runtime-image-input {
+.runtime-image-input,
+.resource-input {
   margin-top: 0.5rem;
   width: 100%;
   padding: 0.5rem;
   border: 1px solid #ddd;
   border-radius: 4px;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.form-field {
+  margin-bottom: 12px;
+}
+
+.form-field label {
+  display: block;
+  margin-bottom: 4px;
+  font-weight: 500;
+  color: #333;
+}
+
+.form-field input[type="text"],
+.form-field input[type="number"],
+.form-field select {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox-label span {
+  margin-left: 8px;
+  font-weight: 500;
+  color: #333;
+}
+
+.checkbox-input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: #007bff;
+}
+
+.required {
+  color: #dc3545;
 }
 
 .help-text {

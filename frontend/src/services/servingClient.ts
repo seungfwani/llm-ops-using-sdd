@@ -1,5 +1,38 @@
 import apiClient from "./apiClient";
 
+// DeploymentSpec structure (from training-serving-spec.md)
+export interface DeploymentResources {
+  gpus: number;
+  gpu_memory_gb?: number;
+}
+
+export interface RuntimeConstraints {
+  max_concurrent_requests: number;
+  max_input_tokens: number;
+  max_output_tokens: number;
+}
+
+export interface TrafficSplit {
+  old: number; // Percentage for old version (0-100)
+  new: number; // Percentage for new version (0-100)
+}
+
+export interface RolloutStrategy {
+  strategy: "blue-green" | "canary";
+  traffic_split?: TrafficSplit; // Required for canary
+}
+
+export interface DeploymentSpec {
+  model_ref: string; // Reference to trained model artifact
+  model_family: string; // Must match training job's model_family
+  job_type: "SFT" | "RAG_TUNING" | "RLHF" | "PRETRAIN" | "EMBEDDING";
+  serve_target: "GENERATION" | "RAG";
+  resources: DeploymentResources;
+  runtime: RuntimeConstraints;
+  rollout?: RolloutStrategy;
+  use_gpu?: boolean; // For CPU fallback
+}
+
 export interface ServingEndpointRequest {
   modelId: string;
   environment: "dev" | "stg" | "prod";
@@ -19,6 +52,8 @@ export interface ServingEndpointRequest {
   memoryRequest?: string; // Memory request (e.g., '4Gi', '2G'). If not provided, uses default from settings
   memoryLimit?: string; // Memory limit (e.g., '8Gi', '4G'). If not provided, uses default from settings
   servingFramework?: string; // Serving framework name (e.g., "kserve", "ray_serve")
+  // DeploymentSpec (optional, for training-serving-spec.md compliance)
+  deploymentSpec?: DeploymentSpec;
 }
 
 export interface ServingEndpoint {
@@ -35,6 +70,7 @@ export interface ServingEndpoint {
   cpuLimit?: string;
   memoryRequest?: string;
   memoryLimit?: string;
+  deploymentSpec?: DeploymentSpec;
   createdAt: string;
 }
 
@@ -77,6 +113,27 @@ export interface EnvelopeServingFrameworks {
   data?: {
     frameworks: ServingFramework[];
   };
+}
+
+export interface ImageConfigResponse {
+  train_images: {
+    [jobType: string]: {
+      gpu: string;
+      cpu: string;
+    };
+  };
+  serve_images: {
+    [serveTarget: string]: {
+      gpu: string;
+      cpu: string;
+    };
+  };
+}
+
+export interface EnvelopeImageConfig {
+  status: "success" | "fail";
+  message: string;
+  data?: ImageConfigResponse;
 }
 
 export interface EnvelopeServingEndpoint {
@@ -134,35 +191,18 @@ export const servingClient = {
 
   async redeployEndpoint(
     endpointId: string,
-    useGpu?: boolean,
-    servingRuntimeImage?: string,
-    cpuRequest?: string,
-    cpuLimit?: string,
-    memoryRequest?: string,
-    memoryLimit?: string
+    request?: {
+      useGpu?: boolean;
+      servingRuntimeImage?: string;
+      cpuRequest?: string;
+      cpuLimit?: string;
+      memoryRequest?: string;
+      memoryLimit?: string;
+      deploymentSpec?: DeploymentSpec;
+    }
   ): Promise<EnvelopeServingEndpoint> {
-    const params = new URLSearchParams();
-    if (useGpu !== undefined) {
-      params.append("useGpu", useGpu.toString());
-    }
-    if (servingRuntimeImage !== undefined) {
-      params.append("servingRuntimeImage", servingRuntimeImage);
-    }
-    if (cpuRequest !== undefined && cpuRequest.trim()) {
-      params.append("cpuRequest", cpuRequest.trim());
-    }
-    if (cpuLimit !== undefined && cpuLimit.trim()) {
-      params.append("cpuLimit", cpuLimit.trim());
-    }
-    if (memoryRequest !== undefined && memoryRequest.trim()) {
-      params.append("memoryRequest", memoryRequest.trim());
-    }
-    if (memoryLimit !== undefined && memoryLimit.trim()) {
-      params.append("memoryLimit", memoryLimit.trim());
-    }
-    const queryString = params.toString();
-    const url = `/serving/endpoints/${endpointId}/redeploy${queryString ? `?${queryString}` : ""}`;
-    const response = await apiClient.post<EnvelopeServingEndpoint>(url);
+    const url = `/serving/endpoints/${endpointId}/redeploy`;
+    const response = await apiClient.post<EnvelopeServingEndpoint>(url, request || {});
     return response.data;
   },
 
@@ -203,6 +243,13 @@ export const servingClient = {
   async listFrameworks(): Promise<EnvelopeServingFrameworks> {
     const response = await apiClient.get<EnvelopeServingFrameworks>(
       "/serving/frameworks"
+    );
+    return response.data;
+  },
+
+  async getImageConfig(): Promise<EnvelopeImageConfig> {
+    const response = await apiClient.get<EnvelopeImageConfig>(
+      "/serving/images"
     );
     return response.data;
   },

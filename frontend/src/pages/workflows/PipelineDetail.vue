@@ -2,7 +2,6 @@
   <div class="pipeline-detail">
     <header>
       <div class="header-left">
-        <router-link to="/workflows/pipelines" class="back-link">← Back to Pipelines</router-link>
         <h1>Pipeline: {{ pipeline?.pipeline_name || pipelineId.substring(0, 8) + "..." }}</h1>
       </div>
       <div class="header-actions">

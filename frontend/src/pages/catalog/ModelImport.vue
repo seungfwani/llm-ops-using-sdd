@@ -1,12 +1,7 @@
 <template>
   <section class="model-import">
-    <div class="catalog-tabs">
-      <router-link to="/catalog/models" class="tab-link" active-class="active">Models</router-link>
-      <router-link to="/catalog/datasets" class="tab-link" active-class="active">Datasets</router-link>
-    </div>
     <header>
       <h1>Import Model from Registry</h1>
-      <router-link to="/catalog/models" class="btn-back">← Back to Catalog</router-link>
     </header>
 
     <div class="import-card">
@@ -38,8 +33,13 @@
             id="version"
             v-model="form.version"
             type="text"
-            placeholder="e.g., main or specific commit/tag"
+            placeholder="Leave empty for default branch, or enter: main, tag, or commit SHA"
           />
+          <small class="help-text">
+            Leave empty to use the default branch (usually "main"). 
+            Enter a specific branch name (e.g., "main"), tag, or commit SHA if needed.
+            Do not use numeric values like "1" as they are not valid revision identifiers.
+          </small>
         </div>
 
         <div class="form-row">
@@ -85,6 +85,10 @@
 
         <div v-if="error" class="error">{{ error }}</div>
         <div v-if="successMessage" class="success">{{ successMessage }}</div>
+        <div v-if="progressMessage && loading" class="progress">
+          <div class="progress-spinner"></div>
+          <span>{{ progressMessage }}</span>
+        </div>
 
         <button type="submit" class="btn-primary" :disabled="loading">
           {{ loading ? 'Importing...' : 'Import Model' }}
@@ -114,10 +118,12 @@ const form = reactive({
 const loading = ref(false);
 const error = ref('');
 const successMessage = ref('');
+const progressMessage = ref('');
 
 async function handleImport() {
   error.value = '';
   successMessage.value = '';
+  progressMessage.value = '';
 
   if (!form.registry_model_id) {
     error.value = 'Registry model ID is required';
@@ -125,11 +131,16 @@ async function handleImport() {
   }
 
   loading.value = true;
+  progressMessage.value = '모델 등록 중...';
+  
   try {
+    // Normalize version: empty string or whitespace-only should be undefined
+    const registryVersion = form.version?.trim() || undefined;
+    
     const response = await catalogClient.importFromRegistry({
       registry_type: form.registry_type,
       registry_model_id: form.registry_model_id,
-      version: form.version || undefined,
+      version: registryVersion,
       name: form.name || undefined,
       model_version: form.model_version,
       model_type: form.model_type,
@@ -138,18 +149,25 @@ async function handleImport() {
 
     if (response.status === 'success' && response.data) {
       const model = Array.isArray(response.data) ? response.data[0] : response.data;
-      successMessage.value = 'Model imported successfully from registry';
-      // 잠시 성공 메시지를 보여준 뒤 상세 페이지로 이동
+      progressMessage.value = '';
+      successMessage.value = '모델이 등록되었습니다. 다운로드는 백그라운드에서 진행 중입니다. 모델 리스트 페이지에서 진행 상황을 확인할 수 있습니다.';
+      // 모델 리스트 페이지로 즉시 이동
       setTimeout(() => {
-        router.push(`/catalog/models/${model.id}`);
-      }, 800);
+        router.push('/catalog/models');
+      }, 1500);
     } else {
+      progressMessage.value = '';
       error.value = response.message || 'Import failed';
     }
-  } catch (e) {
-    error.value = `Error: ${e}`;
+  } catch (e: any) {
+    progressMessage.value = '';
+    const errorMsg = e?.response?.data?.message || e?.message || String(e);
+    error.value = `Error: ${errorMsg}`;
   } finally {
     loading.value = false;
+    if (!successMessage.value && !error.value) {
+      progressMessage.value = '';
+    }
   }
 }
 </script>
@@ -274,6 +292,32 @@ select {
   background: #d4edda;
   color: #155724;
   border-radius: 4px;
+}
+
+.progress {
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  background: #e7f3ff;
+  color: #004085;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.progress-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #004085;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>
 

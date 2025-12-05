@@ -103,13 +103,15 @@ class Settings(BaseSettings):
     # Use KServe InferenceService (requires Knative + Istio)
     # Set to False if KServe is not properly installed (missing Knative/Istio dependencies)
     # Set to True if KServe with Knative Serving and Istio is installed
+    # Default: False for minimum requirements (CPU-only development)
     use_kserve: bool = False
     
     # KServe controller namespace
     kserve_namespace: str = "kserve"
     
     # Request GPU resources for serving. Set to False to use CPU-only deployment
-    use_gpu: bool = True
+    # Default: False for minimum requirements (CPU-only development)
+    use_gpu: bool = False
     
     # =========================================================================
     # Serving Resource Limits (GPU-enabled)
@@ -129,14 +131,14 @@ class Settings(BaseSettings):
     # Serving Resource Limits (CPU-only)
     # =========================================================================
     # CPU and memory requests/limits when GPU is disabled
-    # Use smaller values for local development
+    # Minimum requirements for local development (CPU-only mode)
+    # These values are optimized for minimum resource usage
     # Note: Model download during startup may require additional memory
     # Increase memory_limit if you see OOM kills during model download
-    # TGI model downloads can use significant memory even in CPU mode
-    serving_cpu_only_cpu_request: str = "1"  # CPU request for CPU-only deployment
-    serving_cpu_only_cpu_limit: str = "2"  # CPU limit for CPU-only deployment
-    serving_cpu_only_memory_request: str = "1Gi"  # Memory request for CPU-only deployment
-    serving_cpu_only_memory_limit: str = "8Gi"  # Memory limit (increased for large model downloads)
+    serving_cpu_only_cpu_request: str = "500m"  # CPU request for CPU-only deployment (minimum)
+    serving_cpu_only_cpu_limit: str = "1"  # CPU limit for CPU-only deployment (minimum)
+    serving_cpu_only_memory_request: str = "512Mi"  # Memory request for CPU-only deployment (minimum)
+    serving_cpu_only_memory_limit: str = "1Gi"  # Memory limit (minimum for small models)
 
     # Optional override for local development: if set, internal inference calls
     # will use this base URL instead of Kubernetes cluster DNS.
@@ -226,7 +228,7 @@ class Settings(BaseSettings):
     serving_framework_default: str = "kserve"  # Options: "kserve", "ray_serve", etc.
     workflow_orchestration_enabled: bool = False
     workflow_orchestration_system: str = "argo_workflows"  # Options: "argo_workflows", "kubeflow", etc.
-    model_registry_enabled: bool = False
+    model_registry_enabled: bool = True  # Default to True for better UX
     model_registry_default: str = "huggingface"  # Options: "huggingface", "modelscope", etc.
     data_versioning_enabled: bool = False
     data_versioning_system: str = "dvc"  # Options: "dvc", "lakefs", etc.

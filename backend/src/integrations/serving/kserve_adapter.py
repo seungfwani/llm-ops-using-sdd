@@ -9,7 +9,8 @@ import logging
 from typing import Any, Dict, Optional
 from uuid import UUID
 
-from kubernetes import client, config
+from kubernetes import client
+from kubernetes import config as k8s_config
 from kubernetes.client.rest import ApiException
 
 from integrations.serving.interface import ServingFrameworkAdapter
@@ -42,13 +43,13 @@ class KServeAdapter(ServingFrameworkAdapter):
         # Initialize Kubernetes client
         try:
             if self.settings.kubeconfig_path:
-                config.load_kube_config(config_file=self.settings.kubeconfig_path)
+                k8s_config.load_kube_config(config_file=self.settings.kubeconfig_path)
             else:
-                config.load_incluster_config()
+                k8s_config.load_incluster_config()
         except Exception as e:
             logger.warning(f"Failed to load kubeconfig: {e}, using default")
             try:
-                config.load_kube_config()
+                k8s_config.load_kube_config()
             except Exception:
                 logger.error("Could not initialize Kubernetes client")
                 raise
@@ -102,6 +103,9 @@ class KServeAdapter(ServingFrameworkAdapter):
         min_replicas: int = 1,
         max_replicas: int = 1,
         autoscaling_metrics: Optional[Dict[str, Any]] = None,
+        serving_runtime_image: Optional[str] = None,
+        model_metadata: Optional[Dict[str, Any]] = None,
+        use_gpu: Optional[bool] = None,
         canary_traffic_percent: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Deploy a model serving endpoint using KServe."""
@@ -124,6 +128,9 @@ class KServeAdapter(ServingFrameworkAdapter):
             min_replicas=min_replicas,
             max_replicas=max_replicas,
             autoscaling_metrics=autoscaling_metrics,
+            serving_runtime_image=serving_runtime_image,
+            model_metadata=model_metadata,
+            use_gpu=use_gpu,
             canary_traffic_percent=canary_traffic_percent,
         )
         
@@ -159,26 +166,192 @@ class KServeAdapter(ServingFrameworkAdapter):
         min_replicas: int,
         max_replicas: int,
         autoscaling_metrics: Optional[Dict[str, Any]],
+        serving_runtime_image: Optional[str] = None,
+        model_metadata: Optional[Dict[str, Any]] = None,
+        use_gpu: Optional[bool] = None,
         canary_traffic_percent: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Build KServe InferenceService CRD specification."""
-        # Determine predictor type based on model URI or image
-        # For now, use vLLM predictor as default
-        predictor_type = "vllm"
+        """Build KServe InferenceService CRD specification using PodSpec for custom containers."""
+        # Use default serving runtime image from settings if not provided
+        if not serving_runtime_image:
+            serving_runtime_image = self.settings.serving_runtime_image
         
-        # Build resource requirements
-        resources = {}
-        if resource_requests:
-            resources["requests"] = resource_requests
-        if resource_limits:
-            resources["limits"] = resource_limits
+        # Use GPU setting from parameter or fallback to settings
+        if use_gpu is None:
+            use_gpu = self.settings.use_gpu
         
-        # Build autoscaling configuration
-        autoscaling = {}
-        if min_replicas > 0:
-            autoscaling["minReplicas"] = min_replicas
-        if max_replicas > min_replicas:
-            autoscaling["maxReplicas"] = max_replicas
+        # Detect vLLM and TGI from image name
+        is_vllm = "vllm" in serving_runtime_image.lower()
+        is_tgi = "text-generation" in serving_runtime_image.lower() or "tgi" in serving_runtime_image.lower()
+        
+        # Build container args for vLLM
+        container_args = None
+        if is_vllm:
+            if not use_gpu:
+                container_args = [
+                    "--device", "cpu",
+                    "--model", model_uri,
+                    "--host", "0.0.0.0",
+                    "--port", "8000",
+                ]
+            else:
+                container_args = [
+                    "--model", model_uri,
+                    "--host", "0.0.0.0",
+                    "--port", "8000",
+                ]
+        
+        # Build environment variables
+        env_vars = [
+            {
+                "name": "MODEL_STORAGE_URI",
+                "value": model_uri,
+            },
+            {
+                "name": "AWS_ACCESS_KEY_ID",
+                "valueFrom": {
+                    "secretKeyRef": {
+                        "name": "llm-ops-object-store-credentials",
+                        "key": "access-key-id",
+                    }
+                },
+            },
+            {
+                "name": "AWS_SECRET_ACCESS_KEY",
+                "valueFrom": {
+                    "secretKeyRef": {
+                        "name": "llm-ops-object-store-credentials",
+                        "key": "secret-access-key",
+                    }
+                },
+            },
+            {
+                "name": "AWS_ENDPOINT_URL",
+                "valueFrom": {
+                    "configMapKeyRef": {
+                        "name": "llm-ops-object-store-config",
+                        "key": "endpoint-url",
+                    }
+                },
+            },
+            {
+                "name": "AWS_DEFAULT_REGION",
+                "value": "us-east-1",
+            },
+        ]
+        
+        # Add TGI-specific environment variables
+        if is_tgi:
+            hf_model_id = None
+            if model_metadata and isinstance(model_metadata, dict):
+                hf_model_id = model_metadata.get("huggingface_model_id")
+            
+            env_vars.extend([
+                {"name": "HF_HUB_DOWNLOAD_TIMEOUT", "value": "1800"},
+                {"name": "HF_HUB_DISABLE_EXPERIMENTAL_WARNING", "value": "1"},
+                {"name": "HF_HOME", "value": "/tmp/hf_cache"},
+                {"name": "HF_HUB_DISABLE_PROGRESS_BARS", "value": "1"},
+                {"name": "HF_HUB_ENABLE_HF_TRANSFER", "value": "1"},
+                {"name": "HF_HUB_DISABLE_TELEMETRY", "value": "1"},
+                {"name": "PYTORCH_CUDA_ALLOC_CONF", "value": "max_split_size_mb:512"},
+            ])
+            
+            if not use_gpu:
+                env_vars.extend([
+                    {"name": "DISABLE_TRITON", "value": "1"},
+                    {"name": "MAMBA_DISABLE_TRITON", "value": "1"},
+                    {"name": "TORCH_COMPILE_DISABLE", "value": "1"},
+                ])
+            
+            if hf_model_id:
+                env_vars.append({"name": "MODEL_ID", "value": hf_model_id})
+                logger.info(f"Using Hugging Face model ID for TGI: {hf_model_id}")
+        
+        # Add vLLM-specific environment variables
+        if is_vllm:
+            env_vars.append({"name": "VLLM_LOGGING_LEVEL", "value": "DEBUG"})
+            if not use_gpu:
+                env_vars.extend([
+                    {"name": "VLLM_USE_CPU", "value": "1"},
+                    {"name": "CUDA_VISIBLE_DEVICES", "value": ""},
+                    {"name": "NVIDIA_VISIBLE_DEVICES", "value": ""},
+                    {"name": "VLLM_CPU_KVCACHE_SPACE", "value": "4"},
+                ])
+        
+        # Build container spec using PodSpec (containers array)
+        container = {
+            "name": "kserve-container",
+            "image": serving_runtime_image,
+            "imagePullPolicy": "IfNotPresent",
+            "env": env_vars,
+            "resources": {
+                "requests": resource_requests,
+                "limits": resource_limits,
+            },
+            "ports": [
+                {
+                    "containerPort": 8000,
+                    "name": "http",
+                    "protocol": "TCP",
+                }
+            ],
+        }
+        
+        if container_args:
+            container["args"] = container_args
+        
+        # Add health probes for better pod lifecycle management
+        # Note: KServe may add its own probes, but we set defaults
+        if is_vllm or is_tgi:
+            # vLLM and TGI typically expose /health and /ready endpoints
+            container["livenessProbe"] = {
+                "httpGet": {
+                    "path": "/health",
+                    "port": 8000,
+                },
+                "initialDelaySeconds": 120,
+                "periodSeconds": 10,
+                "timeoutSeconds": 5,
+                "failureThreshold": 3,
+            }
+            container["readinessProbe"] = {
+                "httpGet": {
+                    "path": "/ready",
+                    "port": 8000,
+                },
+                "initialDelaySeconds": 60,
+                "periodSeconds": 5,
+                "timeoutSeconds": 5,
+                "failureThreshold": 3,
+            }
+        
+        # Build InferenceService spec with PodSpec
+        # Use annotations to disable Knative dependencies if not available
+        inference_service = {
+            "apiVersion": "serving.kserve.io/v1beta1",
+            "kind": "InferenceService",
+            "metadata": {
+                "name": endpoint_name,
+                "namespace": namespace,
+                "labels": {
+                    "app": "llm-ops-serving",
+                    "model-name": model_name,
+                },
+                "annotations": {
+                    # Disable Knative if not available - use raw Kubernetes Deployment
+                    "serving.kserve.io/deploymentMode": "RawDeployment",
+                    # Alternative: try to use serverless mode without Knative
+                    # "serving.kserve.io/deploymentMode": "Serverless",
+                },
+            },
+            "spec": {
+                "predictor": {
+                    "containers": [container],
+                    "minReplicas": min_replicas,
+                    "maxReplicas": max_replicas,
+                },
+            },
+        }
         
         # Add autoscaling metrics if provided
         if autoscaling_metrics:
@@ -202,52 +375,11 @@ class KServeAdapter(ServingFrameworkAdapter):
                     },
                 })
             if metrics:
-                autoscaling["metrics"] = metrics
-        
-        # Build InferenceService spec
-        inference_service = {
-            "apiVersion": "serving.kserve.io/v1beta1",
-            "kind": "InferenceService",
-            "metadata": {
-                "name": endpoint_name,
-                "namespace": namespace,
-                "labels": {
-                    "app": "llm-ops-serving",
-                    "model-name": model_name,
-                },
-            },
-            "spec": {
-                "predictor": {
-                    predictor_type: {
-                        "storageUri": model_uri,
-                        "resources": resources if resources else None,
-                    },
-                    "minReplicas": min_replicas,
-                    "maxReplicas": max_replicas,
-                },
-            },
-        }
-        
-        # Add autoscaling if configured
-        if autoscaling:
-            inference_service["spec"]["predictor"].update(autoscaling)
+                inference_service["spec"]["predictor"]["scaleMetrics"] = metrics
         
         # Add canary traffic splitting if configured
-        # KServe supports canary deployments via traffic splitting
-        # This is a basic implementation - full canary requires separate InferenceService
         if canary_traffic_percent is not None and 0 < canary_traffic_percent < 100:
-            # For canary deployment, we would typically create a separate InferenceService
-            # and use KServe's traffic splitting mechanism
-            # This is a placeholder for future enhancement
             logger.info(f"Canary deployment requested with {canary_traffic_percent}% traffic")
-            # Note: Full canary implementation would require:
-            # 1. Creating a canary InferenceService
-            # 2. Using KServe's traffic splitting (via Route or TrafficSplit CRD)
-            # 3. Managing traffic distribution between stable and canary versions
-        
-        # Remove None values
-        if not resources:
-            del inference_service["spec"]["predictor"][predictor_type]["resources"]
         
         return inference_service
     
@@ -303,8 +435,10 @@ class KServeAdapter(ServingFrameworkAdapter):
             }
         except ApiException as e:
             if e.status == 404:
+                # Return "failed" instead of "not_found" to comply with DB check constraint
+                # The deployment doesn't exist, which means it failed or was never created
                 return {
-                    "status": "not_found",
+                    "status": "failed",
                     "replicas": 0,
                     "ready_replicas": 0,
                     "conditions": [],

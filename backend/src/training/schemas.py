@@ -229,3 +229,108 @@ class EnvelopeExperimentSearch(BaseModel):
     message: str = ""
     data: Optional[ExperimentSearchResponse] = None
 
+
+# TrainJobSpec schema based on training-serving-spec.md
+class DatasetRef(BaseModel):
+    """Dataset reference schema."""
+
+    name: str = Field(..., description="Dataset name")
+    version: str = Field(..., description="Dataset version")
+    type: str = Field(..., description="Dataset type: pretrain_corpus, sft_pair, rag_qa, rlhf_pair")
+    storage_uri: str = Field(..., description="Storage URI for dataset")
+
+
+class Hyperparams(BaseModel):
+    """Training hyperparameters schema."""
+
+    lr: float = Field(..., description="Learning rate", gt=0.0)
+    batch_size: int = Field(..., description="Batch size", gt=0)
+    num_epochs: int = Field(..., description="Number of epochs", gt=0)
+    max_seq_len: int = Field(..., description="Maximum sequence length", gt=0)
+    precision: str = Field(..., pattern="^(fp16|bf16)$", description="Precision: fp16 or bf16")
+
+
+class Resources(BaseModel):
+    """Resource requirements schema."""
+
+    gpus: int = Field(default=0, ge=0, description="Number of GPUs")
+    gpu_type: Optional[str] = Field(None, description="GPU type (e.g., 'A100', 'V100')")
+    nodes: int = Field(default=1, ge=1, description="Number of nodes")
+
+
+class OutputSpec(BaseModel):
+    """Output specification schema."""
+
+    artifact_name: str = Field(..., description="Output artifact name")
+    save_format: str = Field(..., pattern="^(hf|safetensors)$", description="Save format: hf or safetensors")
+
+
+class TrainJobSpec(BaseModel):
+    """
+    Training job specification schema based on training-serving-spec.md.
+    
+    Enforces standardized structure for all training jobs:
+    - job_type: PRETRAIN, SFT, RAG_TUNING, RLHF, EMBEDDING
+    - model_family: Whitelist validation (llama, mistral, gemma, bert, etc.)
+    - base_model_ref: Required for SFT/RAG_TUNING/RLHF, null for PRETRAIN
+    - dataset_ref: Must include name, version, type, storage_uri
+    - hyperparams: lr, batch_size, num_epochs, max_seq_len, precision
+    - method: full, lora, qlora (method constraints per job_type)
+    - resources: gpus, gpu_type, nodes
+    - output: artifact_name, save_format
+    """
+
+    job_type: str = Field(
+        ...,
+        pattern="^(PRETRAIN|SFT|RAG_TUNING|RLHF|EMBEDDING)$",
+        description="Job type: PRETRAIN, SFT, RAG_TUNING, RLHF, EMBEDDING"
+    )
+    model_family: str = Field(..., description="Model family (llama, mistral, gemma, bert, etc.)")
+    base_model_ref: Optional[str] = Field(
+        None,
+        description="Base model reference (required for SFT/RAG_TUNING/RLHF, null for PRETRAIN)"
+    )
+    dataset_ref: DatasetRef = Field(..., description="Dataset reference")
+    hyperparams: Hyperparams = Field(..., description="Training hyperparameters")
+    method: str = Field(
+        ...,
+        pattern="^(full|lora|qlora)$",
+        description="Training method: full, lora, qlora"
+    )
+    resources: Resources = Field(..., description="Resource requirements")
+    output: OutputSpec = Field(..., description="Output specification")
+    use_gpu: bool = Field(default=True, description="Whether to use GPU resources (for CPU fallback)")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "job_type": "SFT",
+                "model_family": "llama",
+                "base_model_ref": "llama-3-8b-pretrain-v1",
+                "dataset_ref": {
+                    "name": "enterprise-instruction",
+                    "version": "v1",
+                    "type": "sft_pair",
+                    "storage_uri": "s3://llm-datasets/enterprise-instruction/v1"
+                },
+                "hyperparams": {
+                    "lr": 0.0001,
+                    "batch_size": 4,
+                    "num_epochs": 3,
+                    "max_seq_len": 4096,
+                    "precision": "bf16"
+                },
+                "method": "lora",
+                "resources": {
+                    "gpus": 2,
+                    "gpu_type": "A100",
+                    "nodes": 1
+                },
+                "output": {
+                    "artifact_name": "llama-3-8b-sft-v1",
+                    "save_format": "hf"
+                },
+                "use_gpu": True
+            }
+        }
+

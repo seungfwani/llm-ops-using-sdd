@@ -1,12 +1,7 @@
 <template>
   <section class="dataset-version-compare">
-    <div class="catalog-tabs">
-      <router-link to="/catalog/models" class="tab-link" active-class="active">Models</router-link>
-      <router-link to="/catalog/datasets" class="tab-link" active-class="active">Datasets</router-link>
-    </div>
     <header>
       <h1>Dataset Version Compare</h1>
-      <router-link :to="`/catalog/datasets/${datasetId}`" class="btn-back">← Back to Dataset</router-link>
     </header>
 
     <div v-if="loading" class="loading">Loading versions...</div>

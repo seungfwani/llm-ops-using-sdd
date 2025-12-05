@@ -1,7 +1,6 @@
 <template>
   <div class="experiment-detail">
     <header>
-      <router-link :to="`/training/jobs/${jobId}`" class="back-link">← Back to Job</router-link>
       <h1>Experiment: {{ jobId.substring(0, 8) }}...</h1>
     </header>
 

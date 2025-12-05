@@ -15,6 +15,10 @@ class ModelCatalogCreate(BaseModel):
     lineage_dataset_ids: List[str] = []
     status: str = "draft"
     evaluation_summary: Optional[dict] = None
+    model_family: str = Field(
+        ...,
+        description="Model family from training-serving-spec.md whitelist (llama, mistral, gemma, bert, etc.) - Required for TrainJobSpec/DeploymentSpec validation"
+    )
 
 
 class ModelCatalogResponse(BaseModel):
@@ -26,6 +30,7 @@ class ModelCatalogResponse(BaseModel):
     owner_team: str
     metadata: dict
     storage_uri: Optional[str] = None
+    model_family: str
 
     class Config:
         from_attributes = True
@@ -38,6 +43,10 @@ class DatasetCreate(BaseModel):
     owner_team: str
     change_log: Optional[str] = None
     quality_score: Optional[int] = None
+    type: str = Field(
+        ...,
+        description="Dataset type from training-serving-spec.md (pretrain_corpus, sft_pair, rag_qa, rlhf_pair) - Required for TrainJobSpec validation"
+    )
 
 
 class DatasetResponse(BaseModel):
@@ -52,6 +61,7 @@ class DatasetResponse(BaseModel):
     approved_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+    type: str
 
     class Config:
         from_attributes = True
@@ -162,6 +172,7 @@ class HuggingFaceImportRequest(BaseModel):
     model_type: str = Field(default="base", pattern="^(base|fine-tuned|external)$", description="Model type")
     owner_team: str = Field(default="ml-platform", description="Owner team name")
     hf_token: Optional[str] = Field(None, description="Hugging Face API token (for gated models)")
+    model_family: str = Field(..., description="Model family from training-serving-spec.md whitelist (llama, mistral, gemma, bert, etc.) - Required")
 
 
 class ImportModelRequest(BaseModel):
@@ -196,6 +207,10 @@ class ImportModelRequest(BaseModel):
     owner_team: str = Field(
         default="ml-platform",
         description="Owner team name for the imported model",
+    )
+    model_family: Optional[str] = Field(
+        default=None,
+        description="Model family (llama, mistral, gemma, bert, etc.). If not provided, will be inferred from model metadata.",
     )
 
 

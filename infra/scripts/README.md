@@ -20,7 +20,30 @@
 
 ## 빠른 시작
 
-**초기 세팅은 `deploy-all.sh` 하나로 모두 완료됩니다!**
+### 최소 사양 배포 (권장 - 개발 환경)
+
+**최소 사양으로 빠르게 시작하려면 `deploy-minimal.sh`를 사용하세요!**
+
+```bash
+# 최소 사양으로 배포 (CPU-only 모드)
+./deploy-minimal.sh dev
+```
+
+`deploy-minimal.sh`는 다음을 자동으로 수행합니다:
+1. ✅ Minikube 최소 사양으로 시작 (Memory 8GB, CPU 4코어, Disk 30GB)
+2. ✅ 네임스페이스 생성
+3. ✅ 의존성 서비스 배포 (최소 리소스: PostgreSQL, Redis, MinIO)
+4. ✅ Object Storage Secret/ConfigMap 생성
+5. ✅ MinIO 버킷 생성
+6. ✅ 리소스 사용량 확인
+7. ✅ Port-forward 자동 설정 (선택사항)
+8. ✅ 환경 설정 안내
+
+**참고**: 최소 사양 배포는 CPU-only 모드로 구성되며, KServe는 설치하지 않습니다.
+
+### 전체 기능 배포 (프로덕션 또는 고급 개발)
+
+**전체 기능을 사용하려면 `deploy-all.sh`를 사용하세요!**
 
 ```bash
 # 로컬 개발 (minikube 자동 감지)
@@ -137,10 +160,35 @@ Object Storage Secret/ConfigMap 생성 및 MinIO 버킷 생성을 모두 지원�
 
 > **참고:** `deploy-all.sh`가 자동으로 `setup-all` 기능을 호출합니다.
 
-### 6. `detect-cluster.sh` - 클러스터 타입 감지 (유틸리티)
+### 6. `check-resources.sh` - 리소스 사용량 확인 ⭐ **최소 사양 모니터링**
+리소스 사용량을 확인하는 스크립트입니다.
+
+```bash
+./check-resources.sh [environment]
+```
+
+**기능:**
+- Pod 상태 확인
+- Resource requests/limits 확인
+- 실제 리소스 사용량 확인 (metrics-server 필요)
+- PVC 사용량 확인
+- 총 리소스 요구사항 계산
+
+**예시:**
+```bash
+# 리소스 사용량 확인
+./check-resources.sh dev
+```
+
+**참고**: Minikube에서 metrics-server를 사용하려면:
+```bash
+minikube addons enable metrics-server
+```
+
+### 7. `detect-cluster.sh` - 클러스터 타입 감지 (유틸리티)
 클러스터 타입을 자동으로 감지하는 유틸리티 함수입니다. 다른 스크립트에서 사용됩니다.
 
-### 7. `test-connections.sh` - 연결 테스트
+### 8. `test-connections.sh` - 연결 테스트
 의존성 서비스들의 연결 상태를 테스트합니다.
 
 ```bash
@@ -158,7 +206,7 @@ Object Storage Secret/ConfigMap 생성 및 MinIO 버킷 생성을 모두 지원�
 ./test-connections.sh dev
 ```
 
-### 8. `port-forward-all.sh` - Port-forward 시작
+### 9. `port-forward-all.sh` - Port-forward 시작
 로컬 개발을 위해 모든 의존성 서비스를 port-forward합니다.
 
 ```bash
@@ -180,7 +228,7 @@ Object Storage Secret/ConfigMap 생성 및 MinIO 버킷 생성을 모두 지원�
 ./port-forward-all.sh dev
 ```
 
-### 9. `serving_rollback.sh` - 서빙 엔드포인트 롤백
+### 10. `serving_rollback.sh` - 서빙 엔드포인트 롤백
 배포된 서빙 엔드포인트를 롤백합니다. KServe와 raw Deployment 모두 지원합니다.
 
 ```bash
@@ -203,9 +251,35 @@ Object Storage Secret/ConfigMap 생성 및 MinIO 버킷 생성을 모두 지원�
 
 ## 배포 워크플로우
 
-### 🚀 빠른 시작 (권장)
+### 🚀 빠른 시작 - 최소 사양 (권장 - 개발 환경)
 
-**초기 세팅은 `deploy-all.sh` 하나로 완료됩니다!**
+**최소 사양으로 빠르게 시작하려면 `deploy-minimal.sh`를 사용하세요!**
+
+```bash
+# 1. 최소 사양으로 배포 (Minikube 자동 시작 포함)
+./deploy-minimal.sh dev
+
+# 2. 리소스 사용량 확인
+./check-resources.sh dev
+
+# 3. Backend .env 설정 (이미 최소 사양으로 설정됨)
+cd ../../backend
+cp env.example .env
+
+# 4. Backend 실행
+poetry install
+poetry run alembic upgrade head
+poetry run uvicorn src.api.main:app --reload --port 8000
+```
+
+**참고**: `deploy-minimal.sh`는 다음을 자동으로 수행합니다:
+- Minikube 최소 사양으로 시작 (Memory 8GB, CPU 4코어, Disk 30GB)
+- 의존성 서비스 배포 (최소 리소스)
+- Port-forward 자동 설정 (선택사항)
+
+### 🚀 빠른 시작 - 전체 기능 (프로덕션 또는 고급 개발)
+
+**전체 기능을 사용하려면 `deploy-all.sh`를 사용하세요!**
 
 #### 로컬 개발 (Minikube)
 

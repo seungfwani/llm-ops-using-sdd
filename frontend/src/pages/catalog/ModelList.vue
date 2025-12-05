@@ -1,9 +1,5 @@
 <template>
   <section class="model-list">
-    <div class="catalog-tabs">
-      <router-link to="/catalog/models" class="tab-link" active-class="active">Models</router-link>
-      <router-link to="/catalog/datasets" class="tab-link" active-class="active">Datasets</router-link>
-    </div>
     <header>
       <h1>Model Catalog</h1>
       <div class="header-actions">
@@ -73,6 +69,9 @@
             <span :class="`status-badge status-${model.status}`">
               {{ model.status }}
             </span>
+            <span v-if="!model.storage_uri && model.metadata?.source === 'huggingface'" class="importing-badge">
+              (다운로드 중...)
+            </span>
           </td>
           <td>{{ model.owner_team }}</td>
           <td>
@@ -91,7 +90,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, reactive, computed } from 'vue';
+import { onMounted, onUnmounted, ref, reactive, computed } from 'vue';
 import { catalogClient, type CatalogModel } from '@/services/catalogClient';
 
 const models = ref<CatalogModel[]>([]);
@@ -182,38 +181,32 @@ async function handleDelete(modelId: string, modelName: string) {
   }
 }
 
-onMounted(fetchModels);
+let refreshInterval: ReturnType<typeof setInterval> | null = null;
+
+onMounted(() => {
+  fetchModels();
+  // Auto-refresh every 5 seconds to check for download completion
+  refreshInterval = setInterval(() => {
+    // Only refresh if there are models with no storage_uri (downloading)
+    const hasDownloadingModels = models.value.some(
+      m => !m.storage_uri && m.metadata?.source === 'huggingface'
+    );
+    if (hasDownloadingModels) {
+      fetchModels();
+    }
+  }, 5000);
+});
+
+onUnmounted(() => {
+  if (refreshInterval) {
+    clearInterval(refreshInterval);
+  }
+});
 </script>
 
 <style scoped>
 .model-list {
   padding: 2rem;
-}
-
-.catalog-tabs {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 1.5rem;
-  border-bottom: 2px solid #e0e0e0;
-}
-
-.tab-link {
-  padding: 0.75rem 1.5rem;
-  text-decoration: none;
-  color: #666;
-  font-weight: 500;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -2px;
-  transition: all 0.2s;
-}
-
-.tab-link:hover {
-  color: #007bff;
-}
-
-.tab-link.active {
-  color: #007bff;
-  border-bottom-color: #007bff;
 }
 
 header {
@@ -352,6 +345,26 @@ header {
 .status-rejected {
   background: #f8d7da;
   color: #721c24;
+}
+
+.importing-badge {
+  margin-left: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  background: #e7f3ff;
+  color: #004085;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
 }
 
 .btn-link {

@@ -1,7 +1,6 @@
 <template>
   <div class="job-submit">
     <header>
-      <router-link to="/training/jobs" class="back-link">← Back to Jobs</router-link>
       <h1>Submit Training Job</h1>
     </header>
 
@@ -153,7 +152,110 @@
       </div>
 
       <div class="form-section">
-        <h2>Advanced Options</h2>
+        <h2>Training Job Configuration</h2>
+        <p class="step-intro" style="margin-bottom: 1rem; color: #666; font-size: 0.9rem;">
+          아래 필드들을 입력하면 자동으로 검증되고 실험 추적 시스템에 기록됩니다.
+        </p>
+        
+        <div class="form-group">
+          <label for="modelFamily">Model Family: <span class="required">*</span></label>
+          <select id="modelFamily" v-model="trainJobSpec.model_family" required>
+            <option value="">Select model family</option>
+            <option value="llama">Llama</option>
+            <option value="mistral">Mistral</option>
+            <option value="gemma">Gemma</option>
+            <option value="bert">BERT</option>
+          </select>
+          <small class="help-text">Select the model architecture family</small>
+        </div>
+
+        <div class="form-group">
+          <label for="trainJobType">Job Type (Standardized): <span class="required">*</span></label>
+          <select id="trainJobType" v-model="trainJobSpec.job_type" @change="onTrainJobTypeChange" required>
+            <option value="">Select job type</option>
+            <option value="PRETRAIN">PRETRAIN (from scratch)</option>
+            <option value="SFT">SFT (Supervised Fine-tuning)</option>
+            <option value="RAG_TUNING">RAG_TUNING (RAG retriever/reader)</option>
+            <option value="RLHF">RLHF (Reward Modeling + PPO)</option>
+            <option value="EMBEDDING">EMBEDDING (Embedding model)</option>
+          </select>
+          <small class="help-text">Select the type of training job</small>
+        </div>
+
+        <div v-if="trainJobSpec.job_type && trainJobSpec.job_type !== 'PRETRAIN'" class="form-group">
+          <label for="baseModelRef">Base Model Reference: <span class="required">*</span></label>
+          <input
+            id="baseModelRef"
+            v-model="trainJobSpec.base_model_ref"
+            type="text"
+            :required="trainJobSpec.job_type !== 'PRETRAIN'"
+            placeholder="e.g., llama-3-8b-pretrain-v1"
+          />
+          <small class="help-text">Required for SFT/RAG_TUNING/RLHF (reference to pretrained model)</small>
+        </div>
+
+        <div class="form-group">
+          <label for="trainingMethod">Training Method: <span class="required">*</span></label>
+          <select id="trainingMethod" v-model="trainJobSpec.method" required>
+            <option value="full">Full (full parameter training)</option>
+            <option value="lora">LoRA (Low-Rank Adaptation)</option>
+            <option value="qlora">QLoRA (Quantized LoRA)</option>
+          </select>
+          <small class="help-text">PRETRAIN must use 'full', others allow lora/qlora/full</small>
+        </div>
+
+        <div class="form-group">
+          <h3 style="margin: 1rem 0 0.5rem 0; font-size: 1rem;">Hyperparameters</h3>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+            <div>
+              <label for="learningRate">Learning Rate: <span class="required">*</span></label>
+              <input id="learningRate" v-model.number="trainJobSpec.hyperparams.lr" type="number" step="0.0001" min="0" required />
+            </div>
+            <div>
+              <label for="batchSize">Batch Size: <span class="required">*</span></label>
+              <input id="batchSize" v-model.number="trainJobSpec.hyperparams.batch_size" type="number" min="1" required />
+            </div>
+            <div>
+              <label for="numEpochs">Number of Epochs: <span class="required">*</span></label>
+              <input id="numEpochs" v-model.number="trainJobSpec.hyperparams.num_epochs" type="number" min="1" required />
+            </div>
+            <div>
+              <label for="maxSeqLen">Max Sequence Length: <span class="required">*</span></label>
+              <input id="maxSeqLen" v-model.number="trainJobSpec.hyperparams.max_seq_len" type="number" min="1" required />
+            </div>
+            <div>
+              <label for="precision">Precision: <span class="required">*</span></label>
+              <select id="precision" v-model="trainJobSpec.hyperparams.precision" required>
+                <option value="fp16">FP16</option>
+                <option value="bf16">BF16</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <h3 style="margin: 1rem 0 0.5rem 0; font-size: 1rem;">Output Configuration</h3>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+            <div>
+              <label for="artifactName">Artifact Name: <span class="required">*</span></label>
+              <input id="artifactName" v-model="trainJobSpec.output.artifact_name" type="text" required placeholder="e.g., llama-3-8b-sft-v1" />
+            </div>
+            <div>
+              <label for="saveFormat">Save Format: <span class="required">*</span></label>
+              <select id="saveFormat" v-model="trainJobSpec.output.save_format" required>
+                <option value="hf">Hugging Face</option>
+                <option value="safetensors">SafeTensors</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <h2>Advanced Options (Legacy)</h2>
+        <p class="step-intro" style="margin-bottom: 1rem; color: #666; font-size: 0.9rem;">
+          기존 방식의 하이퍼파라미터 설정 (TrainJobSpec과 함께 사용 가능)
+        </p>
         
         <div class="form-group">
           <label for="hyperparameters">Additional Hyperparameters (JSON):</label>
@@ -180,9 +282,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from "vue";
+import { ref, reactive, computed, onMounted, watch } from "vue";
 import { useRouter } from "vue-router";
-import { trainingClient, type TrainingJobRequest } from "@/services/trainingClient";
+import { trainingClient, type TrainingJobRequest, type TrainJobSpec, type DatasetRef } from "@/services/trainingClient";
 import { catalogClient } from "@/services/catalogClient";
 
 const router = useRouter();
@@ -202,14 +304,86 @@ const form = reactive<TrainingJobRequest>({
   },
 });
 
+const trainJobSpec = reactive<Partial<TrainJobSpec>>({
+  job_type: undefined,
+  model_family: "",
+  base_model_ref: null,
+  dataset_ref: {
+    name: "",
+    version: "",
+    type: "sft_pair",
+    storage_uri: "",
+  } as DatasetRef,
+  hyperparams: {
+    lr: 0.0001,
+    batch_size: 4,
+    num_epochs: 3,
+    max_seq_len: 4096,
+    precision: "bf16",
+  },
+  method: "lora",
+  resources: {
+    gpus: 1,
+    gpu_type: "A100",
+    nodes: 1,
+  },
+  output: {
+    artifact_name: "",
+    save_format: "hf",
+  },
+  use_gpu: true,
+});
+
 const models = ref<Array<{ id: string; name: string; version: string }>>([]);
-const datasets = ref<Array<{ id: string; name: string; version: string }>>([]);
+const datasets = ref<Array<{ id: string; name: string; version: string; storage_uri?: string }>>([]);
 const submitting = ref(false);
 const message = ref("");
 const messageType = ref<"success" | "error">("success");
 const architectureJson = ref("");
 const hyperparametersJson = ref("");
 const architectureError = ref("");
+
+// Watch dataset selection to populate dataset_ref
+watch(() => form.datasetId, async (datasetId) => {
+  if (datasetId) {
+    const dataset = datasets.value.find(d => d.id === datasetId);
+    if (dataset) {
+      trainJobSpec.dataset_ref = {
+        name: dataset.name,
+        version: dataset.version || "v1",
+        type: trainJobSpec.dataset_ref?.type || "sft_pair",
+        storage_uri: dataset.storage_uri || "",
+      };
+    }
+  }
+});
+
+// Watch job type to set dataset type compatibility
+watch(() => trainJobSpec.job_type, (jobType) => {
+  if (jobType) {
+    // Set compatible dataset type
+    const datasetTypeMap: Record<string, "pretrain_corpus" | "sft_pair" | "rag_qa" | "rlhf_pair"> = {
+      PRETRAIN: "pretrain_corpus",
+      SFT: "sft_pair",
+      RAG_TUNING: "rag_qa",
+      RLHF: "rlhf_pair",
+      EMBEDDING: "pretrain_corpus", // Flexible
+    };
+    if (trainJobSpec.dataset_ref) {
+      trainJobSpec.dataset_ref.type = datasetTypeMap[jobType] || "sft_pair";
+    }
+    
+    // PRETRAIN must use full method
+    if (jobType === "PRETRAIN") {
+      trainJobSpec.method = "full";
+    }
+    
+    // PRETRAIN doesn't need base_model_ref
+    if (jobType === "PRETRAIN") {
+      trainJobSpec.base_model_ref = null;
+    }
+  }
+});
 
 const requiresModel = computed(() => {
   return form.jobType === "finetune";
@@ -242,6 +416,17 @@ const isFormValid = computed(() => {
     if (!form.resourceProfile.cpuCores || form.resourceProfile.cpuCores < 1) return false;
     if (!form.resourceProfile.memory) return false;
   }
+  
+  // TrainJobSpec validation (if provided)
+  if (trainJobSpec.job_type) {
+    if (!trainJobSpec.model_family) return false;
+    if (trainJobSpec.job_type !== "PRETRAIN" && !trainJobSpec.base_model_ref) return false;
+    if (!trainJobSpec.dataset_ref?.name || !trainJobSpec.dataset_ref?.version || !trainJobSpec.dataset_ref?.type) return false;
+    if (!trainJobSpec.hyperparams?.lr || !trainJobSpec.hyperparams?.batch_size || !trainJobSpec.hyperparams?.num_epochs) return false;
+    if (!trainJobSpec.method) return false;
+    if (!trainJobSpec.output?.artifact_name || !trainJobSpec.output?.save_format) return false;
+  }
+  
   return true;
 });
 
@@ -259,6 +444,14 @@ const onJobTypeChange = () => {
     form.resourceProfile.numNodes = undefined;
   } else {
     form.resourceProfile.numNodes = 2;
+  }
+};
+
+const onTrainJobTypeChange = () => {
+  // Reset base_model_ref for PRETRAIN
+  if (trainJobSpec.job_type === "PRETRAIN") {
+    trainJobSpec.base_model_ref = null;
+    trainJobSpec.method = "full";
   }
 };
 
@@ -303,7 +496,8 @@ onMounted(async () => {
     
     const datasetsRes = await catalogClient.listDatasets();
     if (datasetsRes.status === "success" && datasetsRes.data) {
-      datasets.value = Array.isArray(datasetsRes.data) ? datasetsRes.data : [datasetsRes.data];
+      const datasetsArray = Array.isArray(datasetsRes.data) ? datasetsRes.data : [datasetsRes.data];
+      datasets.value = datasetsArray;
     }
   } catch (e) {
     console.error("Failed to load models/datasets:", e);
@@ -350,9 +544,37 @@ async function submitJob() {
       }
     }
 
+    // Build TrainJobSpec if all required fields are present
+    let spec: TrainJobSpec | undefined = undefined;
+    if (
+      trainJobSpec.job_type &&
+      trainJobSpec.model_family &&
+      trainJobSpec.dataset_ref?.name &&
+      trainJobSpec.dataset_ref?.version &&
+      trainJobSpec.dataset_ref?.type &&
+      trainJobSpec.hyperparams &&
+      trainJobSpec.method &&
+      trainJobSpec.resources &&
+      trainJobSpec.output?.artifact_name &&
+      trainJobSpec.output?.save_format
+    ) {
+      // Update resources from form
+      if (form.useGpu && form.resourceProfile.gpuCount) {
+        trainJobSpec.resources.gpus = form.resourceProfile.gpuCount;
+        trainJobSpec.resources.gpu_type = form.resourceProfile.gpuType || "A100";
+      }
+      if (form.resourceProfile.numNodes) {
+        trainJobSpec.resources.nodes = form.resourceProfile.numNodes;
+      }
+      trainJobSpec.use_gpu = form.useGpu ?? true;
+      
+      spec = trainJobSpec as TrainJobSpec;
+    }
+
     const request: TrainingJobRequest = {
       ...form,
       hyperparameters: Object.keys(hyperparameters).length > 0 ? hyperparameters : undefined,
+      trainJobSpec: spec,
     };
 
     const response = await trainingClient.submitJob(request);

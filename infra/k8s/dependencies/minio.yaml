@@ -8,7 +8,7 @@ spec:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 20Gi
+      storage: 10Gi  # Reduced for minimum requirements
 ---
 apiVersion: v1
 kind: Secret
@@ -65,11 +65,11 @@ spec:
           mountPath: /data
         resources:
           requests:
-            memory: "512Mi"
-            cpu: "250m"
+            memory: "256Mi"  # Reduced for minimum requirements
+            cpu: "100m"  # Reduced for minimum requirements
           limits:
-            memory: "1Gi"
-            cpu: "500m"
+            memory: "512Mi"  # Reduced for minimum requirements
+            cpu: "250m"  # Reduced for minimum requirements
       volumes:
       - name: minio-storage
         persistentVolumeClaim:
