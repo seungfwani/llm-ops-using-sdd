@@ -70,6 +70,11 @@ export interface ServingEndpoint {
   cpuLimit?: string;
   memoryRequest?: string;
   memoryLimit?: string;
+  autoscalePolicy?: {
+    cpuUtilization?: number;
+    targetLatencyMs?: number;
+    gpuUtilization?: number;
+  };
   deploymentSpec?: DeploymentSpec;
   createdAt: string;
 }

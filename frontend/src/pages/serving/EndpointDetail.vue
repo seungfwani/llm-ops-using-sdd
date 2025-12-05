@@ -54,6 +54,97 @@
               Default (server setting)
             </span>
           </dd>
+          <dt>Use GPU</dt>
+          <dd>
+            <span v-if="endpoint.useGpu !== undefined">
+              {{ endpoint.useGpu ? 'Yes' : 'No (CPU-only)' }}
+            </span>
+            <span v-else class="text-muted">Not specified</span>
+          </dd>
+        </dl>
+      </div>
+
+      <div class="detail-section">
+        <h2>DeploymentSpec Configuration</h2>
+        <dl class="detail-list" v-if="endpoint.deploymentSpec">
+          <dt>Model Reference</dt>
+          <dd class="monospace">{{ endpoint.deploymentSpec.model_ref || 'N/A' }}</dd>
+          
+          <dt>Model Family</dt>
+          <dd>{{ endpoint.deploymentSpec.model_family || 'N/A' }}</dd>
+          
+          <dt>Job Type</dt>
+          <dd>{{ endpoint.deploymentSpec.job_type || 'N/A' }}</dd>
+          
+          <dt>Serve Target</dt>
+          <dd>
+            <span class="badge">{{ endpoint.deploymentSpec.serve_target || 'N/A' }}</span>
+          </dd>
+          
+          <dt>GPU Configuration</dt>
+          <dd>
+            <span v-if="endpoint.deploymentSpec.use_gpu">
+              <strong>GPU Enabled</strong>
+              <ul style="margin: 8px 0 0 20px; padding: 0;">
+                <li v-if="endpoint.deploymentSpec.resources?.gpus">
+                  GPU Count: {{ endpoint.deploymentSpec.resources.gpus }}
+                </li>
+                <li v-if="endpoint.deploymentSpec.resources?.gpu_memory_gb">
+                  GPU Memory: {{ endpoint.deploymentSpec.resources.gpu_memory_gb }} GB
+                </li>
+              </ul>
+            </span>
+            <span v-else class="text-muted">CPU-only mode</span>
+          </dd>
+          
+          <dt>Runtime Constraints</dt>
+          <dd v-if="endpoint.deploymentSpec.runtime">
+            <ul style="margin: 0; padding-left: 20px;">
+              <li v-if="endpoint.deploymentSpec.runtime.max_concurrent_requests">
+                Max Concurrent Requests: {{ endpoint.deploymentSpec.runtime.max_concurrent_requests }}
+              </li>
+              <li v-if="endpoint.deploymentSpec.runtime.max_input_tokens">
+                Max Input Tokens: {{ endpoint.deploymentSpec.runtime.max_input_tokens }}
+              </li>
+              <li v-if="endpoint.deploymentSpec.runtime.max_output_tokens">
+                Max Output Tokens: {{ endpoint.deploymentSpec.runtime.max_output_tokens }}
+              </li>
+            </ul>
+          </dd>
+          <dd v-else class="text-muted">Not configured</dd>
+          
+          <dt>Rollout Strategy</dt>
+          <dd v-if="endpoint.deploymentSpec.rollout?.strategy">
+            {{ endpoint.deploymentSpec.rollout.strategy }}
+            <span v-if="endpoint.deploymentSpec.rollout.traffic_split">
+              (Old: {{ endpoint.deploymentSpec.rollout.traffic_split.old }}%, 
+              New: {{ endpoint.deploymentSpec.rollout.traffic_split.new }}%)
+            </span>
+          </dd>
+          <dd v-else class="text-muted">Not configured</dd>
+        </dl>
+        <div v-else class="text-muted" style="padding: 1rem;">
+          <p>No DeploymentSpec configured. This endpoint was deployed using legacy configuration.</p>
+          <p style="margin-top: 0.5rem; font-size: 0.9rem;">
+            To use DeploymentSpec, redeploy this endpoint with DeploymentSpec enabled.
+          </p>
+        </div>
+      </div>
+
+      <div class="detail-section">
+        <h2>Resource Configuration</h2>
+        <dl class="detail-list">
+          <dt>CPU Request</dt>
+          <dd>{{ endpoint.cpuRequest || 'Default (server setting)' }}</dd>
+          
+          <dt>CPU Limit</dt>
+          <dd>{{ endpoint.cpuLimit || 'Default (server setting)' }}</dd>
+          
+          <dt>Memory Request</dt>
+          <dd>{{ endpoint.memoryRequest || 'Default (server setting)' }}</dd>
+          
+          <dt>Memory Limit</dt>
+          <dd>{{ endpoint.memoryLimit || 'Default (server setting)' }}</dd>
         </dl>
       </div>
 
@@ -116,186 +207,217 @@
         </dl>
       </div>
 
-      <div class="detail-section">
-        <h2>Runtime Configuration</h2>
-        <dl class="detail-list">
-          <dt>DeploymentSpec for Redeploy</dt>
-          <dd>
-            <div style="margin-bottom: 12px;">
-              <label class="checkbox-label">
-                <input 
-                  type="checkbox" 
-                  v-model="showDeploymentSpec"
-                  class="checkbox-input"
-                />
-                <span>Use DeploymentSpec (서빙 생성 페이지와 동일한 방식)</span>
-              </label>
-              <p class="help-text" style="margin-top: 8px;">
-                체크하면 서빙 생성 페이지와 동일한 DeploymentSpec을 사용하여 재배포합니다.
-                기존 endpoint의 deploymentSpec이 있으면 자동으로 로드됩니다.
-              </p>
-            </div>
-            
-            <div v-if="showDeploymentSpec" style="margin-top: 16px; padding: 16px; background: #f8f9fa; border-radius: 4px;">
-              <div class="form-row" style="margin-bottom: 12px;">
-                <div class="form-field">
-                  <label>Model Family <span class="required">*</span></label>
-                  <input v-model="redeployDeploymentSpec.model_family" type="text" placeholder="e.g., llama, mistral" />
-                </div>
-                <div class="form-field">
-                  <label>Job Type <span class="required">*</span></label>
-                  <select v-model="redeployDeploymentSpec.job_type">
-                    <option value="">Select job type</option>
-                    <option value="SFT">SFT</option>
-                    <option value="RAG_TUNING">RAG_TUNING</option>
-                    <option value="RLHF">RLHF</option>
-                    <option value="PRETRAIN">PRETRAIN</option>
-                    <option value="EMBEDDING">EMBEDDING</option>
-                  </select>
-                </div>
-              </div>
-              
-              <div class="form-field" style="margin-bottom: 12px;">
-                <label>Serve Target <span class="required">*</span></label>
-                <select v-model="redeployDeploymentSpec.serve_target">
-                  <option value="">Select serve target</option>
-                  <option value="GENERATION">GENERATION (for SFT/RLHF/PRETRAIN)</option>
-                  <option value="RAG">RAG (for RAG_TUNING only)</option>
-                </select>
-              </div>
-              
-              <div style="margin-bottom: 12px;">
-                <label class="checkbox-label">
-                  <input 
-                    type="checkbox" 
-                    :checked="(redeployDeploymentSpec.resources?.gpus || 0) > 0"
-                    @change="(e) => {
-                      if (!redeployDeploymentSpec.resources) redeployDeploymentSpec.resources = { gpus: 0 };
-                      redeployDeploymentSpec.resources.gpus = (e.target as HTMLInputElement).checked ? 1 : 0;
-                      redeployDeploymentSpec.use_gpu = (e.target as HTMLInputElement).checked;
-                    }"
-                    class="checkbox-input"
-                  />
-                  <span>Use GPU Resources</span>
-                </label>
-              </div>
-              
-              <div v-if="(redeployDeploymentSpec.resources?.gpus || 0) > 0" class="form-row" style="margin-bottom: 12px;">
-                <div class="form-field">
-                  <label>GPU Count <span class="required">*</span></label>
-                  <input v-model.number="redeployDeploymentSpec.resources.gpus" type="number" min="1" />
-                </div>
-                <div class="form-field">
-                  <label>GPU Memory (GB)</label>
-                  <input v-model.number="redeployDeploymentSpec.resources.gpu_memory_gb" type="number" min="0" />
-                </div>
-              </div>
-              
-              <div class="form-row" style="margin-bottom: 12px;">
-                <div class="form-field">
-                  <label>Max Concurrent Requests <span class="required">*</span></label>
-                  <input v-model.number="redeployDeploymentSpec.runtime.max_concurrent_requests" type="number" min="1" />
-                </div>
-                <div class="form-field">
-                  <label>Max Input Tokens <span class="required">*</span></label>
-                  <input v-model.number="redeployDeploymentSpec.runtime.max_input_tokens" type="number" min="1" />
-                </div>
-                <div class="form-field">
-                  <label>Max Output Tokens <span class="required">*</span></label>
-                  <input v-model.number="redeployDeploymentSpec.runtime.max_output_tokens" type="number" min="1" />
-                </div>
-              </div>
-            </div>
-          </dd>
-          
-          <dt v-if="!showDeploymentSpec">GPU Override for Redeploy</dt>
-          <dd v-if="!showDeploymentSpec">
-            <select v-model="redeployGpuOverride">
-              <option value="">Keep current / default</option>
-              <option value="gpu">Force GPU (useGpu=true)</option>
-              <option value="cpu">Force CPU-only (useGpu=false)</option>
+      <!-- Redeploy Configuration (EndpointDeploy.vue와 동일한 구조) -->
+      <section class="form-section">
+        <h2 class="section-title">Redeploy Configuration</h2>
+        <p class="section-description">
+          Training job의 메타데이터가 자동으로 로드됩니다. DeploymentSpec에 따라 서빙 프레임워크로 재배포됩니다.
+        </p>
+
+        <div class="form-row">
+          <div class="form-field">
+            <label>Model Family <span class="required">*</span></label>
+            <input v-model="redeployDeploymentSpec.model_family" type="text" placeholder="e.g., llama, mistral, gemma" required />
+            <small>Training job의 model_family와 일치해야 합니다</small>
+          </div>
+          <div class="form-field">
+            <label>Job Type <span class="required">*</span></label>
+            <select v-model="redeployDeploymentSpec.job_type" @change="onRedeployJobTypeChange" required>
+              <option value="">Select job type</option>
+              <option value="SFT">SFT</option>
+              <option value="RAG_TUNING">RAG_TUNING</option>
+              <option value="RLHF">RLHF</option>
+              <option value="PRETRAIN">PRETRAIN</option>
+              <option value="EMBEDDING">EMBEDDING</option>
             </select>
-            <p class="help-text">
-              Choose whether the next redeploy should force GPU or CPU-only resources.
-              Leave as "Keep current / default" to use the existing/global setting.
-            </p>
-          </dd>
+            <small>Training job에서 상속됩니다</small>
+          </div>
+        </div>
 
-          <dt v-if="!showDeploymentSpec">Override Runtime Image</dt>
-          <dd v-if="!showDeploymentSpec">
-            <select v-model="runtimeImageSelection">
-              <option value="">Use current / default</option>
-              <option value="vllm/vllm-openai:nightly">vLLM OpenAI (nightly)</option>
-              <option value="ghcr.io/vllm/vllm:latest">vLLM (latest)</option>
-              <option value="ghcr.io/vllm/vllm:0.6.0">vLLM (0.6.0)</option>
-              <option value="ghcr.io/huggingface/text-generation-inference:latest">TGI (latest, GHCR)</option>
-              <option value="custom">Custom image...</option>
+        <div class="form-field">
+          <label>Serve Target <span class="required">*</span></label>
+          <select v-model="redeployDeploymentSpec.serve_target" @change="onRedeployServeTargetChange" required>
+            <option value="">Select serve target</option>
+            <option value="GENERATION">GENERATION (for SFT/RLHF/PRETRAIN)</option>
+            <option value="RAG">RAG (for RAG_TUNING only)</option>
+          </select>
+          <small>RAG_TUNING → RAG, SFT/RLHF → GENERATION (자동 검증)</small>
+        </div>
+
+        <div class="subsection">
+          <h3 class="subsection-title">Resource Configuration</h3>
+          <div class="form-field" style="margin-bottom: 16px;">
+            <label class="checkbox-label">
+              <input 
+                type="checkbox" 
+                :checked="redeployUseGpuEnabled"
+                @change="onRedeployUseGpuChange"
+                class="checkbox-input"
+              />
+              <span>Use GPU Resources</span>
+            </label>
+            <small>체크 해제 시 CPU-only 리소스로 배포됩니다 (GPU 노드가 없거나 비용 절감이 필요한 경우 유용합니다)</small>
+          </div>
+          <div class="form-row" v-if="redeployUseGpuEnabled">
+            <div class="form-field">
+              <label>GPU Count <span class="required">*</span></label>
+              <input v-model.number="redeployDeploymentSpec.resources.gpus" type="number" min="1" required />
+              <small>Number of GPUs to allocate</small>
+            </div>
+            <div class="form-field">
+              <label>GPU Memory (GB)</label>
+              <input v-model.number="redeployDeploymentSpec.resources.gpu_memory_gb" type="number" min="0" />
+              <small>GPU memory requirement (optional)</small>
+            </div>
+          </div>
+          <div v-else class="cpu-only-notice">
+            <div style="padding: 12px; background: #e7f3ff; border-left: 4px solid #2196F3; border-radius: 4px;">
+              <small style="color: #1976D2; font-weight: 500;">CPU-only 모드</small>
+              <p style="margin: 4px 0 0 0; color: #666; font-size: 0.875rem;">GPU 없이 CPU 리소스만 사용하여 배포됩니다. GPU 노드가 없거나 비용 절감이 필요한 경우에 유용합니다.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="subsection">
+          <h3 class="subsection-title">Runtime Constraints</h3>
+          <div class="form-row">
+            <div class="form-field">
+              <label>Max Concurrent Requests <span class="required">*</span></label>
+              <input v-model.number="redeployDeploymentSpec.runtime.max_concurrent_requests" type="number" min="1" required />
+            </div>
+            <div class="form-field">
+              <label>Max Input Tokens <span class="required">*</span></label>
+              <input v-model.number="redeployDeploymentSpec.runtime.max_input_tokens" type="number" min="1" required />
+            </div>
+            <div class="form-field">
+              <label>Max Output Tokens <span class="required">*</span></label>
+              <input v-model.number="redeployDeploymentSpec.runtime.max_output_tokens" type="number" min="1" required />
+            </div>
+          </div>
+          <small class="form-note">max_input_tokens must be ≤ model's max_position_embeddings (자동 검증)</small>
+        </div>
+
+        <div class="subsection" v-if="hasRedeployDeploymentSpec">
+          <h3 class="subsection-title">Container Image</h3>
+          <div class="image-info" style="padding: 12px; background: #f5f5f5; border-radius: 4px;">
+            <small style="color: #666;">
+              이미지는 <strong>serve_target</strong> ({{ redeployDeploymentSpec.serve_target }})과 
+              <strong>use_gpu</strong> ({{ redeployDeploymentSpec.use_gpu ? 'GPU' : 'CPU' }}) 설정에 따라 자동으로 선택됩니다.
+            </small>
+          </div>
+        </div>
+
+        <div class="subsection">
+          <h3 class="subsection-title">Rollout Strategy (Optional)</h3>
+          <div class="form-field">
+            <label>Strategy</label>
+            <select v-model="redeployRolloutStrategy" @change="onRedeployRolloutStrategyChange">
+              <option value="">None (default)</option>
+              <option value="blue-green">Blue-Green</option>
+              <option value="canary">Canary</option>
             </select>
-            <input
-              v-if="runtimeImageSelection === 'custom'"
-              v-model="customRuntimeImage"
-              type="text"
-              placeholder="e.g., my-registry.io/my-image:tag"
-              class="runtime-image-input"
-            />
-            <p class="help-text">
-              If set, this image will be used on the next redeploy and recorded on the endpoint. Leave empty to keep current/default image.
-              <strong>Note:</strong> DeploymentSpec을 사용하면 이미지는 자동으로 선택됩니다.
-            </p>
-          </dd>
+          </div>
+          <div v-if="redeployDeploymentSpec.rollout?.strategy === 'canary' && redeployDeploymentSpec.rollout.traffic_split" class="form-row" style="margin-top: 10px;">
+            <div class="form-field">
+              <label>Old Version (%)</label>
+              <input v-model.number="redeployDeploymentSpec.rollout.traffic_split.old" type="number" min="0" max="100" />
+            </div>
+            <div class="form-field">
+              <label>New Version (%)</label>
+              <input v-model.number="redeployDeploymentSpec.rollout.traffic_split.new" type="number" min="0" max="100" />
+            </div>
+          </div>
+          <small class="form-note" v-if="redeployDeploymentSpec.rollout?.strategy === 'canary'">Old + New must equal 100 (자동 검증)</small>
+        </div>
+      </section>
 
-          <dt v-if="!showDeploymentSpec">CPU Request Override</dt>
-          <dd>
-            <input
-              v-model="redeployCpuRequest"
-              type="text"
-              placeholder="e.g., 2 or 1000m"
-              class="resource-input"
-            />
-            <p class="help-text">
-              CPU request for the next redeploy (e.g., '2' for 2 cores, '1000m' for 1000 millicores). Leave empty to keep current/default.
-            </p>
-          </dd>
+      <!-- 고급 옵션 (접을 수 있음) -->
+      <section class="form-section">
+        <div class="section-header">
+          <h2 class="section-title">고급 옵션</h2>
+          <button type="button" class="toggle-button" @click="showRedeployAdvanced = !showRedeployAdvanced">
+            {{ showRedeployAdvanced ? '숨기기' : '보기' }}
+          </button>
+        </div>
+        <div v-show="showRedeployAdvanced">
+          <div class="subsection">
+            <h3 class="subsection-title">Autoscaling Configuration</h3>
+            <div class="form-row">
+              <div class="form-field">
+                <label>Target Latency (ms)</label>
+                <input v-model.number="redeployAutoscalePolicy.targetLatencyMs" type="number" min="0" placeholder="Optional" />
+                <small>Target latency in milliseconds</small>
+              </div>
+              <div class="form-field">
+                <label>GPU Utilization (%)</label>
+                <input v-model.number="redeployAutoscalePolicy.gpuUtilization" type="number" min="0" max="100" placeholder="Optional" />
+                <small>Target GPU utilization (0-100)</small>
+              </div>
+              <div class="form-field">
+                <label>CPU Utilization (%)</label>
+                <input v-model.number="redeployAutoscalePolicy.cpuUtilization" type="number" min="0" max="100" placeholder="Optional" />
+                <small>Target CPU utilization (0-100)</small>
+              </div>
+            </div>
+            <small class="form-note">비워두면 기본 autoscaling 정책이 사용됩니다</small>
+          </div>
 
-          <dt>CPU Limit Override</dt>
-          <dd>
-            <input
-              v-model="redeployCpuLimit"
-              type="text"
-              placeholder="e.g., 4 or 2000m"
-              class="resource-input"
-            />
-            <p class="help-text">
-              CPU limit for the next redeploy (e.g., '4' for 4 cores, '2000m' for 2000 millicores). Leave empty to keep current/default.
-            </p>
-          </dd>
+          <div class="subsection">
+            <h3 class="subsection-title">Serving Framework</h3>
+            <div class="form-field">
+              <label>Serving Framework</label>
+              <select v-model="redeployServingFramework">
+                <option value="">Use default (from server settings)</option>
+                <option v-for="framework in redeployFrameworks" :key="framework.name" :value="framework.name" :disabled="!framework.enabled">
+                  {{ framework.display_name }} {{ framework.enabled ? '' : '(disabled)' }}
+                </option>
+              </select>
+              <small>KServe, Ray Serve 등 서빙 프레임워크 선택</small>
+            </div>
+            <div v-if="selectedRedeployFramework" class="framework-info">
+              <strong>Capabilities:</strong>
+              <ul>
+                <li v-for="capability in selectedRedeployFramework.capabilities" :key="capability">
+                  {{ capability }}
+                </li>
+              </ul>
+            </div>
+          </div>
 
-          <dt>Memory Request Override</dt>
-          <dd>
-            <input
-              v-model="redeployMemoryRequest"
-              type="text"
-              placeholder="e.g., 4Gi or 2G"
-              class="resource-input"
-            />
-            <p class="help-text">
-              Memory request for the next redeploy (e.g., '4Gi' for 4 gibibytes, '2G' for 2 gigabytes). Leave empty to keep current/default.
-            </p>
-          </dd>
+          <div class="subsection">
+            <h3 class="subsection-title">Kubernetes Resources</h3>
+            <p class="form-note">DeploymentSpec 외부의 Kubernetes 리소스 제한 설정</p>
+            <div class="form-row">
+              <div class="form-field">
+                <label>CPU Request</label>
+                <input v-model="redeployCpuRequest" type="text" placeholder="e.g., 2 or 1000m" />
+                <small>CPU request (e.g., '2' or '1000m')</small>
+              </div>
+              <div class="form-field">
+                <label>CPU Limit</label>
+                <input v-model="redeployCpuLimit" type="text" placeholder="e.g., 4 or 2000m" />
+                <small>CPU limit (e.g., '4' or '2000m')</small>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-field">
+                <label>Memory Request</label>
+                <input v-model="redeployMemoryRequest" type="text" placeholder="e.g., 4Gi or 2G" />
+                <small>Memory request (e.g., '4Gi' or '2G')</small>
+              </div>
+              <div class="form-field">
+                <label>Memory Limit</label>
+                <input v-model="redeployMemoryLimit" type="text" placeholder="e.g., 8Gi or 4G" />
+                <small>Memory limit (e.g., '8Gi' or '4G')</small>
+              </div>
+            </div>
+            <small class="form-note">비워두면 서버 기본값이 사용됩니다</small>
+          </div>
+        </div>
+      </section>
 
-          <dt>Memory Limit Override</dt>
-          <dd>
-            <input
-              v-model="redeployMemoryLimit"
-              type="text"
-              placeholder="e.g., 8Gi or 4G"
-              class="resource-input"
-            />
-            <p class="help-text">
-              Memory limit for the next redeploy (e.g., '8Gi' for 8 gibibytes, '4G' for 4 gigabytes). Leave empty to keep current/default.
-            </p>
-          </dd>
-        </dl>
+      <div v-if="redeployMessage" :class="['message', redeployMessageType]" style="margin-top: 20px; padding: 12px 16px; border-radius: 4px; font-size: 14px;">
+        {{ redeployMessage }}
       </div>
 
       <div class="detail-section">
@@ -331,9 +453,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, reactive } from 'vue';
+import { ref, onMounted, reactive, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { servingClient, type ServingEndpoint, type ServingDeployment, type DeploymentSpec } from '@/services/servingClient';
+import { servingClient, type ServingEndpoint, type ServingDeployment, type DeploymentSpec, type ServingFramework } from '@/services/servingClient';
+import { catalogClient } from '@/services/catalogClient';
 
 const route = useRoute();
 const router = useRouter();
@@ -344,15 +467,116 @@ const error = ref('');
 const rollingBack = ref(false);
 const deleting = ref(false);
 const redeploying = ref(false);
-const redeployGpuOverride = ref<string>('');
-const runtimeImageSelection = ref<string>('');
-const customRuntimeImage = ref<string>('');
 const redeployCpuRequest = ref<string>('');
 const redeployCpuLimit = ref<string>('');
 const redeployMemoryRequest = ref<string>('');
 const redeployMemoryLimit = ref<string>('');
-const showDeploymentSpec = ref(false);
 const redeployDeploymentSpec = reactive<Partial<DeploymentSpec>>({});
+const redeployAutoscalePolicy = reactive<{
+  targetLatencyMs?: number;
+  gpuUtilization?: number;
+  cpuUtilization?: number;
+}>({});
+const redeployServingFramework = ref<string>('');
+const redeployFrameworks = ref<ServingFramework[]>([]);
+const showRedeployAdvanced = ref(false);
+
+// Computed properties for redeploy DeploymentSpec
+const hasRedeployDeploymentSpec = computed(() => {
+  return !!(
+    redeployDeploymentSpec.model_ref &&
+    redeployDeploymentSpec.model_family &&
+    redeployDeploymentSpec.job_type &&
+    redeployDeploymentSpec.serve_target &&
+    redeployDeploymentSpec.resources &&
+    redeployDeploymentSpec.runtime
+  );
+});
+
+const redeployUseGpuEnabled = computed({
+  get: () => (redeployDeploymentSpec.resources?.gpus || 0) > 0,
+  set: (value: boolean) => {
+    if (value) {
+      if (!redeployDeploymentSpec.resources) {
+        redeployDeploymentSpec.resources = { gpus: 1, gpu_memory_gb: 80 };
+      } else {
+        redeployDeploymentSpec.resources.gpus = redeployDeploymentSpec.resources.gpus || 1;
+      }
+      redeployDeploymentSpec.use_gpu = true;
+    } else {
+      if (redeployDeploymentSpec.resources) {
+        redeployDeploymentSpec.resources.gpus = 0;
+      }
+      redeployDeploymentSpec.use_gpu = false;
+    }
+  },
+});
+
+const selectedRedeployFramework = computed(() => {
+  if (!redeployServingFramework.value) return null;
+  return redeployFrameworks.value.find(f => f.name === redeployServingFramework.value) || null;
+});
+
+const redeployRolloutStrategy = computed({
+  get: () => redeployDeploymentSpec.rollout?.strategy || "",
+  set: (value: string) => {
+    if (!value) {
+      redeployDeploymentSpec.rollout = undefined;
+    } else {
+      if (!redeployDeploymentSpec.rollout) {
+        redeployDeploymentSpec.rollout = {
+          strategy: value as "blue-green" | "canary",
+        };
+      } else {
+        redeployDeploymentSpec.rollout.strategy = value as "blue-green" | "canary";
+      }
+    }
+  },
+});
+
+// Handler functions for redeploy DeploymentSpec
+function onRedeployJobTypeChange() {
+  // Auto-set serve_target based on job_type
+  if (redeployDeploymentSpec.job_type === "RAG_TUNING") {
+    redeployDeploymentSpec.serve_target = "RAG";
+  } else if (["SFT", "RLHF", "PRETRAIN"].includes(redeployDeploymentSpec.job_type || "")) {
+    redeployDeploymentSpec.serve_target = "GENERATION";
+  }
+}
+
+const redeployMessage = ref("");
+const redeployMessageType = ref<"success" | "error">("success");
+
+function onRedeployServeTargetChange() {
+  // RAG_TUNING must use RAG serve_target
+  if (redeployDeploymentSpec.job_type === "RAG_TUNING" && redeployDeploymentSpec.serve_target !== "RAG") {
+    redeployDeploymentSpec.serve_target = "RAG";
+    redeployMessage.value = "RAG_TUNING job type requires RAG serve_target";
+    redeployMessageType.value = "error";
+    setTimeout(() => { redeployMessage.value = ""; }, 3000);
+  }
+  // SFT/RLHF must use GENERATION serve_target
+  if ((redeployDeploymentSpec.job_type === "SFT" || redeployDeploymentSpec.job_type === "RLHF") && redeployDeploymentSpec.serve_target !== "GENERATION") {
+    redeployDeploymentSpec.serve_target = "GENERATION";
+    redeployMessage.value = `${redeployDeploymentSpec.job_type} job type requires GENERATION serve_target`;
+    redeployMessageType.value = "error";
+    setTimeout(() => { redeployMessage.value = ""; }, 3000);
+  }
+}
+
+function onRedeployUseGpuChange(event: Event) {
+  const target = event.target as HTMLInputElement;
+  redeployUseGpuEnabled.value = target.checked;
+}
+
+function onRedeployRolloutStrategyChange() {
+  if (redeployDeploymentSpec.rollout?.strategy === "canary" && !redeployDeploymentSpec.rollout.traffic_split) {
+    redeployDeploymentSpec.rollout.traffic_split = {
+      old: 90,
+      new: 10,
+    };
+  }
+}
 
 async function fetchEndpoint() {
   const endpointId = route.params.id as string;
@@ -368,6 +592,23 @@ async function fetchEndpoint() {
     if (response.status === "success" && response.data) {
       endpoint.value = response.data;
       
+      // Load model information to get metadata
+      let modelData: { name: string; version: string; metadata?: Record<string, any> } | null = null;
+      try {
+        const modelResponse = await catalogClient.getModel(endpoint.value.modelId);
+        if (modelResponse.status === "success" && modelResponse.data) {
+          modelData = {
+            name: modelResponse.data.name,
+            version: modelResponse.data.version,
+            metadata: modelResponse.data.metadata || null,
+          };
+        }
+      } catch (e) {
+        console.warn("Failed to load model metadata:", e);
+      }
+      
+      const modelMetadata = modelData?.metadata;
+      
       // Load existing deploymentSpec if available
       if (endpoint.value.deploymentSpec) {
         // Deep copy deploymentSpec to avoid reactivity issues
@@ -376,68 +617,110 @@ async function fetchEndpoint() {
         redeployDeploymentSpec.job_type = endpoint.value.deploymentSpec.job_type;
         redeployDeploymentSpec.serve_target = endpoint.value.deploymentSpec.serve_target || 'GENERATION';
         redeployDeploymentSpec.resources = {
-          gpus: endpoint.value.deploymentSpec.resources?.gpus || 0,
-          gpu_memory_gb: endpoint.value.deploymentSpec.resources?.gpu_memory_gb,
+          gpus: endpoint.value.deploymentSpec.resources?.gpus || (endpoint.value.useGpu ? 1 : 0),
+          gpu_memory_gb: endpoint.value.deploymentSpec.resources?.gpu_memory_gb || 80,
         };
         redeployDeploymentSpec.runtime = {
           max_concurrent_requests: endpoint.value.deploymentSpec.runtime?.max_concurrent_requests || 256,
           max_input_tokens: endpoint.value.deploymentSpec.runtime?.max_input_tokens || 4096,
           max_output_tokens: endpoint.value.deploymentSpec.runtime?.max_output_tokens || 1024,
         };
-        redeployDeploymentSpec.use_gpu = endpoint.value.deploymentSpec.use_gpu ?? true;
+        redeployDeploymentSpec.use_gpu = endpoint.value.deploymentSpec.use_gpu ?? (endpoint.value.useGpu ?? true);
         redeployDeploymentSpec.rollout = endpoint.value.deploymentSpec.rollout;
-        showDeploymentSpec.value = true;
       } else {
-        // Initialize empty deploymentSpec structure
-        redeployDeploymentSpec.model_ref = '';
-        redeployDeploymentSpec.model_family = '';
-        redeployDeploymentSpec.job_type = undefined;
-        redeployDeploymentSpec.serve_target = 'GENERATION';
-        redeployDeploymentSpec.resources = { gpus: 0 };
+        // No deploymentSpec - reconstruct from model metadata or endpoint settings
+        const modelFamily = modelMetadata?.model_family || '';
+        const jobType = modelMetadata?.job_type;
+        const useGpu = endpoint.value.useGpu ?? true;
+        
+        // Determine serve_target based on job_type
+        let serveTarget = 'GENERATION';
+        if (jobType === "RAG_TUNING") {
+          serveTarget = "RAG";
+        } else if (["SFT", "RLHF", "PRETRAIN"].includes(jobType || "")) {
+          serveTarget = "GENERATION";
+        }
+        
+        // Get model name and version for model_ref
+        const modelRef = modelData ? `${modelData.name}-${modelData.version}` : '';
+        
+        // Initialize deploymentSpec from model metadata or defaults
+        redeployDeploymentSpec.model_ref = modelRef;
+        redeployDeploymentSpec.model_family = modelFamily;
+        redeployDeploymentSpec.job_type = jobType;
+        redeployDeploymentSpec.serve_target = serveTarget;
+        redeployDeploymentSpec.resources = {
+          gpus: useGpu ? 1 : 0,
+          gpu_memory_gb: useGpu ? 80 : undefined,
+        };
         redeployDeploymentSpec.runtime = {
           max_concurrent_requests: 256,
-          max_input_tokens: 4096,
+          max_input_tokens: modelMetadata?.max_position_embeddings || 4096,
           max_output_tokens: 1024,
         };
-        redeployDeploymentSpec.use_gpu = false;
+        redeployDeploymentSpec.use_gpu = useGpu;
       }
       
-      // Initialize runtime image selector based on current endpoint
-      if (endpoint.value.runtimeImage) {
-        const knownImages = [
-          "vllm/vllm-openai:nightly",
-          "ghcr.io/vllm/vllm:latest",
-          "ghcr.io/vllm/vllm:0.6.0",
-          "ghcr.io/huggingface/text-generation-inference:latest",
-        ];
-        if (knownImages.includes(endpoint.value.runtimeImage)) {
-          runtimeImageSelection.value = endpoint.value.runtimeImage;
-          customRuntimeImage.value = "";
-        } else {
-          runtimeImageSelection.value = "custom";
-          customRuntimeImage.value = endpoint.value.runtimeImage;
+      // Load existing resource settings
+      redeployCpuRequest.value = endpoint.value.cpuRequest || '';
+      redeployCpuLimit.value = endpoint.value.cpuLimit || '';
+      redeployMemoryRequest.value = endpoint.value.memoryRequest || '';
+      redeployMemoryLimit.value = endpoint.value.memoryLimit || '';
+      
+      // Load existing autoscale policy
+      if (endpoint.value.autoscalePolicy) {
+        redeployAutoscalePolicy.targetLatencyMs = endpoint.value.autoscalePolicy.targetLatencyMs;
+        redeployAutoscalePolicy.gpuUtilization = endpoint.value.autoscalePolicy.gpuUtilization;
+        redeployAutoscalePolicy.cpuUtilization = endpoint.value.autoscalePolicy.cpuUtilization;
+      }
+      
+      // Load frameworks for redeploy
+      try {
+        const frameworksRes = await servingClient.listFrameworks();
+        if (frameworksRes.status === "success" && frameworksRes.data?.frameworks) {
+          redeployFrameworks.value = frameworksRes.data.frameworks;
         }
-      } else {
-        runtimeImageSelection.value = "";
-        customRuntimeImage.value = "";
+      } catch (e) {
+        console.error("Failed to load frameworks:", e);
       }
     } else {
       error.value = response.message || "Failed to load endpoint";
       endpoint.value = null;
     }
     
-    // Fetch deployment information
+    // Fetch deployment information (needed for serving framework)
     try {
       const deploymentResponse = await servingClient.getDeployment(endpointId);
       if (deploymentResponse.status === "success" && deploymentResponse.data) {
         deployment.value = deploymentResponse.data;
+        
+        // Load serving framework from deployment if available
+        if (deployment.value.serving_framework) {
+          redeployServingFramework.value = deployment.value.serving_framework;
+        } else {
+          // Auto-select KServe if it's enabled (default framework)
+          const kserveFramework = redeployFrameworks.value.find(f => f.name === "kserve" && f.enabled);
+          if (kserveFramework && !redeployServingFramework.value) {
+            redeployServingFramework.value = "kserve";
+          }
+        }
       } else {
         deployment.value = null;
+        // Auto-select KServe if it's enabled (default framework) when no deployment
+        const kserveFramework = redeployFrameworks.value.find(f => f.name === "kserve" && f.enabled);
+        if (kserveFramework && !redeployServingFramework.value) {
+          redeployServingFramework.value = "kserve";
+        }
       }
     } catch (e) {
       // Deployment info is optional, don't fail if it's not available
       console.warn("Failed to load deployment info:", e);
       deployment.value = null;
+      // Auto-select KServe if it's enabled (default framework) when deployment load fails
+      const kserveFramework = redeployFrameworks.value.find(f => f.name === "kserve" && f.enabled);
+      if (kserveFramework && !redeployServingFramework.value) {
+        redeployServingFramework.value = "kserve";
+      }
     }
   } catch (e) {
     error.value = `Error: ${e}`;
@@ -454,83 +737,159 @@ async function handleRedeploy() {
     return;
   }
 
+  console.log('[Redeploy] Starting redeployment for endpoint:', endpoint.value.id);
+  console.log('[Redeploy] Endpoint route:', endpoint.value.route);
+  
   redeploying.value = true;
   try {
-    // Build DeploymentSpec if available (from existing endpoint or user edits)
+    // Build DeploymentSpec if all required fields are present
     let deploymentSpec: DeploymentSpec | undefined = undefined;
     
-    // Use existing deploymentSpec from endpoint if available, or use redeployDeploymentSpec if edited
-    if (showDeploymentSpec.value && Object.keys(redeployDeploymentSpec).length > 0) {
-      // Check if all required fields are present
-      if (
-        redeployDeploymentSpec.model_ref &&
-        redeployDeploymentSpec.model_family &&
-        redeployDeploymentSpec.job_type &&
-        redeployDeploymentSpec.serve_target &&
-        redeployDeploymentSpec.resources &&
-        redeployDeploymentSpec.runtime
-      ) {
-        // Set use_gpu based on GPU count
-        redeployDeploymentSpec.use_gpu = (redeployDeploymentSpec.resources.gpus || 0) > 0;
-        deploymentSpec = redeployDeploymentSpec as DeploymentSpec;
+    // If deploymentSpec is incomplete, try to complete it from model metadata
+    if (!hasRedeployDeploymentSpec.value) {
+      try {
+        const modelResponse = await catalogClient.getModel(endpoint.value.modelId);
+        if (modelResponse.status === "success" && modelResponse.data) {
+          const model = modelResponse.data;
+          const metadata = model.metadata || {};
+          
+          // Fill in missing fields from model metadata
+          if (!redeployDeploymentSpec.model_family && metadata.model_family) {
+            redeployDeploymentSpec.model_family = metadata.model_family;
+          }
+          if (!redeployDeploymentSpec.job_type && metadata.job_type) {
+            redeployDeploymentSpec.job_type = metadata.job_type;
+          }
+          if (!redeployDeploymentSpec.model_ref) {
+            redeployDeploymentSpec.model_ref = `${model.name}-${model.version}`;
+          }
+          
+          // Auto-set serve_target based on job_type
+          if (redeployDeploymentSpec.job_type === "RAG_TUNING") {
+            redeployDeploymentSpec.serve_target = "RAG";
+          } else if (["SFT", "RLHF", "PRETRAIN"].includes(redeployDeploymentSpec.job_type || "")) {
+            redeployDeploymentSpec.serve_target = "GENERATION";
+          }
+          
+          // Set GPU based on endpoint.useGpu if not set
+          const useGpu = endpoint.value.useGpu ?? true;
+          if (!redeployDeploymentSpec.resources) {
+            redeployDeploymentSpec.resources = { gpus: useGpu ? 1 : 0 };
+          } else if (redeployDeploymentSpec.resources.gpus === undefined || redeployDeploymentSpec.resources.gpus === 0) {
+            redeployDeploymentSpec.resources.gpus = useGpu ? 1 : 0;
+          }
+          redeployDeploymentSpec.use_gpu = (redeployDeploymentSpec.resources?.gpus || 0) > 0;
+          
+          // Set runtime defaults if not set
+          if (!redeployDeploymentSpec.runtime) {
+            redeployDeploymentSpec.runtime = {
+              max_concurrent_requests: 256,
+              max_input_tokens: metadata.max_position_embeddings || 4096,
+              max_output_tokens: 1024,
+            };
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to load model metadata for completing deploymentSpec:", e);
       }
-    } else if (endpoint.value.deploymentSpec) {
-      // Use existing deploymentSpec from endpoint
-      deploymentSpec = endpoint.value.deploymentSpec;
     }
-
-    // Determine GPU override (tri-state: keep / force GPU / force CPU)
-    // If deploymentSpec is provided, use its use_gpu value
-    let useGpuOverride: boolean | undefined = undefined;
-    if (deploymentSpec) {
-      useGpuOverride = deploymentSpec.use_gpu;
+    
+    if (hasRedeployDeploymentSpec.value) {
+      // Set use_gpu based on GPU count
+      redeployDeploymentSpec.use_gpu = (redeployDeploymentSpec.resources?.gpus || 0) > 0;
+      
+      deploymentSpec = redeployDeploymentSpec as DeploymentSpec;
+      console.log('[Redeploy] Using DeploymentSpec:', JSON.stringify(deploymentSpec, null, 2));
     } else {
-      if (redeployGpuOverride.value === 'gpu') {
-        useGpuOverride = true;
-      } else if (redeployGpuOverride.value === 'cpu') {
-        useGpuOverride = false;
-      }
+      console.log('[Redeploy] No DeploymentSpec available, will use endpoint defaults');
     }
 
-    // Determine runtime image override
-    // If deploymentSpec is provided, runtime image is determined by serve_target and use_gpu
-    let runtimeImageOverride: string | undefined;
-    if (!deploymentSpec) {
-      if (runtimeImageSelection.value === 'custom' && customRuntimeImage.value.trim()) {
-        runtimeImageOverride = customRuntimeImage.value.trim();
-      } else if (runtimeImageSelection.value && runtimeImageSelection.value !== 'custom') {
-        runtimeImageOverride = runtimeImageSelection.value;
+    // Prepare request payload (same structure as EndpointDeploy.vue)
+    const request: {
+      useGpu?: boolean;
+      servingRuntimeImage?: string;
+      cpuRequest?: string;
+      cpuLimit?: string;
+      memoryRequest?: string;
+      memoryLimit?: string;
+      deploymentSpec?: DeploymentSpec;
+      autoscalePolicy?: {
+        targetLatencyMs?: number;
+        gpuUtilization?: number;
+        cpuUtilization?: number;
+      };
+      servingFramework?: string;
+    } = {
+      deploymentSpec: deploymentSpec,
+    };
+    
+    // Include useGpu from DeploymentSpec
+    if (deploymentSpec && deploymentSpec.use_gpu !== undefined) {
+      request.useGpu = deploymentSpec.use_gpu;
+    }
+    
+    // Only include autoscalePolicy if at least one metric is set
+    if (redeployAutoscalePolicy && (
+      redeployAutoscalePolicy.targetLatencyMs !== undefined ||
+      redeployAutoscalePolicy.gpuUtilization !== undefined ||
+      redeployAutoscalePolicy.cpuUtilization !== undefined
+    )) {
+      request.autoscalePolicy = {};
+      if (redeployAutoscalePolicy.targetLatencyMs !== undefined) {
+        request.autoscalePolicy.targetLatencyMs = redeployAutoscalePolicy.targetLatencyMs;
+      }
+      if (redeployAutoscalePolicy.gpuUtilization !== undefined) {
+        request.autoscalePolicy.gpuUtilization = redeployAutoscalePolicy.gpuUtilization;
+      }
+      if (redeployAutoscalePolicy.cpuUtilization !== undefined) {
+        request.autoscalePolicy.cpuUtilization = redeployAutoscalePolicy.cpuUtilization;
       }
     }
+    
+    // Include serving framework if selected
+    if (redeployServingFramework.value && redeployServingFramework.value.trim()) {
+      request.servingFramework = redeployServingFramework.value.trim();
+    }
+    
+    // Include CPU/memory resources if set
+    if (redeployCpuRequest.value && redeployCpuRequest.value.trim()) {
+      request.cpuRequest = redeployCpuRequest.value.trim();
+    }
+    if (redeployCpuLimit.value && redeployCpuLimit.value.trim()) {
+      request.cpuLimit = redeployCpuLimit.value.trim();
+    }
+    if (redeployMemoryRequest.value && redeployMemoryRequest.value.trim()) {
+      request.memoryRequest = redeployMemoryRequest.value.trim();
+    }
+    if (redeployMemoryLimit.value && redeployMemoryLimit.value.trim()) {
+      request.memoryLimit = redeployMemoryLimit.value.trim();
+    }
 
-    // Prepare CPU/memory overrides (only include if set)
-    const cpuRequestOverride = redeployCpuRequest.value.trim() || undefined;
-    const cpuLimitOverride = redeployCpuLimit.value.trim() || undefined;
-    const memoryRequestOverride = redeployMemoryRequest.value.trim() || undefined;
-    const memoryLimitOverride = redeployMemoryLimit.value.trim() || undefined;
-
+    console.log('[Redeploy] Request payload:', JSON.stringify(request, null, 2));
+    console.log('[Redeploy] Sending redeploy request to API...');
+    
     const response = await servingClient.redeployEndpoint(
       endpoint.value.id,
-      {
-        useGpu: useGpuOverride,
-        servingRuntimeImage: runtimeImageOverride,
-        cpuRequest: cpuRequestOverride,
-        cpuLimit: cpuLimitOverride,
-        memoryRequest: memoryRequestOverride,
-        memoryLimit: memoryLimitOverride,
-        deploymentSpec: deploymentSpec,
-      }
+      request
     );
+    
+    console.log('[Redeploy] Response received:', response);
+    
     if (response.status === "success") {
+      console.log('[Redeploy] Redeployment started successfully');
       alert('Endpoint redeployment started successfully. Status will update shortly.');
       await fetchEndpoint();
     } else {
+      console.error('[Redeploy] Redeployment failed:', response.message);
       alert(`Redeploy failed: ${response.message}`);
     }
   } catch (e) {
-    alert(`Error: ${e}`);
+    console.error('[Redeploy] Error during redeployment:', e);
+    const errorMessage = e instanceof Error ? e.message : String(e);
+    alert(`Error: ${errorMessage}`);
   } finally {
     redeploying.value = false;
+    console.log('[Redeploy] Redeployment process completed');
   }
 }
 
@@ -898,7 +1257,40 @@ header {
   font-style: italic;
 }
 
-.framework-badge {
+.subsection {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.subsection-title {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #444;
+}
+
+.form-note {
+  display: block;
+  color: #666;
+  margin-top: 8px;
+  font-size: 0.875rem;
+  font-style: italic;
+}
+
+.cpu-only-notice {
+  margin-top: 12px;
+}
+
+.form-field small {
+  display: block;
+  color: #666;
+  margin-top: 6px;
+  font-size: 0.875rem;
+}
+
+.framework-badge,
+.badge {
   padding: 0.25rem 0.5rem;
   background: #007bff;
   color: white;
@@ -927,6 +1319,93 @@ header {
 
 .error {
   color: #dc3545;
+}
+
+.form-section {
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 24px;
+  margin-bottom: 24px;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.section-title {
+  margin: 0 0 8px 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: #333;
+}
+
+.section-description {
+  margin: 0 0 20px 0;
+  color: #666;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.toggle-button {
+  padding: 6px 12px;
+  background: #f8f9fa;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  color: #007bff;
+  transition: all 0.2s;
+}
+
+.toggle-button:hover {
+  background: #e9ecef;
+  border-color: #adb5bd;
+}
+
+.framework-info {
+  margin-top: 12px;
+  padding: 12px;
+  background: #f8f9fa;
+  border-radius: 4px;
+}
+
+.framework-info strong {
+  display: block;
+  margin-bottom: 8px;
+  color: #333;
+}
+
+.framework-info ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.framework-info li {
+  margin: 4px 0;
+  color: #666;
+}
+
+.message {
+  margin-top: 20px;
+  padding: 12px 16px;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.message.success {
+  background: #d4edda;
+  color: #155724;
+  border: 1px solid #c3e6cb;
+}
+
+.message.error {
+  background: #f8d7da;
+  color: #721c24;
+  border: 1px solid #f5c6cb;
 }
 </style>
 

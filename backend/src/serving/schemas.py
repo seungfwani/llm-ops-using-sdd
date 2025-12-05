@@ -44,6 +44,7 @@ class ServingEndpointResponse(BaseModel):
     cpuLimit: Optional[str] = None
     memoryRequest: Optional[str] = None
     memoryLimit: Optional[str] = None
+    autoscalePolicy: Optional[dict] = None
     deploymentSpec: Optional[DeploymentSpec] = None
     createdAt: datetime
 
@@ -230,6 +231,8 @@ class RedeployEndpointRequest(BaseModel):
     cpuLimit: Optional[str] = Field(default=None, description="CPU limit (e.g., '4', '2000m'). If not provided, uses endpoint's current/default setting")
     memoryRequest: Optional[str] = Field(default=None, description="Memory request (e.g., '4Gi', '2G'). If not provided, uses endpoint's current/default setting")
     memoryLimit: Optional[str] = Field(default=None, description="Memory limit (e.g., '8Gi', '4G'). If not provided, uses endpoint's current/default setting")
+    autoscalePolicy: Optional[dict] = Field(default=None, description="Autoscaling policy configuration. If not provided, uses endpoint's current setting")
+    servingFramework: Optional[str] = Field(default=None, description="Serving framework name (e.g., 'kserve', 'ray_serve'). If not provided, uses endpoint's current setting")
     deploymentSpec: Optional[DeploymentSpec] = Field(default=None, description="DeploymentSpec for redeployment. If not provided, uses endpoint's existing deployment_spec or reconstructs from endpoint metadata")
 
 

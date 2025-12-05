@@ -10,3 +10,5 @@
 {"instruction": "Create a function to find all pairs in a list that sum to a target value.", "response": "def find_pairs_sum(lst, target):\n    \"\"\"Find all pairs in a list that sum to a target value.\n    \n    Args:\n        lst (list): The list to search\n        target (int): The target sum\n    \n    Returns:\n        list: List of tuples containing pairs that sum to target\n    \"\"\"\n    pairs = []\n    seen = set()\n    for num in lst:\n        complement = target - num\n        if complement in seen:\n            pairs.append((complement, num))\n        seen.add(num)\n    return pairs"}
 
 
+
+

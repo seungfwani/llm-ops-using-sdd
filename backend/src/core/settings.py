@@ -90,14 +90,17 @@ class Settings(BaseSettings):
     # Serving Configuration
     # =========================================================================
     # Model serving runtime image (vLLM, TGI, etc.)
+    # NOTE: This is only used as a last resort fallback. The platform automatically
+    # selects appropriate images based on DeploymentSpec.serve_target and model metadata.
+    # 
     # Options:
-    #   - vllm/vllm-server:latest (official vLLM server image)
-    #   - vllm/vllm:latest (may not exist, use vllm/vllm-server instead)
-    #   - ghcr.io/vllm/vllm:latest (GitHub Container Registry)
-    #   - ghcr.io/huggingface/text-generation-inference:latest (official TGI image on GHCR)
-    #   - python:3.11-slim (for custom runtime, requires building your own image)
-    # Note: For local development, you may need to build a custom image or use a different runtime
-    # Default: TGI on GHCR so that internal models are served via text-generation-inference by default
+    #   - ghcr.io/huggingface/text-generation-inference:latest (TGI, for HuggingFace models)
+    #   - ghcr.io/vllm/vllm:latest (vLLM, for other models)
+    #   - python:3.11-slim (NOT RECOMMENDED - only for custom runtime development)
+    # 
+    # For proper image selection, configure SERVE_IMAGE_GENERATION_GPU/CPU and
+    # SERVE_IMAGE_RAG_GPU/CPU environment variables instead. See image_config.py for details.
+    # Default: TGI on GHCR as fallback for HuggingFace models
     serving_runtime_image: str = "ghcr.io/huggingface/text-generation-inference:latest"
     
     # Use KServe InferenceService (requires Knative + Istio)
@@ -151,10 +154,11 @@ class Settings(BaseSettings):
     # CPU and memory requests/limits for CPU-only training jobs
     # Use when useGpu=false is specified in training job submission
     # Format: "4" (4 cores), "8Gi" (8 gibibytes)
-    training_cpu_only_cpu_request: str = "4"  # CPU request for CPU-only training
-    training_cpu_only_cpu_limit: str = "8"  # CPU limit for CPU-only training
-    training_cpu_only_memory_request: str = "8Gi"  # Memory request for CPU-only training
-    training_cpu_only_memory_limit: str = "16Gi"  # Memory limit for CPU-only training
+    # Note: Reduced defaults for local development (minikube typically has ~6GB memory)
+    training_cpu_only_cpu_request: str = "2"  # CPU request for CPU-only training (reduced for local dev)
+    training_cpu_only_cpu_limit: str = "4"  # CPU limit for CPU-only training (reduced for local dev)
+    training_cpu_only_memory_request: str = "2Gi"  # Memory request for CPU-only training (reduced for local dev)
+    training_cpu_only_memory_limit: str = "4Gi"  # Memory limit for CPU-only training (reduced for local dev)
 
     # =========================================================================
     # Training Resource Limits (GPU-enabled)

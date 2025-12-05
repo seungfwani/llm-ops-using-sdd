@@ -239,6 +239,28 @@ class TrainingJobService:
                 base_env_vars["OUTPUT_MODEL_VERSION"] = output_model_version
                 base_env_vars["OWNER_TEAM"] = submitted_by  # Use submitted_by as owner_team
                 base_env_vars["AUTO_UPLOAD_MODEL"] = "true"
+                
+                # Get model_family and huggingface_model_id from base model for finetune jobs
+                model_family = None
+                huggingface_model_id = None
+                if job_type == "finetune" and model_entry_id:
+                    base_model = self.session.get(catalog_models.ModelCatalogEntry, model_entry_id)
+                    if base_model:
+                        model_family = base_model.model_family
+                        base_env_vars["BASE_MODEL_FAMILY"] = model_family
+                        logger.info(f"Set BASE_MODEL_FAMILY={model_family} from base model {model_entry_id}")
+                        
+                        # Get huggingface_model_id from metadata if available
+                        if base_model.model_metadata and isinstance(base_model.model_metadata, dict):
+                            huggingface_model_id = base_model.model_metadata.get("huggingface_model_id")
+                            if huggingface_model_id:
+                                base_env_vars["HF_MODEL_ID"] = huggingface_model_id
+                                logger.info(f"Set HF_MODEL_ID={huggingface_model_id} from base model metadata")
+                
+                # Also pass base model ID for reference
+                if model_entry_id:
+                    base_env_vars["BASE_MODEL_ID"] = str(model_entry_id)
+                
                 logger.info(f"Configured API-based model upload for job {job.id} to {storage_uri}")
             else:
                 base_env_vars["AUTO_UPLOAD_MODEL"] = "false"
@@ -277,8 +299,16 @@ class TrainingJobService:
                     )
             else:
                 # CPU-only training
-                cpu_cores = resource_profile.get("cpuCores", resource_profile.get("cpu_cores", 4))
-                memory = resource_profile.get("memory", "8Gi")
+                # For CPU-only training, always use settings defaults to ensure compatibility with local dev environments
+                # Ignore resource_profile values to prevent requesting too much memory (e.g., 8Gi on minikube)
+                cpu_cores = int(settings.training_cpu_only_cpu_request)
+                memory = settings.training_cpu_only_memory_request
+                
+                logger.info(
+                    f"CPU-only training: Using settings defaults - cpu={cpu_cores}, memory={memory} "
+                    f"(ignoring resource_profile to ensure local dev compatibility)"
+                )
+                
                 cpu_env_vars = base_env_vars.copy()
                 cpu_env_vars["USE_GPU"] = "false"
                 k8s_uid = self.scheduler.submit_cpu_only_job(
@@ -782,6 +812,40 @@ class TrainingJobService:
             "completed_at": job.completed_at.isoformat() if job.completed_at else None,
         })
         
+        # Get model_family from base model for finetune jobs, or from metadata
+        model_family = None
+        if job.job_type == "finetune" and job.model_entry_id:
+            # For finetune jobs, inherit model_family from base model
+            base_model = self.session.get(catalog_models.ModelCatalogEntry, job.model_entry_id)
+            if base_model:
+                model_family = base_model.model_family
+                logger.info(f"Using model_family '{model_family}' from base model {job.model_entry_id}")
+        
+        # Fallback: try to get from metadata or use default
+        if not model_family:
+            model_family = model_metadata.get("model_family") or model_metadata.get("architecture")
+            if model_family:
+                logger.info(f"Using model_family '{model_family}' from metadata")
+        
+        # Final fallback: use a default based on model name or use "unknown"
+        if not model_family:
+            # Try to infer from model name (e.g., "llama-7b" -> "llama")
+            model_name_lower = model_name.lower()
+            known_families = ["llama", "mistral", "gemma", "bert", "gpt", "t5", "roberta"]
+            for family in known_families:
+                if family in model_name_lower:
+                    model_family = family
+                    logger.info(f"Inferred model_family '{model_family}' from model name")
+                    break
+        
+        if not model_family:
+            # Last resort: use "unknown" but log a warning
+            model_family = "unknown"
+            logger.warning(
+                f"Could not determine model_family for job {job_id}. "
+                f"Using 'unknown'. Please update the model after registration."
+            )
+        
         # Get training metrics for evaluation summary
         metrics = self.get_job_metrics(job_id)
         if metrics:
@@ -811,6 +875,7 @@ class TrainingJobService:
                 "lineage_dataset_ids": [str(job.dataset_id)],
                 "status": "draft",  # Start as draft, user can approve later
                 "evaluation_summary": evaluation_summary,
+                "model_family": model_family,  # Required field
             }
             
             logger.info(f"Creating catalog entry for training job {job_id} with payload: {payload}")
@@ -1035,8 +1100,9 @@ if AUTO_UPLOAD_MODEL:
                 os.makedirs(model_path, exist_ok=True)
                 
                 try:
-                    base_model_id = os.getenv("BASE_MODEL_ID", "gpt2")
-                    logger.info(f"Downloading Hugging Face model {{base_model_id}} to {{model_path}}")
+                    # Use HF_MODEL_ID from environment (set from base model metadata) or fallback to default
+                    hf_model_id = os.getenv("HF_MODEL_ID", "gpt2")
+                    logger.info(f"Downloading Hugging Face model {{hf_model_id}} to {{model_path}}")
                     try:
                         from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
                     except ImportError as e:
@@ -1052,29 +1118,32 @@ if AUTO_UPLOAD_MODEL:
                             logger.warning("Cannot prepare Hugging Face model artifacts - skipping model upload")
                             model_path = None
                         else:
-                            tokenizer = AutoTokenizer.from_pretrained(base_model_id)
-                            model = AutoModelForCausalLM.from_pretrained(base_model_id)
+                            tokenizer = AutoTokenizer.from_pretrained(hf_model_id)
+                            model = AutoModelForCausalLM.from_pretrained(hf_model_id)
                             tokenizer.save_pretrained(model_path)
                             model.save_pretrained(model_path)
-                            logger.info(f"Saved Hugging Face model {{base_model_id}} to {{model_path}}")
+                            logger.info(f"Saved Hugging Face model {{hf_model_id}} to {{model_path}}")
                     else:
-                        tokenizer = AutoTokenizer.from_pretrained(base_model_id)
-                        model = AutoModelForCausalLM.from_pretrained(base_model_id)
+                        tokenizer = AutoTokenizer.from_pretrained(hf_model_id)
+                        model = AutoModelForCausalLM.from_pretrained(hf_model_id)
                         tokenizer.save_pretrained(model_path)
                         model.save_pretrained(model_path)
-                        logger.info(f"Saved Hugging Face model {{base_model_id}} to {{model_path}}")
+                        logger.info(f"Saved Hugging Face model {{hf_model_id}} to {{model_path}}")
                 except Exception as e:
                     logger.error(f"Failed to prepare Hugging Face model artifacts: {{type(e).__name__}} - {{str(e)}}")
                     logger.warning("Skipping model upload because model artifacts could not be prepared")
                     model_path = None
             
-            # Collect all model files
+            # Collect all model files (only if model_path is valid)
             model_files = []
-            for root, dirs, files in os.walk(model_path):
-                for filename in files:
-                    local_filepath = os.path.join(root, filename)
-                    rel_path = os.path.relpath(local_filepath, model_path)
-                    model_files.append((local_filepath, rel_path))
+            if model_path:
+                for root, dirs, files in os.walk(model_path):
+                    for filename in files:
+                        local_filepath = os.path.join(root, filename)
+                        rel_path = os.path.relpath(local_filepath, model_path)
+                        model_files.append((local_filepath, rel_path))
+            else:
+                logger.warning("model_path is None - cannot collect model files for upload")
             
             if not model_files:
                 logger.warning("No model files found to upload")
@@ -1092,6 +1161,46 @@ if AUTO_UPLOAD_MODEL:
                 
                 lineage_dataset_ids = [DATASET_ID] if DATASET_ID else []
                 
+                # Get model_family from environment variable (set from base model for finetune)
+                model_family = os.getenv("BASE_MODEL_FAMILY", "")
+                
+                # If not set, try to get from base model via API
+                if not model_family and JOB_TYPE == "finetune":
+                    BASE_MODEL_ID = os.getenv("BASE_MODEL_ID", "")
+                    if BASE_MODEL_ID and API_BASE_URL:
+                        try:
+                            logger.info(f"Fetching model_family from base model {{BASE_MODEL_ID}}")
+                            base_model_response = requests.get(
+                                f"{{API_BASE_URL}}/catalog/models/{{BASE_MODEL_ID}}",
+                                headers={{
+                                    "X-User-Id": os.getenv("USER_ID", "system"),
+                                    "X-User-Roles": os.getenv("USER_ROLES", "llm-ops-user"),
+                                }},
+                                timeout=10,
+                            )
+                            if base_model_response.status_code == 200:
+                                base_model_data = base_model_response.json()
+                                if base_model_data.get("status") == "success" and base_model_data.get("data"):
+                                    model_family = base_model_data["data"].get("model_family", "")
+                                    logger.info(f"Retrieved model_family '{{model_family}}' from base model")
+                        except Exception as e:
+                            logger.warning(f"Failed to fetch base model family: {{e}}")
+                
+                # Fallback: try to infer from model name
+                if not model_family:
+                    model_name_lower = OUTPUT_MODEL_NAME.lower()
+                    known_families = ["llama", "mistral", "gemma", "bert", "gpt", "t5", "roberta"]
+                    for family in known_families:
+                        if family in model_name_lower:
+                            model_family = family
+                            logger.info(f"Inferred model_family '{{model_family}}' from model name")
+                            break
+                
+                # Final fallback
+                if not model_family:
+                    model_family = "unknown"
+                    logger.warning(f"Could not determine model_family, using 'unknown'")
+                
                 create_payload = {{
                     "name": OUTPUT_MODEL_NAME,
                     "version": OUTPUT_MODEL_VERSION,
@@ -1101,6 +1210,7 @@ if AUTO_UPLOAD_MODEL:
                     "storage_uri": MODEL_STORAGE_URI,
                     "lineage_dataset_ids": lineage_dataset_ids,
                     "status": "draft",
+                    "model_family": model_family,  # Required field
                 }}
                 
                 logger.info(f"Registering model in catalog: {{OUTPUT_MODEL_NAME}} v{{OUTPUT_MODEL_VERSION}}")

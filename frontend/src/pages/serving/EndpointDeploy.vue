@@ -452,14 +452,67 @@ async function deployEndpoint() {
   deploying.value = true;
   message.value = "";
   try {
-    // Build DeploymentSpec if all required fields are present
-    let spec: DeploymentSpec | undefined = undefined;
-    if (hasDeploymentSpec.value) {
-      // Set use_gpu based on GPU count
-      deploymentSpec.use_gpu = (deploymentSpec.resources?.gpus || 0) > 0;
-      
-      spec = deploymentSpec as DeploymentSpec;
+    // Validate that model_family and job_type are provided (required fields)
+    if (!deploymentSpec.model_family || !deploymentSpec.model_family.trim()) {
+      message.value = "Model Family is required. Please enter a model family (e.g., llama, mistral, gemma).";
+      messageType.value = "error";
+      deploying.value = false;
+      return;
     }
+    
+    if (!deploymentSpec.job_type) {
+      message.value = "Job Type is required. Please select a job type.";
+      messageType.value = "error";
+      deploying.value = false;
+      return;
+    }
+    
+    // Ensure model_ref is set
+    if (!deploymentSpec.model_ref || !deploymentSpec.model_ref.trim()) {
+      // Try to get from selected model
+      const selectedModel = models.value.find(m => m.id === form.modelId);
+      if (selectedModel) {
+        deploymentSpec.model_ref = `${selectedModel.name}-${selectedModel.version}`;
+      } else {
+        message.value = "Model Reference is required. Please select a model.";
+        messageType.value = "error";
+        deploying.value = false;
+        return;
+      }
+    }
+    
+    // Ensure serve_target is set based on job_type if not already set
+    if (!deploymentSpec.serve_target) {
+      if (deploymentSpec.job_type === "RAG_TUNING") {
+        deploymentSpec.serve_target = "RAG";
+      } else {
+        deploymentSpec.serve_target = "GENERATION";
+      }
+    }
+    
+    // Ensure resources are set
+    if (!deploymentSpec.resources) {
+      const useGpu = deploymentSpec.use_gpu ?? true;
+      deploymentSpec.resources = {
+        gpus: useGpu ? 1 : 0,
+        gpu_memory_gb: useGpu ? 80 : undefined,
+      };
+    }
+    
+    // Ensure runtime is set
+    if (!deploymentSpec.runtime) {
+      deploymentSpec.runtime = {
+        max_concurrent_requests: 256,
+        max_input_tokens: 4096,
+        max_output_tokens: 1024,
+      };
+    }
+    
+    // Set use_gpu based on GPU count
+    deploymentSpec.use_gpu = (deploymentSpec.resources?.gpus || 0) > 0;
+    
+    // Build DeploymentSpec - now it should be complete
+    const spec: DeploymentSpec = deploymentSpec as DeploymentSpec;
 
     // Prepare request payload
     const request: ServingEndpointRequest = {
@@ -470,7 +523,7 @@ async function deployEndpoint() {
       maxReplicas: form.maxReplicas,
       autoscalePolicy: undefined,
       promptPolicyId: form.promptPolicyId,
-      deploymentSpec: spec,
+      deploymentSpec: spec, // Always include deploymentSpec with model_family and job_type
     };
     
     // Only include autoscalePolicy if at least one metric is set
@@ -496,17 +549,8 @@ async function deployEndpoint() {
       request.servingFramework = form.servingFramework.trim();
     }
     
-    // Handle serving runtime image (only if DeploymentSpec is not provided)
-    if (!spec) {
-      if (form.servingRuntimeImage === "custom" && customImage.value.trim()) {
-        request.servingRuntimeImage = customImage.value.trim();
-      } else if (form.servingRuntimeImage && form.servingRuntimeImage !== "custom") {
-        request.servingRuntimeImage = form.servingRuntimeImage;
-      }
-    }
-    
     // Include useGpu from DeploymentSpec
-    if (spec && spec.use_gpu !== undefined) {
+    if (spec.use_gpu !== undefined) {
       request.useGpu = spec.use_gpu;
     }
     

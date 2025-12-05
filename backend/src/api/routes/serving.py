@@ -1,11 +1,14 @@
 """Serving endpoint API routes."""
 from __future__ import annotations
 
+import logging
 from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from core.database import get_session
 from serving import schemas
@@ -67,6 +70,7 @@ def list_endpoints(
                     cpuLimit=endpoint.cpu_limit,
                     memoryRequest=endpoint.memory_request,
                     memoryLimit=endpoint.memory_limit,
+                    autoscalePolicy=endpoint.autoscale_policy,
                     deploymentSpec=deployment_spec,
                     createdAt=endpoint.created_at,
                 )
@@ -133,6 +137,7 @@ def deploy_endpoint(
                 cpuLimit=endpoint.cpu_limit,
                 memoryRequest=endpoint.memory_request,
                 memoryLimit=endpoint.memory_limit,
+                autoscalePolicy=endpoint.autoscale_policy,
                 deploymentSpec=deployment_spec,
                 createdAt=endpoint.created_at,
             ),
@@ -191,6 +196,7 @@ def get_endpoint(
             cpuLimit=endpoint.cpu_limit,
             memoryRequest=endpoint.memory_request,
             memoryLimit=endpoint.memory_limit,
+            autoscalePolicy=endpoint.autoscale_policy,
             deploymentSpec=deployment_spec,
             createdAt=endpoint.created_at,
         ),
@@ -240,6 +246,7 @@ def rollback_endpoint(
                 cpuLimit=endpoint.cpu_limit,
                 memoryRequest=endpoint.memory_request,
                 memoryLimit=endpoint.memory_limit,
+                autoscalePolicy=endpoint.autoscale_policy,
                 deploymentSpec=deployment_spec,
                 createdAt=endpoint.created_at,
             ) if endpoint else None,
@@ -265,7 +272,11 @@ def redeploy_endpoint(
     service: ServingService = Depends(get_serving_service),
 ) -> schemas.EnvelopeServingEndpoint:
     """Redeploy a serving endpoint with the same or updated configuration."""
+    logger.info(f"Redeploy request received for endpoint {endpointId}")
+    logger.debug(f"Redeploy request body: {request.model_dump() if hasattr(request, 'model_dump') else request}")
+    
     try:
+        logger.info(f"Calling service.redeploy_endpoint() for endpoint {endpointId}")
         endpoint = service.redeploy_endpoint(
             endpointId,
             use_gpu=request.useGpu,
@@ -274,6 +285,8 @@ def redeploy_endpoint(
             cpu_limit=request.cpuLimit,
             memory_request=request.memoryRequest,
             memory_limit=request.memoryLimit,
+            autoscale_policy=request.autoscalePolicy,
+            serving_framework=request.servingFramework,
             deployment_spec=request.deploymentSpec,
         )
         # Parse deployment_spec if it exists
@@ -285,7 +298,7 @@ def redeploy_endpoint(
                 # If parsing fails, leave as None
                 pass
         
-        return schemas.EnvelopeServingEndpoint(
+        result = schemas.EnvelopeServingEndpoint(
             status="success",
             message="Serving endpoint redeployed successfully",
             data=schemas.ServingEndpointResponse(
@@ -302,17 +315,22 @@ def redeploy_endpoint(
                 cpuLimit=endpoint.cpu_limit,
                 memoryRequest=endpoint.memory_request,
                 memoryLimit=endpoint.memory_limit,
+                autoscalePolicy=endpoint.autoscale_policy,
                 deploymentSpec=deployment_spec,
                 createdAt=endpoint.created_at,
             ),
         )
+        logger.info(f"Successfully redeployed endpoint {endpointId}")
+        return result
     except ValueError as e:
+        logger.error(f"Validation error for endpoint {endpointId}: {e}")
         return schemas.EnvelopeServingEndpoint(
             status="fail",
-            message=str(e),
+            message=f"Invalid request: {str(e)}",
             data=None,
         )
     except Exception as e:
+        logger.error(f"Unexpected error redeploying endpoint {endpointId}: {e}", exc_info=True)
         return schemas.EnvelopeServingEndpoint(
             status="fail",
             message=f"Failed to redeploy endpoint: {str(e)}",
@@ -371,6 +389,7 @@ def delete_endpoint(
                 cpuLimit=endpoint.cpu_limit,
                 memoryRequest=endpoint.memory_request,
                 memoryLimit=endpoint.memory_limit,
+                autoscalePolicy=endpoint.autoscale_policy,
                 deploymentSpec=deployment_spec,
                 createdAt=endpoint.created_at,
             ),

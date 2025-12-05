@@ -122,7 +122,7 @@ def create_model(
 
 @router.patch("/models/{model_id}/status", response_model=EnvelopeModelCatalog)
 def update_model_status(
-    model_id: str, status: str, session=Depends(get_session)
+    model_id: str, status: str = Query(...), session=Depends(get_session)
 ) -> EnvelopeModelCatalog:
     service = CatalogService(session)
     try:
@@ -170,6 +170,7 @@ def list_datasets(session=Depends(get_session)) -> EnvelopeDatasetList:
                 approved_at=dataset.approved_at,
                 created_at=dataset.created_at,
                 updated_at=dataset.updated_at,
+                type=dataset.type,
             )
             for dataset in datasets
         ],
@@ -203,6 +204,7 @@ def get_dataset(
             approved_at=dataset.approved_at,
             created_at=dataset.created_at,
             updated_at=dataset.updated_at,
+            type=dataset.type,
         ),
     )
 
@@ -229,6 +231,7 @@ def create_dataset(
                 approved_at=dataset.approved_at,
                 created_at=dataset.created_at,
                 updated_at=dataset.updated_at,
+                type=dataset.type,
             ),
         )
     except ValueError as exc:
@@ -285,6 +288,7 @@ async def upload_dataset_files(
                 approved_at=dataset.approved_at,
                 created_at=dataset.created_at,
                 updated_at=dataset.updated_at,
+                type=dataset.type,
             ),
         )
     except ValueError as exc:
@@ -369,6 +373,7 @@ def update_dataset_status(
                 approved_at=dataset.approved_at,
                 created_at=dataset.created_at,
                 updated_at=dataset.updated_at,
+                type=dataset.type,
             ),
         )
     except ValueError as exc:

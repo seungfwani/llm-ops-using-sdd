@@ -35,43 +35,57 @@ class ImageConfig:
     #   - Custom registry: registry.example.com/llm-train-sft:pytorch2.1-cuda12.1-v1
     #
     # Example serving images:
-    #   - vLLM: ghcr.io/vllm/vllm:latest or vllm/vllm-openai:nightly (GPU)
-    #   - TGI: ghcr.io/huggingface/text-generation-inference:latest (GPU)
-    #   - CPU fallback: python:3.11-slim (for custom runtime)
+    #   - TGI (HuggingFace): ghcr.io/huggingface/text-generation-inference:latest (GPU/CPU)
+    #   - vLLM: ghcr.io/vllm/vllm:latest (GPU, CPU support limited)
+    #   - Custom registry: Override via SERVE_IMAGE_{SERVE_TARGET}_{GPU|CPU} env vars
     DEFAULT_TRAIN_IMAGES: Dict[str, Dict[str, str]] = {
         "PRETRAIN": {
-            "gpu": "registry/llm-train-pretrain:pytorch2.1-cuda12.1-v1",
-            "cpu": "registry/llm-train-pretrain:pytorch2.1-cpu-v1",
+            # GPU: PyTorch official image with CUDA 12.1
+            "gpu": "pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime",
+            # CPU: PyTorch official CPU image
+            "cpu": "pytorch/pytorch:2.1.0-cpu",
         },
         "SFT": {
-            "gpu": "registry/llm-train-sft:pytorch2.1-cuda12.1-v1",
-            "cpu": "registry/llm-train-sft:pytorch2.1-cpu-v1",
+            # GPU: PyTorch official image with CUDA 12.1
+            "gpu": "pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime",
+            # CPU: PyTorch official CPU image
+            "cpu": "pytorch/pytorch:2.1.0-cpu",
         },
         "RAG_TUNING": {
-            "gpu": "registry/llm-train-rag:pytorch2.1-cuda12.1-v1",
-            "cpu": "registry/llm-train-rag:pytorch2.1-cpu-v1",
+            # GPU: PyTorch official image with CUDA 12.1
+            "gpu": "pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime",
+            # CPU: PyTorch official CPU image
+            "cpu": "pytorch/pytorch:2.1.0-cpu",
         },
         "RLHF": {
-            "gpu": "registry/llm-train-rlhf:pytorch2.1-cuda12.1-v1",
-            "cpu": "registry/llm-train-rlhf:pytorch2.1-cpu-v1",
+            # GPU: PyTorch official image with CUDA 12.1
+            "gpu": "pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime",
+            # CPU: PyTorch official CPU image
+            "cpu": "pytorch/pytorch:2.1.0-cpu",
         },
         "EMBEDDING": {
-            "gpu": "registry/llm-train-embedding:pytorch2.1-cuda12.1-v1",
-            "cpu": "registry/llm-train-embedding:pytorch2.1-cpu-v1",
+            # GPU: PyTorch official image with CUDA 12.1
+            "gpu": "pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime",
+            # CPU: PyTorch official CPU image
+            "cpu": "pytorch/pytorch:2.1.0-cpu",
         },
     }
 
     DEFAULT_SERVE_IMAGES: Dict[str, Dict[str, str]] = {
         "GENERATION": {
-            "gpu": "registry/llm-serve:vllm-0.5.0-cuda12.1",
-            "cpu": "registry/llm-serve:cpu-v0.5.0",
+            # GPU: TGI (Text Generation Inference) for HuggingFace models
+            "gpu": "ghcr.io/huggingface/text-generation-inference:latest",
+            # CPU: TGI also supports CPU (though GPU is recommended)
+            "cpu": "ghcr.io/huggingface/text-generation-inference:latest",
         },
         "RAG": {
-            "gpu": "registry/llm-serve-rag:vllm-0.5.0-cuda12.1",
-            "cpu": "registry/llm-serve-rag:cpu-v0.5.0",
+            # RAG: vLLM for RAG workloads
+            "gpu": "ghcr.io/vllm/vllm:latest",
+            # CPU: vLLM CPU support (limited, GPU recommended)
+            "cpu": "ghcr.io/vllm/vllm:latest",
         },
     }
-
+    
     def __init__(self):
         """Initialize image configuration from environment variables or defaults."""
         self.train_images = self._load_train_images()

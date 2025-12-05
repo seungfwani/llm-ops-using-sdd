@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Optional
 from uuid import UUID, uuid4
 
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
+from core.image_config import get_image_config
 from core.settings import get_settings
 from integrations.serving.factory import ServingFrameworkFactory
 from serving.converters.kserve_converter import KServeConverter
@@ -66,6 +68,163 @@ class ServingDeployer:
         
         return route
 
+    def _check_resource_exists(
+        self, endpoint_name: str, namespace: str, is_kserve: bool = None
+    ) -> tuple[bool, bool]:
+        """
+        Check if a Kubernetes resource exists and if it's terminating.
+        
+        Args:
+            endpoint_name: Name of the resource
+            namespace: Kubernetes namespace
+            is_kserve: Whether to check KServe InferenceService (None = auto-detect)
+        
+        Returns:
+            Tuple of (exists: bool, is_terminating: bool)
+        """
+        if is_kserve is None:
+            is_kserve = settings.use_kserve
+        
+        try:
+            if is_kserve:
+                resource = self.custom_api.get_namespaced_custom_object(
+                    group="serving.kserve.io",
+                    version="v1beta1",
+                    namespace=namespace,
+                    plural="inferenceservices",
+                    name=endpoint_name
+                )
+                deletion_timestamp = resource.get("metadata", {}).get("deletionTimestamp")
+                return True, deletion_timestamp is not None
+            else:
+                resource = self.apps_api.read_namespaced_deployment(
+                    name=endpoint_name,
+                    namespace=namespace
+                )
+                return True, resource.metadata.deletion_timestamp is not None
+        except ApiException as e:
+            if e.status == 404:
+                return False, False
+            raise
+
+    def _ensure_resource_deleted(
+        self,
+        endpoint_name: str,
+        namespace: str,
+        resource_type: str = None,
+        max_wait: int = 120,
+        check_interval: int = 2,
+    ) -> None:
+        """
+        Ensure a Kubernetes resource is completely deleted, waiting if necessary.
+        
+        Args:
+            endpoint_name: Name of the resource
+            namespace: Kubernetes namespace
+            resource_type: Type of resource (None = auto-detect)
+            max_wait: Maximum time to wait in seconds
+            check_interval: Interval between checks in seconds
+        
+        Raises:
+            ValueError: If resource still exists after max_wait
+        """
+        if resource_type is None:
+            resource_type = "KServe InferenceService" if settings.use_kserve else "Deployment"
+        
+        is_kserve = settings.use_kserve
+        waited = 0
+        
+        logger.info(f"Ensuring {resource_type} {endpoint_name} is completely deleted (max {max_wait}s)...")
+        
+        while waited < max_wait:
+            try:
+                exists, is_terminating = self._check_resource_exists(endpoint_name, namespace, is_kserve)
+                
+                if not exists:
+                    logger.info(f"{resource_type} {endpoint_name} successfully deleted after {waited}s")
+                    return
+                
+                if is_terminating:
+                    logger.info(
+                        f"{resource_type} {endpoint_name} is terminating, waiting... ({waited}s)"
+                    )
+                else:
+                    logger.warning(
+                        f"{resource_type} {endpoint_name} exists but not terminating. "
+                        f"Attempting to delete... ({waited}s)"
+                    )
+                    try:
+                        self.delete_endpoint(endpoint_name, namespace=namespace)
+                    except Exception as delete_error:
+                        logger.warning(f"Delete attempt failed: {delete_error}")
+                
+                time.sleep(check_interval)
+                waited += check_interval
+            except ApiException as e:
+                if e.status == 404:
+                    logger.info(f"{resource_type} {endpoint_name} successfully deleted after {waited}s")
+                    return
+                logger.warning(f"Error checking {resource_type} {endpoint_name} status: {e}")
+                time.sleep(check_interval)
+                waited += check_interval
+        
+        raise ValueError(
+            f"Timeout waiting for {resource_type} {endpoint_name} to be deleted after {max_wait}s. "
+            f"The resource may still be terminating. Please wait and try again, or manually delete "
+            f"the resource '{endpoint_name}' in namespace '{namespace}'."
+        )
+
+    def _handle_409_conflict(
+        self,
+        endpoint_name: str,
+        namespace: str,
+        create_func,
+        resource_type: str = None,
+        max_wait: int = 120,
+    ):
+        """
+        Handle 409 Conflict error by deleting existing resource and retrying creation.
+        
+        Args:
+            endpoint_name: Name of the resource
+            namespace: Kubernetes namespace
+            create_func: Function to create the resource (will be called again on retry)
+            resource_type: Type of resource (None = auto-detect)
+            max_wait: Maximum time to wait for deletion
+        
+        Returns:
+            Result from create_func
+        
+        Raises:
+            ValueError: If deletion fails or retry still results in 409
+        """
+        if resource_type is None:
+            resource_type = "KServe InferenceService" if settings.use_kserve else "Deployment"
+        
+        logger.warning(f"409 Conflict: {resource_type} {endpoint_name} already exists. Attempting to delete and retry...")
+        
+        # Try to delete (don't fail if deletion fails)
+        try:
+            logger.info(f"Deleting existing {resource_type} {endpoint_name} before retry...")
+            self.delete_endpoint(endpoint_name, namespace=namespace)
+        except Exception as delete_error:
+            logger.warning(f"delete_endpoint() raised exception (will continue anyway): {delete_error}")
+        
+        # Wait for deletion to complete
+        self._ensure_resource_deleted(endpoint_name, namespace, resource_type, max_wait)
+        
+        # Retry creation
+        try:
+            return create_func()
+        except ApiException as retry_e:
+            if retry_e.status == 409:
+                logger.error(f"409 Conflict still occurs after deletion wait. Resource may not be fully deleted.")
+                raise ValueError(
+                    f"{resource_type} {endpoint_name} still exists after deletion attempt. "
+                    f"This may indicate a Kubernetes API issue. Please check the resource status manually."
+                ) from retry_e
+            raise
+
     def deploy_endpoint(
         self,
         endpoint_name: str,
@@ -110,9 +269,123 @@ class ServingDeployer:
         
         deployment_id = str(uuid4())
 
-        # Use default serving runtime image from settings if not provided
+        # Check if resource already exists and delete it first
+        # This ensures idempotency and prevents 409 Conflict errors
+        resource_type = "KServe InferenceService" if settings.use_kserve else "Deployment"
+        
+        try:
+            exists, is_terminating = self._check_resource_exists(endpoint_name, namespace)
+            if exists:
+                logger.warning(
+                    f"{resource_type} {endpoint_name} already exists in namespace {namespace}. "
+                    f"Deleting it before deploying..."
+                )
+                try:
+                    self.delete_endpoint(endpoint_name, namespace=namespace)
+                except Exception as e:
+                    logger.warning(f"delete_endpoint() raised exception: {e}, will continue anyway")
+                
+                # Wait for complete deletion
+                self._ensure_resource_deleted(endpoint_name, namespace, resource_type)
+        except Exception as e:
+            logger.error(f"Error checking/deleting existing resource: {e}")
+            raise ValueError(
+                f"Failed to check/delete existing {resource_type} {endpoint_name} in namespace {namespace}. "
+                f"Cannot proceed with deployment. Error: {e}"
+            ) from e
+
+        # Determine serving runtime image
+        # Priority: explicit parameter > deployment_spec > model metadata > settings default
+        image_config = get_image_config()
+        
+        # Helper function to validate and normalize serve_target
+        def normalize_serve_target(serve_target: Optional[str]) -> str:
+            """Normalize serve_target to valid value (GENERATION or RAG)."""
+            if serve_target in ("GENERATION", "RAG"):
+                return serve_target
+            # Default to GENERATION if invalid or None
+            logger.warning(f"Invalid serve_target '{serve_target}', defaulting to GENERATION")
+            return "GENERATION"
+        
         if serving_runtime_image is None:
-            serving_runtime_image = settings.serving_runtime_image
+            # If deployment_spec is provided, use it to determine image
+            if deployment_spec:
+                serve_target = normalize_serve_target(deployment_spec.serve_target)
+                effective_use_gpu = (
+                    deployment_spec.use_gpu 
+                    if deployment_spec.use_gpu is not None 
+                    else (use_gpu if use_gpu is not None else settings.use_gpu)
+                )
+                try:
+                    serving_runtime_image = image_config.get_serve_image_with_fallback(
+                        serve_target,
+                        effective_use_gpu
+                    )
+                    logger.info(
+                        f"Using image from deployment_spec: {serving_runtime_image} "
+                        f"(serve_target={serve_target}, use_gpu={effective_use_gpu})"
+                    )
+                except ValueError as e:
+                    logger.error(f"Failed to get image from deployment_spec: {e}. Using settings default.")
+                    serving_runtime_image = settings.serving_runtime_image
+            # If no deployment_spec, check model metadata for HuggingFace model
+            elif model_metadata and isinstance(model_metadata, dict):
+                hf_model_id = model_metadata.get("huggingface_model_id")
+                serve_target = normalize_serve_target(model_metadata.get("serve_target"))
+                effective_use_gpu = use_gpu if use_gpu is not None else settings.use_gpu
+                try:
+                    serving_runtime_image = image_config.get_serve_image_with_fallback(
+                        serve_target,
+                        effective_use_gpu
+                    )
+                    if hf_model_id:
+                        logger.info(
+                            f"Using image for HuggingFace model: {serving_runtime_image} "
+                            f"(model_id={hf_model_id}, serve_target={serve_target}, use_gpu={effective_use_gpu})"
+                        )
+                    else:
+                        logger.info(
+                            f"Using image for non-HuggingFace model: {serving_runtime_image} "
+                            f"(serve_target={serve_target}, use_gpu={effective_use_gpu})"
+                        )
+                except ValueError as e:
+                    logger.error(f"Failed to get image from model metadata: {e}. Using settings default.")
+                    serving_runtime_image = settings.serving_runtime_image
+            else:
+                # Fallback to settings default
+                serving_runtime_image = settings.serving_runtime_image
+                logger.info(f"Using default serving runtime image from settings: {serving_runtime_image}")
+        
+        # If generic Python image is still used, warn and try to replace with appropriate image
+        if "python" in serving_runtime_image.lower() and "vllm" not in serving_runtime_image.lower() and "tgi" not in serving_runtime_image.lower():
+            logger.warning(
+                f"Generic Python image '{serving_runtime_image}' detected. "
+                "This is not a serving runtime. Attempting to select appropriate image..."
+            )
+            # Try to determine appropriate image based on model metadata or deployment_spec
+            try:
+                if deployment_spec:
+                    serve_target = normalize_serve_target(deployment_spec.serve_target)
+                    effective_use_gpu = (
+                        deployment_spec.use_gpu 
+                        if deployment_spec.use_gpu is not None 
+                        else (use_gpu if use_gpu is not None else settings.use_gpu)
+                    )
+                elif model_metadata and isinstance(model_metadata, dict):
+                    serve_target = normalize_serve_target(model_metadata.get("serve_target"))
+                    effective_use_gpu = use_gpu if use_gpu is not None else settings.use_gpu
+                else:
+                    serve_target = "GENERATION"
+                    effective_use_gpu = use_gpu if use_gpu is not None else settings.use_gpu
+                
+                serving_runtime_image = image_config.get_serve_image_with_fallback(
+                    serve_target,
+                    effective_use_gpu
+                )
+                logger.info(f"Replaced Python image with: {serving_runtime_image}")
+            except (ValueError, Exception) as e:
+                logger.error(f"Failed to replace Python image: {e}. Keeping original image.")
+                # Keep the original image - it will fail at runtime but at least we tried
 
         # Use GPU setting from parameter or fallback to settings
         if use_gpu is None:
@@ -120,23 +393,43 @@ class ServingDeployer:
 
         # Use KServe InferenceService if enabled, otherwise use raw Deployment
         if settings.use_kserve:
-            return self._deploy_with_kserve_adapter(
-                endpoint_name=endpoint_name,
-                model_storage_uri=model_storage_uri,
-                route=route,
-                min_replicas=min_replicas,
-                max_replicas=max_replicas,
-                autoscale_policy=autoscale_policy,
-                namespace=namespace,
-                serving_runtime_image=serving_runtime_image,
-                use_gpu=use_gpu,
-                cpu_request=cpu_request,
-                cpu_limit=cpu_limit,
-                memory_request=memory_request,
-                memory_limit=memory_limit,
-                model_metadata=model_metadata,
-                deployment_spec=deployment_spec,
-            )
+            # Check if KServe is actually available before using it
+            try:
+                from integrations.serving.factory import ServingFrameworkFactory
+                config = {
+                    "namespace": namespace,
+                    "enabled": settings.use_kserve,
+                }
+                adapter = ServingFrameworkFactory.create_adapter("kserve", config)
+                if adapter.is_available():
+                    try:
+                        return self._deploy_with_kserve_adapter(
+                            endpoint_name=endpoint_name,
+                            model_storage_uri=model_storage_uri,
+                            route=route,
+                            min_replicas=min_replicas,
+                            max_replicas=max_replicas,
+                            autoscale_policy=autoscale_policy,
+                            namespace=namespace,
+                            serving_runtime_image=serving_runtime_image,
+                            use_gpu=use_gpu,
+                            cpu_request=cpu_request,
+                            cpu_limit=cpu_limit,
+                            memory_request=memory_request,
+                            memory_limit=memory_limit,
+                            model_metadata=model_metadata,
+                            deployment_spec=deployment_spec,
+                        )
+                    except Exception as e:
+                        logger.error(f"KServe deployment failed: {e}")
+                        logger.warning("Falling back to raw Kubernetes Deployment")
+                        # Continue to raw Deployment below
+                else:
+                    logger.warning("KServe is enabled but not available. Falling back to raw Deployment.")
+            except Exception as e:
+                logger.warning(f"Failed to check KServe availability: {e}. Falling back to raw Deployment.")
+        
+        # Fallback to raw Deployment (when KServe is disabled or unavailable)
         
         # Fallback to raw Deployment (legacy mode)
         # Create Deployment with model serving runtime
@@ -172,9 +465,61 @@ class ServingDeployer:
         # Determine if this is a TGI image (check image name)
         is_tgi = "text-generation" in serving_runtime_image.lower() or "tgi" in serving_runtime_image.lower()
         
+        # TGI in CPU-only mode requires more memory for model download
+        # Default CPU-only limit (1Gi) is too low and causes OOMKilled during download
+        # Automatically increase memory limit to minimum 4Gi if not explicitly set
+        if is_tgi and not use_gpu and memory_limit is None:
+            default_memory_limit = settings.serving_cpu_only_memory_limit
+            # Parse memory limit to check if it's too low
+            try:
+                # Convert to bytes for comparison (rough estimate)
+                if default_memory_limit.endswith("Gi"):
+                    limit_gb = float(default_memory_limit[:-2])
+                elif default_memory_limit.endswith("Mi"):
+                    limit_gb = float(default_memory_limit[:-2]) / 1024
+                else:
+                    limit_gb = 1.0  # Default assumption
+                
+                # If limit is less than 4Gi, increase to 4Gi for TGI model download
+                if limit_gb < 4.0:
+                    resource_limits["memory"] = "4Gi"
+                    logger.warning(
+                        f"TGI CPU-only mode detected: Auto-increasing memory limit from {default_memory_limit} "
+                        f"to 4Gi to prevent OOM during model download. "
+                        f"To override, explicitly set memory_limit parameter."
+                    )
+            except (ValueError, AttributeError):
+                # If parsing fails, set to safe default
+                resource_limits["memory"] = "4Gi"
+                logger.warning(
+                    f"TGI CPU-only mode detected: Setting memory limit to 4Gi "
+                    f"(default was {default_memory_limit}). "
+                    f"To override, explicitly set memory_limit parameter."
+                )
+        
+        # Check if this is a generic Python image (needs custom command)
+        is_python_image = "python" in serving_runtime_image.lower() and not is_vllm and not is_tgi
+        
         # Build command arguments for vLLM or TGI
         container_args = None
-        if is_vllm:
+        container_command = None
+        
+        if is_python_image:
+            # Generic Python image - this shouldn't be used for serving
+            # Log warning and set a basic command to prevent immediate exit
+            logger.warning(
+                f"Using generic Python image '{serving_runtime_image}' for serving. "
+                f"This is not a serving runtime. Please use TGI or vLLM image."
+            )
+            # Set a command that will keep the container running but log an error
+            container_command = ["/bin/sh", "-c"]
+            container_args = [
+                "echo 'ERROR: Generic Python image cannot serve models. Please use TGI or vLLM image.' && "
+                "echo 'Current image: " + serving_runtime_image + "' && "
+                "echo 'Model storage URI: " + model_storage_uri + "' && "
+                "sleep infinity"
+            ]
+        elif is_vllm:
             # vLLM requires --model argument and supports S3 paths directly
             # For CPU mode, device must be specified BEFORE model argument
             # to prevent device type inference from failing
@@ -207,6 +552,10 @@ class ServingDeployer:
                     "--hostname", "0.0.0.0",
                     "--port", "8000",
                 ]
+                # Add --disable-custom-kernels for CPU-only mode
+                if not use_gpu:
+                    container_args.append("--disable-custom-kernels")
+                    logger.info("TGI CPU-only mode: Added --disable-custom-kernels flag")
                 logger.info(f"Using Hugging Face model ID for TGI: {hf_model_id}")
             else:
                 # Fallback: TGI may not work well without HF model ID
@@ -217,6 +566,10 @@ class ServingDeployer:
                     "--hostname", "0.0.0.0",
                     "--port", "8000",
                 ]
+                # Add --disable-custom-kernels for CPU-only mode
+                if not use_gpu:
+                    container_args.append("--disable-custom-kernels")
+                    logger.info("TGI CPU-only mode: Added --disable-custom-kernels flag")
         
         # Build environment variables list
         env_vars = [
@@ -283,6 +636,13 @@ class ServingDeployer:
                 env_vars.append(client.V1EnvVar(name="MAMBA_DISABLE_TRITON", value="1"))
                 # Use CPU fallback for operations
                 env_vars.append(client.V1EnvVar(name="TORCH_COMPILE_DISABLE", value="1"))
+                # Additional memory optimization for CPU mode downloads
+                # Use safetensors for lower memory footprint during loading
+                env_vars.append(client.V1EnvVar(name="SAFETENSORS_FAST_GPU", value="0"))
+                # Reduce memory usage during model download and loading
+                env_vars.append(client.V1EnvVar(name="HF_HUB_DISABLE_SYMLINKS_WARNING", value="1"))
+                # Use disk cache more aggressively to reduce memory usage
+                env_vars.append(client.V1EnvVar(name="TRANSFORMERS_NO_ADVISORY_WARNINGS", value="1"))
         
         # Add vLLM-specific environment variables
         if is_vllm:
@@ -301,116 +661,39 @@ class ServingDeployer:
                 # Prevent vLLM from trying to detect GPU
                 env_vars.append(client.V1EnvVar(name="NVIDIA_VISIBLE_DEVICES", value=""))
         
-        # For TGI, check if we need init container (only if no HF model ID)
-        init_containers = []
-        volumes = []
-        volume_mounts = []
-        
+        # TGI requires Hugging Face model ID - if not available, log warning
+        # vLLM supports S3 paths directly, so init container is not needed
         if is_tgi:
-            # Check if we have Hugging Face model ID (already set in container_args above)
-            # If we have HF model ID, TGI will download directly - no init container needed
             hf_model_id_in_args = container_args and "--model-id" in container_args
-            
             if not hf_model_id_in_args:
-                # No HF model ID - try to use init container to download from S3
-                # But TGI doesn't work well with local paths, so this is a fallback
                 logger.warning("TGI without Hugging Face model ID may not work correctly")
                 logger.warning("Consider importing model from Hugging Face to get huggingface_model_id in metadata")
-                
-                # Create init container to download model from S3 to shared volume
-                # This prevents OOM during model download in the main container
-                model_local_path = "/models/model"
-                
-                # Create volume for sharing model files between init and main containers
-                volumes.append(
-                    client.V1Volume(
-                        name="model-storage",
-                        empty_dir=client.V1EmptyDirVolumeSource(size_limit="100Gi"),  # Adjust based on model size
-                    )
-                )
-                
-                # Volume mount for both containers
-                volume_mount = client.V1VolumeMount(
-                    name="model-storage",
-                    mount_path=model_local_path,
-                )
-                volume_mounts.append(volume_mount)
-                
-                # Init container to download from S3
-                init_container = client.V1Container(
-                    name=f"{endpoint_name}-model-downloader",
-                    image="amazon/aws-cli:latest",  # AWS CLI image for S3 access
-                    command=["/bin/sh"],
-                    args=[
-                        "-c",
-                        f"""
-                        set -e
-                        echo "Downloading model from {model_storage_uri}..."
-                        # Extract bucket and prefix from S3 URI
-                        BUCKET=$(echo {model_storage_uri} | sed 's|s3://||' | cut -d'/' -f1)
-                        PREFIX=$(echo {model_storage_uri} | sed 's|s3://||' | cut -d'/' -f2-)
-                        echo "Bucket: $BUCKET, Prefix: $PREFIX"
-                        # Download all files recursively
-                        aws s3 sync s3://$BUCKET/$PREFIX {model_local_path} --endpoint-url $AWS_ENDPOINT_URL
-                        echo "Model download completed"
-                        ls -lah {model_local_path}
-                        """,
-                    ],
-                    env=[
-                        client.V1EnvVar(
-                            name="AWS_ACCESS_KEY_ID",
-                            value_from=client.V1EnvVarSource(
-                                secret_key_ref=client.V1SecretKeySelector(
-                                    name="llm-ops-object-store-credentials",
-                                    key="access-key-id",
-                                )
-                            ),
-                        ),
-                        client.V1EnvVar(
-                            name="AWS_SECRET_ACCESS_KEY",
-                            value_from=client.V1EnvVarSource(
-                                secret_key_ref=client.V1SecretKeySelector(
-                                    name="llm-ops-object-store-credentials",
-                                    key="secret-access-key",
-                                )
-                            ),
-                        ),
-                        client.V1EnvVar(
-                            name="AWS_ENDPOINT_URL",
-                            value_from=client.V1EnvVarSource(
-                                config_map_key_ref=client.V1ConfigMapKeySelector(
-                                    name="llm-ops-object-store-config",
-                                    key="endpoint-url",
-                                )
-                            ),
-                        ),
-                        client.V1EnvVar(name="AWS_DEFAULT_REGION", value="us-east-1"),
-                    ],
-                    volume_mounts=[volume_mount],
-                    resources=client.V1ResourceRequirements(
-                        requests={"memory": "2Gi", "cpu": "1"},
-                        limits={"memory": "4Gi", "cpu": "2"},  # Separate resources for download
-                    ),
-                )
-                init_containers.append(init_container)
-                
-                # Set MODEL_ID env var to local path as fallback
-                if not container_args:
-                    container_args = []
-                env_vars.append(client.V1EnvVar(name="MODEL_ID", value=model_local_path))
+                logger.warning("Alternatively, use vLLM runtime which supports S3 paths directly")
+        
+        # No init containers needed:
+        # - vLLM: Supports S3 paths directly via --model argument
+        # - TGI: Should use Hugging Face model ID (--model-id) for direct download
+        init_containers = None
+        volumes = None
+        volume_mounts = None
+        
+        # Ensure container_args is not None (empty list is OK, but None will cause issues)
+        if container_args is None:
+            container_args = []
         
         container = client.V1Container(
             name=f"{endpoint_name}-serving",
             image=serving_runtime_image,
             image_pull_policy="IfNotPresent",  # Avoid pulling latest from remote registry when local image exists
-            args=container_args,  # Add args for vLLM
+            command=container_command,  # Set command for Python images
+            args=container_args if container_args else None,  # Add args for vLLM/TGI, None if empty
             ports=[client.V1ContainerPort(container_port=8000, name="http")],
             resources=client.V1ResourceRequirements(
                 requests=resource_requests,
                 limits=resource_limits,
             ),
             env=env_vars,
-            volume_mounts=volume_mounts,
+            volume_mounts=volume_mounts if volume_mounts else None,
             liveness_probe=client.V1Probe(
                 http_get=client.V1HTTPGetAction(path="/health", port=8000),
                 initial_delay_seconds=300 if is_tgi else 120,  # Longer delay for TGI model download (5 min)
@@ -460,6 +743,19 @@ class ServingDeployer:
                 namespace=namespace, body=deployment
             )
             logger.info(f"Created deployment {endpoint_name} with UID {created_deployment.metadata.uid}")
+        except ApiException as e:
+            if e.status == 409:
+                created_deployment = self._handle_409_conflict(
+                    endpoint_name,
+                    namespace,
+                    lambda: self.apps_api.create_namespaced_deployment(
+                        namespace=namespace, body=deployment
+                    ),
+                    "Deployment",
+                )
+                logger.info(f"Created deployment {endpoint_name} with UID {created_deployment.metadata.uid} after retry")
+            else:
+                raise
 
             # Create Service
             service = client.V1Service(
@@ -476,7 +772,20 @@ class ServingDeployer:
                     type="ClusterIP",
                 ),
             )
-            self.core_api.create_namespaced_service(namespace=namespace, body=service)
+            try:
+                self.core_api.create_namespaced_service(namespace=namespace, body=service)
+            except ApiException as e:
+                if e.status == 409:
+                    logger.warning(f"Service {endpoint_name}-svc already exists, deleting and recreating...")
+                    try:
+                        self.core_api.delete_namespaced_service(name=f"{endpoint_name}-svc", namespace=namespace)
+                        time.sleep(2)
+                        self.core_api.create_namespaced_service(namespace=namespace, body=service)
+                    except Exception as retry_error:
+                        logger.error(f"Failed to delete and recreate Service: {retry_error}")
+                        raise
+                else:
+                    raise
 
             # Create HPA
             if autoscale_policy:
@@ -498,10 +807,28 @@ class ServingDeployer:
                         target_cpu_utilization_percentage=autoscale_policy.get("cpuUtilization", 70),
                     ),
                 )
-                self.autoscaling_api.create_namespaced_horizontal_pod_autoscaler(
-                    namespace=namespace, body=hpa
-                )
-                logger.info(f"Created HPA for {endpoint_name}")
+                try:
+                    self.autoscaling_api.create_namespaced_horizontal_pod_autoscaler(
+                        namespace=namespace, body=hpa
+                    )
+                    logger.info(f"Created HPA for {endpoint_name}")
+                except ApiException as e:
+                    if e.status == 409:
+                        logger.warning(f"HPA {endpoint_name}-hpa already exists, deleting and recreating...")
+                        try:
+                            self.autoscaling_api.delete_namespaced_horizontal_pod_autoscaler(
+                                name=f"{endpoint_name}-hpa", namespace=namespace
+                            )
+                            time.sleep(2)
+                            self.autoscaling_api.create_namespaced_horizontal_pod_autoscaler(
+                                namespace=namespace, body=hpa
+                            )
+                            logger.info(f"Created HPA for {endpoint_name} after retry")
+                        except Exception as retry_error:
+                            logger.error(f"Failed to delete and recreate HPA: {retry_error}")
+                            raise
+                    else:
+                        raise
 
             # Create Ingress
             ingress = client.V1Ingress(
@@ -536,8 +863,24 @@ class ServingDeployer:
                     ]
                 ),
             )
-            self.networking_api.create_namespaced_ingress(namespace=namespace, body=ingress)
-            logger.info(f"Created Ingress for {endpoint_name} at route {route}")
+            try:
+                self.networking_api.create_namespaced_ingress(namespace=namespace, body=ingress)
+                logger.info(f"Created Ingress for {endpoint_name} at route {route}")
+            except ApiException as e:
+                if e.status == 409:
+                    logger.warning(f"Ingress {endpoint_name}-ingress already exists, deleting and recreating...")
+                    try:
+                        self.networking_api.delete_namespaced_ingress(
+                            name=f"{endpoint_name}-ingress", namespace=namespace
+                        )
+                        time.sleep(2)
+                        self.networking_api.create_namespaced_ingress(namespace=namespace, body=ingress)
+                        logger.info(f"Created Ingress for {endpoint_name} at route {route} after retry")
+                    except Exception as retry_error:
+                        logger.error(f"Failed to delete and recreate Ingress: {retry_error}")
+                        raise
+                else:
+                    raise
 
             return created_deployment.metadata.uid
         except ApiException as e:
@@ -631,8 +974,24 @@ class ServingDeployer:
                     logger.info(f"Created KServe InferenceService {created_service['metadata']['name']} from DeploymentSpec")
                     return created_service["metadata"]["uid"]
                 except ApiException as e:
-                    logger.error(f"Failed to create KServe InferenceService from DeploymentSpec: {e}")
-                    raise
+                    if e.status == 409:
+                        created_service = self._handle_409_conflict(
+                            endpoint_name,
+                            namespace,
+                            lambda: self.custom_api.create_namespaced_custom_object(
+                                group="serving.kserve.io",
+                                version="v1beta1",
+                                namespace=namespace,
+                                plural="inferenceservices",
+                                body=inference_service,
+                            ),
+                            "KServe InferenceService",
+                        )
+                        logger.info(f"Created KServe InferenceService {created_service['metadata']['name']} from DeploymentSpec after retry")
+                        return created_service["metadata"]["uid"]
+                    else:
+                        logger.error(f"Failed to create KServe InferenceService from DeploymentSpec: {e}")
+                        raise
             
             # Fallback to adapter-based deployment (legacy)
             # Build resource requests/limits
@@ -696,20 +1055,13 @@ class ServingDeployer:
             
         except Exception as e:
             logger.error(f"Failed to deploy KServe InferenceService {endpoint_name} via adapter: {e}")
-            # Fallback to legacy implementation if adapter fails
-            logger.warning("Falling back to legacy KServe deployment")
-            return self._deploy_with_kserve_legacy(
-                endpoint_name=endpoint_name,
-                model_storage_uri=model_storage_uri,
-                route=route,
-                min_replicas=min_replicas,
-                max_replicas=max_replicas,
-                autoscale_policy=autoscale_policy,
-                namespace=namespace,
-                serving_runtime_image=serving_runtime_image,
-                use_gpu=use_gpu,
-                model_metadata=model_metadata,
-            )
+            # Fallback to raw Deployment if KServe fails
+            logger.warning("KServe deployment failed. Falling back to raw Kubernetes Deployment.")
+            # Call the raw Deployment logic (which is the rest of deploy_endpoint method)
+            # We need to extract the raw deployment logic into a separate method
+            # For now, raise the exception to let the caller handle it
+            # The caller should catch this and retry with raw Deployment
+            raise RuntimeError(f"KServe deployment failed: {e}. Please use raw Deployment instead.") from e
     
     def _deploy_with_kserve_legacy(
         self,
@@ -770,10 +1122,44 @@ class ServingDeployer:
 
             # Detect vLLM runtime from image name
             is_vllm = "vllm" in serving_runtime_image.lower()
+            
+            # Detect TGI image
+            is_tgi_kserve = "text-generation" in serving_runtime_image.lower() or "tgi" in serving_runtime_image.lower()
+            
+            # TGI in CPU-only mode requires more memory for model download
+            # Default CPU-only limit (1Gi) is too low and causes OOMKilled during download
+            # Automatically increase memory limit to minimum 4Gi if not explicitly set
+            if is_tgi_kserve and not use_gpu:
+                default_memory_limit = settings.serving_cpu_only_memory_limit
+                # Parse memory limit to check if it's too low
+                try:
+                    # Convert to bytes for comparison (rough estimate)
+                    if default_memory_limit.endswith("Gi"):
+                        limit_gb = float(default_memory_limit[:-2])
+                    elif default_memory_limit.endswith("Mi"):
+                        limit_gb = float(default_memory_limit[:-2]) / 1024
+                    else:
+                        limit_gb = 1.0  # Default assumption
+                    
+                    # If limit is less than 4Gi, increase to 4Gi for TGI model download
+                    if limit_gb < 4.0:
+                        resource_limits["memory"] = "4Gi"
+                        logger.warning(
+                            f"TGI CPU-only mode (KServe) detected: Auto-increasing memory limit from {default_memory_limit} "
+                            f"to 4Gi to prevent OOM during model download."
+                        )
+                except (ValueError, AttributeError):
+                    # If parsing fails, set to safe default
+                    resource_limits["memory"] = "4Gi"
+                    logger.warning(
+                        f"TGI CPU-only mode (KServe) detected: Setting memory limit to 4Gi "
+                        f"(default was {default_memory_limit})."
+                    )
 
             # Build container args:
             # - vLLM: explicit --model/--host/--port args (and --device cpu if CPU mode)
-            # - non‑vLLM: no args so the image can use its own entrypoint/CMD
+            # - TGI: --model-id/--hostname/--port args (and --disable-custom-kernels if CPU mode)
+            # - non‑vLLM/non-TGI: no args so the image can use its own entrypoint/CMD
             if is_vllm:
                 if not use_gpu:
                     container_args = [
@@ -795,11 +1181,40 @@ class ServingDeployer:
                         "--port",
                         "8000",
                     ]
+            elif is_tgi_kserve:
+                # TGI uses --model-id for Hugging Face model ID
+                # Try to extract Hugging Face model ID from metadata
+                hf_model_id = None
+                if model_metadata and isinstance(model_metadata, dict):
+                    hf_model_id = model_metadata.get("huggingface_model_id")
+                
+                if hf_model_id:
+                    # Use Hugging Face model ID - TGI will download it
+                    container_args = [
+                        "--model-id", hf_model_id,
+                        "--hostname", "0.0.0.0",
+                        "--port", "8000",
+                    ]
+                    # Add --disable-custom-kernels for CPU-only mode
+                    if not use_gpu:
+                        container_args.append("--disable-custom-kernels")
+                        logger.info("TGI CPU-only mode (KServe): Added --disable-custom-kernels flag")
+                    logger.info(f"Using Hugging Face model ID for TGI (KServe): {hf_model_id}")
+                else:
+                    # Fallback: TGI may not work well without HF model ID
+                    logger.warning("No Hugging Face model ID found in metadata for TGI (KServe)")
+                    logger.warning("TGI requires Hugging Face model ID. Model may fail to load.")
+                    # Still try to set basic args
+                    container_args = [
+                        "--hostname", "0.0.0.0",
+                        "--port", "8000",
+                    ]
+                    # Add --disable-custom-kernels for CPU-only mode
+                    if not use_gpu:
+                        container_args.append("--disable-custom-kernels")
+                        logger.info("TGI CPU-only mode (KServe): Added --disable-custom-kernels flag")
             else:
                 container_args = None
-
-            # Detect TGI image
-            is_tgi_kserve = "text-generation" in serving_runtime_image.lower() or "tgi" in serving_runtime_image.lower()
 
             # Base environment (S3/object store access)
             env_vars = [
@@ -894,6 +1309,19 @@ class ServingDeployer:
                             "name": "TORCH_COMPILE_DISABLE",
                             "value": "1",
                         },
+                        # Additional memory optimization for CPU mode downloads
+                        {
+                            "name": "SAFETENSORS_FAST_GPU",
+                            "value": "0",  # Use safetensors for lower memory footprint
+                        },
+                        {
+                            "name": "HF_HUB_DISABLE_SYMLINKS_WARNING",
+                            "value": "1",  # Reduce memory usage during download
+                        },
+                        {
+                            "name": "TRANSFORMERS_NO_ADVISORY_WARNINGS",
+                            "value": "1",  # Use disk cache more aggressively
+                        },
                     ])
                 
                 # Set MODEL_ID for TGI
@@ -985,17 +1413,37 @@ class ServingDeployer:
                     inference_service["spec"]["predictor"]["scaleTarget"]["cpuUtilization"] = autoscale_policy["cpuUtilization"]
 
             # Create InferenceService using CustomObjectsApi
-            created = self.custom_api.create_namespaced_custom_object(
-                group="serving.kserve.io",
-                version="v1beta1",
-                namespace=namespace,
-                plural="inferenceservices",
-                body=inference_service,
-            )
+            try:
+                created = self.custom_api.create_namespaced_custom_object(
+                    group="serving.kserve.io",
+                    version="v1beta1",
+                    namespace=namespace,
+                    plural="inferenceservices",
+                    body=inference_service,
+                )
 
-            uid = created.get("metadata", {}).get("uid", "")
-            logger.info(f"Created KServe InferenceService {endpoint_name} with UID {uid}")
-            return uid
+                uid = created.get("metadata", {}).get("uid", "")
+                logger.info(f"Created KServe InferenceService {endpoint_name} with UID {uid}")
+                return uid
+            except ApiException as e:
+                if e.status == 409:
+                    created = self._handle_409_conflict(
+                        endpoint_name,
+                        namespace,
+                        lambda: self.custom_api.create_namespaced_custom_object(
+                            group="serving.kserve.io",
+                            version="v1beta1",
+                            namespace=namespace,
+                            plural="inferenceservices",
+                            body=inference_service,
+                        ),
+                        "KServe InferenceService",
+                    )
+                    uid = created.get("metadata", {}).get("uid", "")
+                    logger.info(f"Created KServe InferenceService {endpoint_name} with UID {uid} after retry")
+                    return uid
+                else:
+                    raise
 
         except ApiException as e:
             logger.error(f"Failed to deploy KServe InferenceService {endpoint_name}: {e}")
@@ -1169,81 +1617,665 @@ class ServingDeployer:
     def delete_endpoint(
         self, endpoint_name: str, namespace: str = "default"
     ) -> bool:
-        """Delete a serving endpoint from Kubernetes."""
-        if settings.use_kserve:
-            return self._delete_kserve(endpoint_name, namespace)
+        """
+        Delete a serving endpoint from Kubernetes with proper cleanup and verification.
         
-        # Legacy: Delete raw Deployment and related resources
+        This method deletes both KServe InferenceService and Deployment resources if they exist,
+        regardless of settings.use_kserve configuration. This ensures complete cleanup.
+        """
+        deleted_kserve = False
+        deleted_deployment = False
+        
+        # Try to delete KServe InferenceService if it exists
         try:
-            # Delete HPA if it exists
-            try:
-                self.autoscaling_api.delete_namespaced_horizontal_pod_autoscaler(
-                    name=f"{endpoint_name}-hpa",
-                    namespace=namespace,
-                )
-                logger.info(f"Deleted HPA for {endpoint_name}")
-            except ApiException as e:
-                if e.status != 404:
-                    logger.warning(f"Failed to delete HPA for {endpoint_name}: {e}")
+            exists, is_terminating = self._check_resource_exists(endpoint_name, namespace, is_kserve=True)
+            if exists:
+                logger.info(f"Found KServe InferenceService {endpoint_name}, deleting...")
+                deleted_kserve = self._delete_kserve(endpoint_name, namespace)
+        except Exception as e:
+            logger.warning(f"Error checking/deleting KServe InferenceService {endpoint_name}: {e}")
+        
+        # Try to delete Deployment if it exists
+        try:
+            exists, is_terminating = self._check_resource_exists(endpoint_name, namespace, is_kserve=False)
+            if exists:
+                logger.info(f"Found Deployment {endpoint_name}, deleting...")
+                deleted_deployment = self._delete_deployment(endpoint_name, namespace)
+        except Exception as e:
+            logger.warning(f"Error checking/deleting Deployment {endpoint_name}: {e}")
+        
+        # Delete related resources (HPA, Ingress, Service, Pods) regardless of main resource type
+        self._delete_related_resources(endpoint_name, namespace)
+        
+        # Return True if at least one resource was deleted or didn't exist
+        return deleted_kserve or deleted_deployment
+
+    def _delete_deployment(
+        self, endpoint_name: str, namespace: str = "default"
+    ) -> bool:
+        """Delete raw Deployment and related resources."""
+        try:
+            # Check if Deployment already exists and is deleting
+            if self._check_resource_deleting(endpoint_name, namespace, "Deployment"):
+                logger.info(f"Deployment {endpoint_name} is already deleting, waiting for completion")
+                if self._wait_for_deletion(endpoint_name, namespace, "Deployment", max_wait=60):
+                    return True
+                else:
+                    # Timeout waiting, try to remove finalizers
+                    logger.warning(f"Timeout waiting for Deployment {endpoint_name} to delete, attempting to remove finalizers")
+                    self._remove_finalizers(endpoint_name, namespace, "Deployment")
+                    # Wait again after removing finalizers
+                    if self._wait_for_deletion(endpoint_name, namespace, "Deployment", max_wait=30):
+                        return True
+                    return False
             
-            # Delete Ingress if it exists
+            # Check if Deployment exists before attempting deletion
+            logger.info(f"Checking if Deployment {endpoint_name} exists in namespace {namespace}")
+            deployment_exists = False
             try:
-                self.networking_api.delete_namespaced_ingress(
-                    name=f"{endpoint_name}-ingress",
-                    namespace=namespace,
-                )
-                logger.info(f"Deleted Ingress for {endpoint_name}")
-            except ApiException as e:
-                if e.status != 404:
-                    logger.warning(f"Failed to delete Ingress for {endpoint_name}: {e}")
-            
-            # Delete Service if it exists
-            try:
-                self.core_api.delete_namespaced_service(
-                    name=f"{endpoint_name}-svc",
-                    namespace=namespace,
-                )
-                logger.info(f"Deleted Service for {endpoint_name}")
-            except ApiException as e:
-                if e.status != 404:
-                    logger.warning(f"Failed to delete Service for {endpoint_name}: {e}")
-            
-            # Delete Deployment
-            try:
-                self.apps_api.delete_namespaced_deployment(
+                deployment = self.apps_api.read_namespaced_deployment(
                     name=endpoint_name,
-                    namespace=namespace,
+                    namespace=namespace
                 )
-                logger.info(f"Deleted Deployment {endpoint_name}")
+                deployment_exists = True
+                logger.info(
+                    f"Deployment {endpoint_name} exists. "
+                    f"UID: {deployment.metadata.uid}, "
+                    f"Generation: {deployment.metadata.generation}, "
+                    f"DeletionTimestamp: {deployment.metadata.deletion_timestamp}"
+                )
             except ApiException as e:
                 if e.status == 404:
-                    logger.warning(f"Deployment {endpoint_name} not found, may already be deleted")
-                else:
-                    logger.error(f"Failed to delete Deployment {endpoint_name}: {e}")
-                    raise
+                    logger.info(f"Deployment {endpoint_name} not found, already deleted")
+                    return True
+                logger.error(f"Error checking Deployment {endpoint_name} existence: {e}")
+                raise
             
-            return True
+            if not deployment_exists:
+                logger.info(f"Deployment {endpoint_name} does not exist, nothing to delete")
+                return True
+            
+            # First, scale down deployment to 0 replicas to stop pods immediately
+            try:
+                self.apps_api.patch_namespaced_deployment_scale(
+                    name=endpoint_name,
+                    namespace=namespace,
+                    body={"spec": {"replicas": 0}},
+                )
+                logger.info(f"Scaled down Deployment {endpoint_name} to 0 replicas")
+                # Wait a bit for pods to start terminating
+                time.sleep(2)
+            except ApiException as e:
+                if e.status != 404:
+                    logger.warning(f"Failed to scale down Deployment {endpoint_name}: {e}")
+            
+            # Delete related resources will be handled by _delete_related_resources
+            
+            # Remove finalizers before deletion to prevent blocking
+            logger.info(f"Removing finalizers from Deployment {endpoint_name} before deletion")
+            finalizer_removed = self._remove_finalizers(endpoint_name, namespace, "Deployment")
+            if not finalizer_removed:
+                logger.warning(f"Failed to remove finalizers from Deployment {endpoint_name}, but continuing with deletion")
+            
+            # Delete Deployment with Foreground propagation
+            logger.info(f"Attempting to delete Deployment {endpoint_name} in namespace {namespace}")
+            try:
+                body = client.V1DeleteOptions(
+                    propagation_policy="Foreground",
+                    grace_period_seconds=0  # Force immediate deletion
+                )
+                logger.debug(f"Calling delete_namespaced_deployment with body: {body}")
+                delete_response = self.apps_api.delete_namespaced_deployment(
+                    name=endpoint_name,
+                    namespace=namespace,
+                    body=body,
+                )
+                logger.info(f"Delete API call successful for Deployment {endpoint_name}. Response: {delete_response}")
+            except ApiException as e:
+                logger.error(
+                    f"ApiException when deleting Deployment {endpoint_name}: "
+                    f"status={e.status}, reason={e.reason}, body={e.body}"
+                )
+                if e.status == 404:
+                    logger.info(f"Deployment {endpoint_name} not found, already deleted")
+                    return True
+                # Re-raise to be caught by outer exception handler
+                raise
+            except Exception as e:
+                logger.error(f"Unexpected exception when deleting Deployment {endpoint_name}: {e}", exc_info=True)
+                raise
+            
+            # Wait for Deployment to be fully deleted
+            if not self._wait_for_deletion(endpoint_name, namespace, "Deployment", max_wait=60):
+                # If timeout, try to remove finalizers again
+                logger.warning(f"Timeout waiting for Deployment {endpoint_name}, attempting to remove finalizers")
+                self._remove_finalizers(endpoint_name, namespace, "Deployment")
+                # Wait again after removing finalizers
+                if not self._wait_for_deletion(endpoint_name, namespace, "Deployment", max_wait=30):
+                    logger.warning(f"Deployment {endpoint_name} still exists after cleanup attempts")
+            
+            # Final verification that Deployment is deleted
+            if self._wait_for_deletion(endpoint_name, namespace, "Deployment", max_wait=10):
+                logger.info(f"Successfully deleted Deployment {endpoint_name}")
+                return True
+            else:
+                logger.warning(f"Deployment {endpoint_name} may still exist after cleanup")
+                return False
+            
         except ApiException as e:
+            if e.status == 404:
+                logger.info(f"Deployment {endpoint_name} not found, already deleted")
+                return True
             logger.error(f"Failed to delete endpoint {endpoint_name}: {e}")
+            return False
+
+    def _wait_for_deletion(
+        self,
+        endpoint_name: str,
+        namespace: str,
+        resource_type: str = "Deployment",
+        max_wait: int = 60,
+        check_interval: int = 2,
+    ) -> bool:
+        """
+        Wait for a Kubernetes resource to be fully deleted.
+        
+        Args:
+            endpoint_name: Name of the resource to check
+            namespace: Kubernetes namespace
+            resource_type: Type of resource ("Deployment" or "InferenceService")
+            max_wait: Maximum time to wait in seconds
+            check_interval: Interval between checks in seconds
+            
+        Returns:
+            True if resource is deleted, False if timeout
+        """
+        waited = 0
+        while waited < max_wait:
+            try:
+                if resource_type == "InferenceService":
+                    # Check if KServe InferenceService still exists
+                    self.custom_api.get_namespaced_custom_object(
+                        group="serving.kserve.io",
+                        version="v1beta1",
+                        namespace=namespace,
+                        plural="inferenceservices",
+                        name=endpoint_name
+                    )
+                    # If we get here, InferenceService still exists
+                    logger.debug(f"Waiting for {resource_type} {endpoint_name} to be deleted... ({waited}s)")
+                else:
+                    # Check if Deployment still exists
+                    self.apps_api.read_namespaced_deployment(
+                        name=endpoint_name,
+                        namespace=namespace
+                    )
+                    # If we get here, deployment still exists
+                    logger.debug(f"Waiting for {resource_type} {endpoint_name} to be deleted... ({waited}s)")
+                
+                time.sleep(check_interval)
+                waited += check_interval
+            except ApiException as e:
+                if e.status == 404:
+                    # Resource not found, deletion successful
+                    logger.info(f"{resource_type} {endpoint_name} successfully deleted after {waited}s")
+                    return True
+                else:
+                    # Other error, log and continue waiting
+                    logger.warning(f"Error checking {resource_type} {endpoint_name} status: {e}")
+                    time.sleep(check_interval)
+                    waited += check_interval
+            except Exception as e:
+                logger.warning(f"Unexpected error checking {resource_type} {endpoint_name} status: {e}")
+                time.sleep(check_interval)
+                waited += check_interval
+        
+        logger.warning(f"Timeout waiting for {resource_type} {endpoint_name} to be deleted after {max_wait}s")
+        return False
+
+    def _remove_finalizers(
+        self,
+        endpoint_name: str,
+        namespace: str,
+        resource_type: str = "Deployment",
+    ) -> bool:
+        """
+        Remove finalizers from a Kubernetes resource to allow deletion.
+        
+        Args:
+            endpoint_name: Name of the resource
+            namespace: Kubernetes namespace
+            resource_type: Type of resource ("Deployment" or "InferenceService")
+            
+        Returns:
+            True if finalizers were removed or didn't exist, False on error
+        """
+        try:
+            if resource_type == "InferenceService":
+                # Get InferenceService
+                inference_service = self.custom_api.get_namespaced_custom_object(
+                    group="serving.kserve.io",
+                    version="v1beta1",
+                    namespace=namespace,
+                    plural="inferenceservices",
+                    name=endpoint_name
+                )
+                
+                # Check if it has finalizers
+                if inference_service.get("metadata", {}).get("finalizers"):
+                    logger.info(f"Removing finalizers from InferenceService {endpoint_name}")
+                    inference_service["metadata"]["finalizers"] = []
+                    self.custom_api.patch_namespaced_custom_object(
+                        group="serving.kserve.io",
+                        version="v1beta1",
+                        namespace=namespace,
+                        plural="inferenceservices",
+                        name=endpoint_name,
+                        body=inference_service
+                    )
+                    logger.info(f"Removed finalizers from InferenceService {endpoint_name}")
+                    return True
+            else:
+                # Get Deployment
+                deployment = self.apps_api.read_namespaced_deployment(
+                    name=endpoint_name,
+                    namespace=namespace
+                )
+                
+                # Check if it has finalizers
+                if deployment.metadata.finalizers:
+                    logger.info(f"Removing finalizers from Deployment {endpoint_name}")
+                    deployment.metadata.finalizers = []
+                    self.apps_api.patch_namespaced_deployment(
+                        name=endpoint_name,
+                        namespace=namespace,
+                        body=deployment
+                    )
+                    logger.info(f"Removed finalizers from Deployment {endpoint_name}")
+                    return True
+            
+            return True  # No finalizers to remove
+        except ApiException as e:
+            if e.status == 404:
+                # Resource doesn't exist, nothing to do
+                return True
+            logger.warning(f"Failed to remove finalizers from {resource_type} {endpoint_name}: {e}")
+            return False
+        except Exception as e:
+            logger.warning(f"Unexpected error removing finalizers from {resource_type} {endpoint_name}: {e}")
+            return False
+
+    def _delete_related_resources(
+        self, endpoint_name: str, namespace: str = "default"
+    ) -> None:
+        """
+        Delete all related resources (HPA, Ingress, Service, Pods) for an endpoint.
+        
+        This method is called regardless of whether the main resource is KServe or Deployment
+        to ensure complete cleanup.
+        """
+        # Delete HPA
+        try:
+            hpa_name = f"{endpoint_name}-hpa"
+            try:
+                self.autoscaling_api.delete_namespaced_horizontal_pod_autoscaler(
+                    name=hpa_name,
+                    namespace=namespace,
+                )
+                logger.info(f"Deleted HPA {hpa_name}")
+            except ApiException as e:
+                if e.status != 404:
+                    logger.warning(f"Failed to delete HPA {hpa_name}: {e}")
+                    # Try to find HPA dynamically
+                    try:
+                        hpas = self.autoscaling_api.list_namespaced_horizontal_pod_autoscaler(namespace=namespace)
+                        for hpa in hpas.items:
+                            if endpoint_name in hpa.metadata.name:
+                                try:
+                                    self.autoscaling_api.delete_namespaced_horizontal_pod_autoscaler(
+                                        name=hpa.metadata.name,
+                                        namespace=namespace,
+                                    )
+                                    logger.info(f"Deleted HPA {hpa.metadata.name} (found dynamically)")
+                                except ApiException:
+                                    pass
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.warning(f"Error deleting HPA for {endpoint_name}: {e}")
+        
+        # Delete Ingress
+        try:
+            ingress_name = f"{endpoint_name}-ingress"
+            try:
+                self.networking_api.delete_namespaced_ingress(
+                    name=ingress_name,
+                    namespace=namespace,
+                )
+                logger.info(f"Deleted Ingress {ingress_name}")
+            except ApiException as e:
+                if e.status != 404:
+                    logger.warning(f"Failed to delete Ingress {ingress_name}: {e}")
+                    # Try to find Ingress dynamically
+                    try:
+                        ingresses = self.networking_api.list_namespaced_ingress(namespace=namespace)
+                        for ingress in ingresses.items:
+                            if endpoint_name in ingress.metadata.name:
+                                try:
+                                    self.networking_api.delete_namespaced_ingress(
+                                        name=ingress.metadata.name,
+                                        namespace=namespace,
+                                    )
+                                    logger.info(f"Deleted Ingress {ingress.metadata.name} (found dynamically)")
+                                except ApiException:
+                                    pass
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.warning(f"Error deleting Ingress for {endpoint_name}: {e}")
+        
+        # Delete Service
+        try:
+            service_name = f"{endpoint_name}-svc"
+            try:
+                self.core_api.delete_namespaced_service(
+                    name=service_name,
+                    namespace=namespace,
+                )
+                logger.info(f"Deleted Service {service_name}")
+            except ApiException as e:
+                if e.status != 404:
+                    logger.warning(f"Failed to delete Service {service_name}: {e}")
+                    # Try to find Service dynamically
+                    try:
+                        services = self.core_api.list_namespaced_service(namespace=namespace)
+                        for service in services.items:
+                            if endpoint_name in service.metadata.name:
+                                try:
+                                    self.core_api.delete_namespaced_service(
+                                        name=service.metadata.name,
+                                        namespace=namespace,
+                                    )
+                                    logger.info(f"Deleted Service {service.metadata.name} (found dynamically)")
+                                except ApiException:
+                                    pass
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.warning(f"Error deleting Service for {endpoint_name}: {e}")
+        
+        # Delete Pods
+        try:
+            # Try multiple label selectors
+            label_selectors = [
+                f"app={endpoint_name}",
+                f"app.kubernetes.io/name={endpoint_name}",
+            ]
+            
+            for label_selector in label_selectors:
+                try:
+                    pods = self.core_api.list_namespaced_pod(
+                        namespace=namespace,
+                        label_selector=label_selector,
+                    )
+                    for pod in pods.items:
+                        try:
+                            body = client.V1DeleteOptions(
+                                grace_period_seconds=0,
+                                propagation_policy="Background"
+                            )
+                            self.core_api.delete_namespaced_pod(
+                                name=pod.metadata.name,
+                                namespace=namespace,
+                                body=body,
+                            )
+                            logger.info(f"Force deleted Pod {pod.metadata.name}")
+                        except ApiException as pod_e:
+                            if pod_e.status != 404:
+                                logger.warning(f"Failed to delete Pod {pod.metadata.name}: {pod_e}")
+                except ApiException:
+                    pass
+            
+            # Also try to find pods by name pattern
+            try:
+                all_pods = self.core_api.list_namespaced_pod(namespace=namespace)
+                for pod in all_pods.items:
+                    if endpoint_name in pod.metadata.name:
+                        try:
+                            body = client.V1DeleteOptions(
+                                grace_period_seconds=0,
+                                propagation_policy="Background"
+                            )
+                            self.core_api.delete_namespaced_pod(
+                                name=pod.metadata.name,
+                                namespace=namespace,
+                                body=body,
+                            )
+                            logger.info(f"Force deleted Pod {pod.metadata.name} (by name pattern)")
+                        except ApiException as pod_e:
+                            if pod_e.status != 404:
+                                logger.warning(f"Failed to delete Pod {pod.metadata.name}: {pod_e}")
+            except ApiException:
+                pass
+        except Exception as e:
+            logger.warning(f"Error deleting Pods for {endpoint_name}: {e}")
+
+    def _check_resource_deleting(
+        self,
+        endpoint_name: str,
+        namespace: str,
+        resource_type: str = "Deployment",
+    ) -> bool:
+        """
+        Check if a resource is already in Terminating state.
+        
+        Args:
+            endpoint_name: Name of the resource
+            namespace: Kubernetes namespace
+            resource_type: Type of resource ("Deployment" or "InferenceService")
+            
+        Returns:
+            True if resource is deleting, False otherwise
+        """
+        try:
+            if resource_type == "InferenceService":
+                inference_service = self.custom_api.get_namespaced_custom_object(
+                    group="serving.kserve.io",
+                    version="v1beta1",
+                    namespace=namespace,
+                    plural="inferenceservices",
+                    name=endpoint_name
+                )
+                deletion_timestamp = inference_service.get("metadata", {}).get("deletionTimestamp")
+                return deletion_timestamp is not None
+            else:
+                deployment = self.apps_api.read_namespaced_deployment(
+                    name=endpoint_name,
+                    namespace=namespace
+                )
+                return deployment.metadata.deletion_timestamp is not None
+        except ApiException as e:
+            if e.status == 404:
+                return False  # Resource doesn't exist
+            return False
+        except Exception:
             return False
 
     def _delete_kserve(
         self, endpoint_name: str, namespace: str = "default"
     ) -> bool:
-        """Delete KServe InferenceService."""
+        """Delete KServe InferenceService with proper cleanup and verification."""
         try:
-            self.custom_api.delete_namespaced_custom_object(
-                group="serving.kserve.io",
-                version="v1beta1",
-                namespace=namespace,
-                plural="inferenceservices",
-                name=endpoint_name,
-            )
-            logger.info(f"Deleted KServe InferenceService {endpoint_name}")
-            return True
+            # Check if resource already exists and is deleting
+            if self._check_resource_deleting(endpoint_name, namespace, "InferenceService"):
+                logger.info(f"InferenceService {endpoint_name} is already deleting, waiting for completion")
+                if self._wait_for_deletion(endpoint_name, namespace, "InferenceService", max_wait=60):
+                    return True
+                else:
+                    # Timeout waiting, try to remove finalizers
+                    logger.warning(f"Timeout waiting for InferenceService {endpoint_name} to delete, attempting to remove finalizers")
+                    self._remove_finalizers(endpoint_name, namespace, "InferenceService")
+                    # Wait again after removing finalizers
+                    if self._wait_for_deletion(endpoint_name, namespace, "InferenceService", max_wait=30):
+                        return True
+                    return False
+            
+            # Check if resource exists before attempting deletion
+            logger.info(f"Checking if InferenceService {endpoint_name} exists in namespace {namespace}")
+            inference_service_exists = False
+            try:
+                inference_service = self.custom_api.get_namespaced_custom_object(
+                    group="serving.kserve.io",
+                    version="v1beta1",
+                    namespace=namespace,
+                    plural="inferenceservices",
+                    name=endpoint_name
+                )
+                inference_service_exists = True
+                metadata = inference_service.get("metadata", {})
+                logger.info(
+                    f"InferenceService {endpoint_name} exists. "
+                    f"UID: {metadata.get('uid')}, "
+                    f"Generation: {metadata.get('generation')}, "
+                    f"DeletionTimestamp: {metadata.get('deletionTimestamp')}"
+                )
+            except ApiException as e:
+                if e.status == 404:
+                    logger.info(f"InferenceService {endpoint_name} not found, already deleted")
+                    return True
+                logger.error(f"Error checking InferenceService {endpoint_name} existence: {e}")
+                raise
+            
+            if not inference_service_exists:
+                logger.info(f"InferenceService {endpoint_name} does not exist, nothing to delete")
+                return True
+            
+            # Remove finalizers before deletion to prevent blocking
+            logger.info(f"Removing finalizers from InferenceService {endpoint_name} before deletion")
+            finalizer_removed = self._remove_finalizers(endpoint_name, namespace, "InferenceService")
+            if not finalizer_removed:
+                logger.warning(f"Failed to remove finalizers from InferenceService {endpoint_name}, but continuing with deletion")
+            
+            # Delete InferenceService with Foreground propagation to ensure proper cleanup
+            # Note: Custom objects may not support Foreground propagation, so we use Background
+            # and then wait for deletion
+            logger.info(f"Attempting to delete KServe InferenceService {endpoint_name} in namespace {namespace}")
+            try:
+                delete_response = self.custom_api.delete_namespaced_custom_object(
+                    group="serving.kserve.io",
+                    version="v1beta1",
+                    namespace=namespace,
+                    plural="inferenceservices",
+                    name=endpoint_name,
+                    propagation_policy="Foreground",  # Try Foreground first
+                )
+                logger.info(f"Delete API call successful for InferenceService {endpoint_name}. Response: {delete_response}")
+            except ApiException as e:
+                logger.error(
+                    f"ApiException when deleting InferenceService {endpoint_name} with Foreground: "
+                    f"status={e.status}, reason={e.reason}, body={e.body}"
+                )
+                if e.status == 404:
+                    logger.info(f"InferenceService {endpoint_name} not found, already deleted")
+                    return True
+                # If Foreground fails, try Background
+                logger.warning(f"Foreground propagation failed for InferenceService {endpoint_name}, trying Background")
+                try:
+                    delete_response = self.custom_api.delete_namespaced_custom_object(
+                        group="serving.kserve.io",
+                        version="v1beta1",
+                        namespace=namespace,
+                        plural="inferenceservices",
+                        name=endpoint_name,
+                        propagation_policy="Background",
+                    )
+                    logger.info(f"Delete API call successful for InferenceService {endpoint_name} with Background. Response: {delete_response}")
+                except ApiException as e2:
+                    logger.error(
+                        f"ApiException when deleting InferenceService {endpoint_name} with Background: "
+                        f"status={e2.status}, reason={e2.reason}, body={e2.body}"
+                    )
+                    if e2.status == 404:
+                        logger.info(f"InferenceService {endpoint_name} not found, already deleted")
+                        return True
+                    raise
+            except Exception as e:
+                logger.error(f"Unexpected exception when deleting InferenceService {endpoint_name}: {e}", exc_info=True)
+                raise
+            
+            # Wait for InferenceService to be fully deleted
+            if not self._wait_for_deletion(endpoint_name, namespace, "InferenceService", max_wait=60):
+                # If timeout, try to remove finalizers and force delete pods
+                logger.warning(f"Timeout waiting for InferenceService {endpoint_name}, attempting cleanup")
+                self._remove_finalizers(endpoint_name, namespace, "InferenceService")
+            
+            # Force delete any remaining pods (KServe pods may have different labels)
+            try:
+                # Try common KServe pod label selectors
+                label_selectors = [
+                    f"serving.kserve.io/inferenceservice={endpoint_name}",
+                    f"app={endpoint_name}",
+                ]
+                
+                for label_selector in label_selectors:
+                    try:
+                        pods = self.core_api.list_namespaced_pod(
+                            namespace=namespace,
+                            label_selector=label_selector,
+                        )
+                        for pod in pods.items:
+                            try:
+                                # Force delete pod with grace period 0
+                                body = client.V1DeleteOptions(
+                                    grace_period_seconds=0,
+                                    propagation_policy="Background"
+                                )
+                                self.core_api.delete_namespaced_pod(
+                                    name=pod.metadata.name,
+                                    namespace=namespace,
+                                    body=body,
+                                )
+                                logger.info(f"Force deleted KServe Pod {pod.metadata.name}")
+                            except ApiException as pod_e:
+                                if pod_e.status != 404:
+                                    logger.warning(f"Failed to delete Pod {pod.metadata.name}: {pod_e}")
+                    except ApiException:
+                        # Label selector may not match any pods, continue
+                        pass
+                
+                # Also try to find pods by name pattern (KServe pods: {endpoint_name}-predictor-default-{hash})
+                all_pods = self.core_api.list_namespaced_pod(namespace=namespace)
+                for pod in all_pods.items:
+                    if endpoint_name in pod.metadata.name:
+                        try:
+                            # Force delete pod with grace period 0
+                            body = client.V1DeleteOptions(
+                                grace_period_seconds=0,
+                                propagation_policy="Background"
+                            )
+                            self.core_api.delete_namespaced_pod(
+                                name=pod.metadata.name,
+                                namespace=namespace,
+                                body=body,
+                            )
+                            logger.info(f"Force deleted KServe Pod {pod.metadata.name} (by name pattern)")
+                        except ApiException as pod_e:
+                            if pod_e.status != 404:
+                                logger.warning(f"Failed to delete Pod {pod.metadata.name}: {pod_e}")
+            except ApiException as e:
+                logger.warning(f"Failed to list/delete KServe pods for {endpoint_name}: {e}")
+            
+            # Final verification that resource is deleted
+            if self._wait_for_deletion(endpoint_name, namespace, "InferenceService", max_wait=10):
+                logger.info(f"Successfully deleted KServe InferenceService {endpoint_name}")
+                return True
+            else:
+                logger.warning(f"InferenceService {endpoint_name} may still exist after cleanup")
+                return False
+            
         except ApiException as e:
             if e.status == 404:
-                logger.warning(f"InferenceService {endpoint_name} not found, may already be deleted")
+                logger.info(f"InferenceService {endpoint_name} not found, already deleted")
                 return True  # Already deleted, consider it success
             logger.error(f"Failed to delete KServe InferenceService {endpoint_name}: {e}")
             return False

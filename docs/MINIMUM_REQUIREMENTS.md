@@ -314,7 +314,10 @@ minikube start \
 # Backend .env 설정
 USE_GPU=false
 USE_KSERVE=false
-SERVING_RUNTIME_IMAGE=python:3.11-slim
+# NOTE: SERVING_RUNTIME_IMAGE is only used as fallback. Platform automatically selects
+# appropriate images based on DeploymentSpec and model metadata.
+# For HuggingFace models, configure SERVE_IMAGE_GENERATION_CPU or SERVE_IMAGE_RAG_CPU
+SERVING_RUNTIME_IMAGE=ghcr.io/huggingface/text-generation-inference:latest
 
 # 리소스 제한 설정
 SERVING_CPU_ONLY_CPU_REQUEST=500m
