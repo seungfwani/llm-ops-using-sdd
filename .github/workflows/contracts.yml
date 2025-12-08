@@ -26,5 +26,5 @@ jobs:
         run: |
           for spec in specs/001-document-llm-ops/contracts/*.yaml; do
             echo "Validating $spec..."
-            python -c "import sys; from schemathesis import from_file; schema = from_file('$spec'); print('✓ Schema is valid OpenAPI')" || exit 1
+            python -c "import schemathesis; schemathesis.openapi.from_path('$spec'); print('✓ Schema is valid OpenAPI')" || exit 1
           done
