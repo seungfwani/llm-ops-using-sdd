@@ -7,6 +7,8 @@ Auto-generated from all feature plans. Last updated: 2025-11-27
 - PostgreSQL for metadata/governance, MinIO/S3 for artifacts, Redis for prompt cache metadata (001-document-llm-ops)
 - Python 3.11+ (backend), TypeScript 5+ (frontend) + FastAPI, Vue 3, SQLAlchemy, PostgreSQL (001-document-llm-ops)
 - PostgreSQL (existing `serving_endpoints` table) (001-document-llm-ops)
+- Python 3.11 (backend), TypeScript 5+ (frontend) + FastAPI, Vue 3, PostgreSQL, Kubernetes, MLflow, KServe/Ray Serve, Argo Workflows, Hugging Face Hub, DVC (001-open-source-integration)
+- PostgreSQL (metadata), MinIO/S3 (artifacts), Redis (caching) (001-open-source-integration)
 
 - Python 3.11 (backend services), TypeScript + Vue 3 (web UI) + FastAPI, Pydantic, SQLAlchemy, PostgreSQL, Redis (caching), Kubernetes (GPU scheduling + HPA), Prometheus/Grafana, MLflow-style experiment tracker, S3-compatible object storage (001-document-llm-ops)
 
@@ -26,10 +28,10 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.11 (backend services), TypeScript + Vue 3 (web UI): Follow standard conventions
 
 ## Recent Changes
+- 001-open-source-integration: Added Python 3.11 (backend), TypeScript 5+ (frontend) + FastAPI, Vue 3, PostgreSQL, Kubernetes, MLflow, KServe/Ray Serve, Argo Workflows, Hugging Face Hub, DVC
 - 001-document-llm-ops: Added Python 3.11+ (backend), TypeScript 5+ (frontend) + FastAPI, Vue 3, SQLAlchemy, PostgreSQL
 - 001-document-llm-ops: Added Python 3.11 (backend), TypeScript + Vue 3 (frontend) + FastAPI, Pydantic, SQLAlchemy, PostgreSQL, Redis, Kubernetes (GPU + HPA), Prometheus/Grafana, MLflow-compatible tracker, MinIO/S3, Playwright, k6
 
-- 001-document-llm-ops: Added Python 3.11 (backend services), TypeScript + Vue 3 (web UI) + FastAPI, Pydantic, SQLAlchemy, PostgreSQL, Redis (caching), Kubernetes (GPU scheduling + HPA), Prometheus/Grafana, MLflow-style experiment tracker, S3-compatible object storage
 
 <!-- MANUAL ADDITIONS START -->
 <!-- MANUAL ADDITIONS END -->

@@ -1,0 +1,181 @@
+openapi: 3.0.3
+info:
+  title: Workflow Orchestration Integration API
+  description: |
+    API endpoints for integrating open-source workflow orchestration tools (Argo Workflows, etc.)
+    with the LLM Ops platform.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8000/llm-ops/v1
+    description: Local development server
+
+paths:
+  /workflows/pipelines:
+    post:
+      summary: Create workflow pipeline
+      description: Creates a multi-stage pipeline in the open-source orchestration system.
+      operationId: createWorkflowPipeline
+      tags:
+        - Workflow Orchestration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePipelineRequest'
+      responses:
+        '200':
+          description: Success response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  message:
+                    type: string
+                  data:
+                    $ref: '#/components/schemas/WorkflowPipeline'
+
+  /workflows/pipelines/{pipelineId}:
+    get:
+      summary: Get workflow pipeline
+      description: Retrieves pipeline details and execution status.
+      operationId: getWorkflowPipeline
+      tags:
+        - Workflow Orchestration
+      parameters:
+        - name: pipelineId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  message:
+                    type: string
+                  data:
+                    $ref: '#/components/schemas/WorkflowPipeline'
+
+    delete:
+      summary: Cancel workflow pipeline
+      description: Cancels a running pipeline.
+      operationId: cancelWorkflowPipeline
+      tags:
+        - Workflow Orchestration
+      parameters:
+        - name: pipelineId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  message:
+                    type: string
+
+components:
+  schemas:
+    WorkflowPipeline:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        pipeline_name:
+          type: string
+        orchestration_system:
+          type: string
+          example: argo_workflows
+        workflow_id:
+          type: string
+        workflow_namespace:
+          type: string
+        pipeline_definition:
+          type: object
+        stages:
+          type: array
+          items:
+            $ref: '#/components/schemas/PipelineStage'
+        status:
+          type: string
+          enum: [pending, running, succeeded, failed, cancelled]
+        current_stage:
+          type: string
+          nullable: true
+        start_time:
+          type: string
+          format: date-time
+          nullable: true
+        end_time:
+          type: string
+          format: date-time
+          nullable: true
+
+    PipelineStage:
+      type: object
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [data_validation, training, evaluation, deployment]
+        dependencies:
+          type: array
+          items:
+            type: string
+        condition:
+          type: object
+          nullable: true
+
+    CreatePipelineRequest:
+      type: object
+      required:
+        - pipeline_name
+        - stages
+      properties:
+        pipeline_name:
+          type: string
+        orchestration_system:
+          type: string
+          default: argo_workflows
+        stages:
+          type: array
+          items:
+            $ref: '#/components/schemas/PipelineStage'
+
+    ErrorResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: error
+        message:
+          type: string
+        data:
+          type: object
+          nullable: true
+

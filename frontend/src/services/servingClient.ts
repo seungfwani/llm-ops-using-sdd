@@ -1,5 +1,38 @@
 import apiClient from "./apiClient";
 
+// DeploymentSpec structure (from training-serving-spec.md)
+export interface DeploymentResources {
+  gpus: number;
+  gpu_memory_gb?: number;
+}
+
+export interface RuntimeConstraints {
+  max_concurrent_requests: number;
+  max_input_tokens: number;
+  max_output_tokens: number;
+}
+
+export interface TrafficSplit {
+  old: number; // Percentage for old version (0-100)
+  new: number; // Percentage for new version (0-100)
+}
+
+export interface RolloutStrategy {
+  strategy: "blue-green" | "canary";
+  traffic_split?: TrafficSplit; // Required for canary
+}
+
+export interface DeploymentSpec {
+  model_ref: string; // Reference to trained model artifact
+  model_family: string; // Must match training job's model_family
+  job_type: "SFT" | "RAG_TUNING" | "RLHF" | "PRETRAIN" | "EMBEDDING";
+  serve_target: "GENERATION" | "RAG";
+  resources: DeploymentResources;
+  runtime: RuntimeConstraints;
+  rollout?: RolloutStrategy;
+  use_gpu?: boolean; // For CPU fallback
+}
+
 export interface ServingEndpointRequest {
   modelId: string;
   environment: "dev" | "stg" | "prod";
@@ -9,10 +42,18 @@ export interface ServingEndpointRequest {
   autoscalePolicy?: {
     cpuUtilization?: number;
     targetLatencyMs?: number;
+    gpuUtilization?: number;
   };
   promptPolicyId?: string;
   useGpu?: boolean; // Whether to request GPU resources. If not provided, uses default from settings
   servingRuntimeImage?: string; // Container image for model serving runtime (e.g., vLLM, TGI). If not provided, uses default from settings
+  cpuRequest?: string; // CPU request (e.g., '2', '1000m'). If not provided, uses default from settings
+  cpuLimit?: string; // CPU limit (e.g., '4', '2000m'). If not provided, uses default from settings
+  memoryRequest?: string; // Memory request (e.g., '4Gi', '2G'). If not provided, uses default from settings
+  memoryLimit?: string; // Memory limit (e.g., '8Gi', '4G'). If not provided, uses default from settings
+  servingFramework?: string; // Serving framework name (e.g., "kserve", "ray_serve")
+  // DeploymentSpec (optional, for training-serving-spec.md compliance)
+  deploymentSpec?: DeploymentSpec;
 }
 
 export interface ServingEndpoint {
@@ -24,7 +65,80 @@ export interface ServingEndpoint {
   status: string;
   minReplicas: number;
   maxReplicas: number;
+  useGpu?: boolean;
+  cpuRequest?: string;
+  cpuLimit?: string;
+  memoryRequest?: string;
+  memoryLimit?: string;
+  autoscalePolicy?: {
+    cpuUtilization?: number;
+    targetLatencyMs?: number;
+    gpuUtilization?: number;
+  };
+  deploymentSpec?: DeploymentSpec;
   createdAt: string;
+}
+
+export interface ServingDeployment {
+  id: string;
+  serving_endpoint_id: string;
+  serving_framework: string;
+  framework_resource_id: string;
+  framework_namespace: string;
+  replica_count: number;
+  min_replicas: number;
+  max_replicas: number;
+  autoscaling_metrics?: {
+    targetLatencyMs?: number;
+    gpuUtilization?: number;
+  };
+  resource_requests?: Record<string, string>;
+  resource_limits?: Record<string, string>;
+  framework_status?: Record<string, any>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ServingFramework {
+  name: string;
+  display_name: string;
+  enabled: boolean;
+  capabilities: string[];
+}
+
+export interface EnvelopeServingDeployment {
+  status: "success" | "fail";
+  message: string;
+  data?: ServingDeployment;
+}
+
+export interface EnvelopeServingFrameworks {
+  status: "success" | "fail";
+  message: string;
+  data?: {
+    frameworks: ServingFramework[];
+  };
+}
+
+export interface ImageConfigResponse {
+  train_images: {
+    [jobType: string]: {
+      gpu: string;
+      cpu: string;
+    };
+  };
+  serve_images: {
+    [serveTarget: string]: {
+      gpu: string;
+      cpu: string;
+    };
+  };
+}
+
+export interface EnvelopeImageConfig {
+  status: "success" | "fail";
+  message: string;
+  data?: ImageConfigResponse;
 }
 
 export interface EnvelopeServingEndpoint {
@@ -80,23 +194,67 @@ export const servingClient = {
     return response.data;
   },
 
-  async redeployEndpoint(endpointId: string, useGpu?: boolean, servingRuntimeImage?: string): Promise<EnvelopeServingEndpoint> {
-    const params = new URLSearchParams();
-    if (useGpu !== undefined) {
-      params.append("useGpu", useGpu.toString());
+  async redeployEndpoint(
+    endpointId: string,
+    request?: {
+      useGpu?: boolean;
+      servingRuntimeImage?: string;
+      cpuRequest?: string;
+      cpuLimit?: string;
+      memoryRequest?: string;
+      memoryLimit?: string;
+      deploymentSpec?: DeploymentSpec;
     }
-    if (servingRuntimeImage !== undefined) {
-      params.append("servingRuntimeImage", servingRuntimeImage);
-    }
-    const queryString = params.toString();
-    const url = `/serving/endpoints/${endpointId}/redeploy${queryString ? `?${queryString}` : ""}`;
-    const response = await apiClient.post<EnvelopeServingEndpoint>(url);
+  ): Promise<EnvelopeServingEndpoint> {
+    const url = `/serving/endpoints/${endpointId}/redeploy`;
+    const response = await apiClient.post<EnvelopeServingEndpoint>(url, request || {});
     return response.data;
   },
 
   async deleteEndpoint(endpointId: string): Promise<EnvelopeServingEndpoint> {
     const response = await apiClient.delete<EnvelopeServingEndpoint>(
       `/serving/endpoints/${endpointId}`
+    );
+    return response.data;
+  },
+
+  async getDeployment(endpointId: string): Promise<EnvelopeServingDeployment> {
+    const response = await apiClient.get<EnvelopeServingDeployment>(
+      `/serving/endpoints/${endpointId}/deployment`
+    );
+    return response.data;
+  },
+
+  async updateDeployment(
+    endpointId: string,
+    update: {
+      min_replicas?: number;
+      max_replicas?: number;
+      autoscaling_metrics?: {
+        targetLatencyMs?: number;
+        gpuUtilization?: number;
+      };
+      resource_requests?: Record<string, string>;
+      resource_limits?: Record<string, string>;
+    }
+  ): Promise<EnvelopeServingDeployment> {
+    const response = await apiClient.patch<EnvelopeServingDeployment>(
+      `/serving/endpoints/${endpointId}/deployment`,
+      update
+    );
+    return response.data;
+  },
+
+  async listFrameworks(): Promise<EnvelopeServingFrameworks> {
+    const response = await apiClient.get<EnvelopeServingFrameworks>(
+      "/serving/frameworks"
+    );
+    return response.data;
+  },
+
+  async getImageConfig(): Promise<EnvelopeImageConfig> {
+    const response = await apiClient.get<EnvelopeImageConfig>(
+      "/serving/images"
     );
     return response.data;
   },

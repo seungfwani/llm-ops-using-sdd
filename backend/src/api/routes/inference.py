@@ -15,6 +15,9 @@ from serving.serving_service import ServingService
 from serving.repositories import ServingEndpointRepository
 from serving.external_models import get_external_model_client
 from catalog import models as catalog_models
+from catalog.repositories import ServingDeploymentRepository
+from integrations.serving.factory import ServingFrameworkFactory
+from services.integration_config import IntegrationConfigService
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +211,7 @@ async def chat_completion(
                     messages=messages,
                     temperature=request.temperature,
                     max_tokens=request.max_tokens,
+                    session=session,
                 )
                 response_content = result["content"]
                 usage = result.get("usage", {
@@ -260,6 +264,7 @@ async def _call_model_inference(
     messages: list[dict],
     temperature: float,
     max_tokens: int,
+    session: Session,
 ) -> dict:
     """Call the actual model for inference via KServe or raw Kubernetes deployment.
     
@@ -284,20 +289,58 @@ async def _call_model_inference(
         namespace = "local"
         inference_url = f"{service_url}/v1/chat/completions"
     else:
-        # Determine service URL based on deployment type
-        if settings.use_kserve:
-            # KServe InferenceService URL
-            # KServe creates a service named: {inference-service-name}-predictor-default
-            # For vLLM, we use OpenAI-compatible API at /v1/chat/completions
-            service_name = f"{endpoint_name}-predictor-default"
-            service_url = f"http://{service_name}.{namespace}.svc.cluster.local"
-            inference_url = f"{service_url}/v1/chat/completions"
+        # Check if endpoint has a framework deployment
+        deployment_repo = ServingDeploymentRepository(session)
+        deployment = deployment_repo.get_by_endpoint_id(endpoint.id)
+        
+        if deployment:
+            # Use framework adapter to get inference URL
+            try:
+                integration_config = IntegrationConfigService(session)
+                config = integration_config.get_config("serving", deployment.serving_framework)
+                if config and config.get("enabled"):
+                    adapter_config = {
+                        "namespace": deployment.framework_namespace,
+                        "enabled": config["enabled"],
+                        **config.get("config", {}),
+                    }
+                    adapter = ServingFrameworkFactory.create_adapter(deployment.serving_framework, adapter_config)
+                    inference_url = adapter.get_inference_url(
+                        framework_resource_id=deployment.framework_resource_id,
+                        namespace=deployment.framework_namespace,
+                    )
+                    # Append /v1/chat/completions if not already present
+                    if "/v1/chat/completions" not in inference_url:
+                        inference_url = f"{inference_url.rstrip('/')}/v1/chat/completions"
+                else:
+                    # Framework not enabled, fall back to default
+                    raise ValueError(f"Framework {deployment.serving_framework} is not enabled")
+            except Exception as e:
+                logger.warning(f"Failed to get inference URL from framework adapter: {e}, falling back to default")
+                # Fall back to default behavior
+                if settings.use_kserve:
+                    service_name = f"{endpoint_name}-predictor-default"
+                    service_url = f"http://{service_name}.{namespace}.svc.cluster.local"
+                    inference_url = f"{service_url}/v1/chat/completions"
+                else:
+                    service_name = f"{endpoint_name}-svc"
+                    service_url = f"http://{service_name}.{namespace}.svc.cluster.local:8000"
+                    inference_url = f"{service_url}/v1/chat/completions"
         else:
-            # Raw Kubernetes Deployment URL
-            service_name = f"{endpoint_name}-svc"
-            service_url = f"http://{service_name}.{namespace}.svc.cluster.local:8000"
-            # Assume OpenAI-compatible API (vLLM/TGI)
-            inference_url = f"{service_url}/v1/chat/completions"
+            # No framework deployment, use default behavior
+            if settings.use_kserve:
+                # KServe InferenceService URL
+                # KServe creates a service named: {inference-service-name}-predictor-default
+                # For vLLM, we use OpenAI-compatible API at /v1/chat/completions
+                service_name = f"{endpoint_name}-predictor-default"
+                service_url = f"http://{service_name}.{namespace}.svc.cluster.local"
+                inference_url = f"{service_url}/v1/chat/completions"
+            else:
+                # Raw Kubernetes Deployment URL
+                service_name = f"{endpoint_name}-svc"
+                service_url = f"http://{service_name}.{namespace}.svc.cluster.local:8000"
+                # Assume OpenAI-compatible API (vLLM/TGI)
+                inference_url = f"{service_url}/v1/chat/completions"
 
     logger.info(f"Calling model inference at: {inference_url}")
     

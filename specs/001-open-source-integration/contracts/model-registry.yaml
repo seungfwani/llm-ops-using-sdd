@@ -1,0 +1,235 @@
+openapi: 3.0.3
+info:
+  title: Model Registry Integration API
+  description: |
+    API endpoints for integrating open-source model registries (Hugging Face Hub, etc.)
+    with the LLM Ops platform catalog.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8000/llm-ops/v1
+    description: Local development server
+
+paths:
+  /catalog/models/import:
+    post:
+      summary: Import model from registry
+      description: Imports a model from an open-source registry into the platform catalog.
+      operationId: importModelFromRegistry
+      tags:
+        - Model Registry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportModelRequest'
+      responses:
+        '200':
+          description: Success response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  message:
+                    type: string
+                  data:
+                    $ref: '#/components/schemas/ModelCatalogEntry'
+
+  /catalog/models/{modelId}/export:
+    post:
+      summary: Export model to registry
+      description: Exports a platform catalog model to an open-source registry.
+      operationId: exportModelToRegistry
+      tags:
+        - Model Registry
+      parameters:
+        - name: modelId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExportModelRequest'
+      responses:
+        '200':
+          description: Success response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  message:
+                    type: string
+                  data:
+                    $ref: '#/components/schemas/RegistryModel'
+
+  /catalog/models/{modelId}/registry-links:
+    get:
+      summary: Get registry links for model
+      description: Retrieves all registry links (import/export) for a catalog model.
+      operationId: getModelRegistryLinks
+      tags:
+        - Model Registry
+      parameters:
+        - name: modelId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      registry_links:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/RegistryModel'
+
+  /catalog/models/{modelId}/check-updates:
+    post:
+      summary: Check for registry updates
+      description: Checks if a registry model has updates available.
+      operationId: checkRegistryUpdates
+      tags:
+        - Model Registry
+      parameters:
+        - name: modelId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      updates_available:
+                        type: boolean
+                      available_versions:
+                        type: array
+                        items:
+                          type: string
+
+components:
+  schemas:
+    ImportModelRequest:
+      type: object
+      required:
+        - registry_type
+        - registry_model_id
+      properties:
+        registry_type:
+          type: string
+          enum: [huggingface, modelscope]
+          example: huggingface
+        registry_model_id:
+          type: string
+          example: microsoft/DialoGPT-medium
+        version:
+          type: string
+          nullable: true
+        import_metadata:
+          type: boolean
+          default: true
+
+    ExportModelRequest:
+      type: object
+      required:
+        - registry_type
+      properties:
+        registry_type:
+          type: string
+          enum: [huggingface, modelscope]
+        repository_name:
+          type: string
+        private:
+          type: boolean
+          default: false
+        version_tag:
+          type: string
+
+    RegistryModel:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        model_catalog_id:
+          type: string
+          format: uuid
+        registry_type:
+          type: string
+        registry_model_id:
+          type: string
+        registry_repo_url:
+          type: string
+        registry_version:
+          type: string
+          nullable: true
+        imported:
+          type: boolean
+        sync_status:
+          type: string
+          enum: [synced, out_of_sync, never_synced]
+
+    ModelCatalogEntry:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        version:
+          type: string
+
+    ErrorResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: error
+        message:
+          type: string
+        data:
+          type: object
+          nullable: true
+

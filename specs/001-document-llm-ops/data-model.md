@@ -27,7 +27,7 @@
   - `name (string, unique per organization)`
   - `version (semver string)`
   - `type (enum: base, fine-tuned, external)`
-  - `status (enum: draft, under_review, approved, deprecated)`
+  - `status (enum: draft, pending_review, approved, rejected, deprecated)`
   - `owner_team (string)`
   - `metadata (JSONB)` – model card content aligned to SDD sections
   - `storage_uri (string, nullable)` – URI to model artifacts in object storage (e.g., `s3://models/{model_id}/{version}/`)
@@ -39,9 +39,10 @@
   - `metadata` must include purpose, scope, contact, licensing
   - `status=approved` requires at least one `EvaluationRun` linked
 - **State Transitions**
-  1. `draft → under_review` when submitter requests approval.
-  2. `under_review → approved` when reviewers sign off + policies satisfied.
-  3. `approved → deprecated` when superseded or policy violation detected.
+  1. `draft → pending_review` when the submitter requests approval from reviewers.
+  2. `pending_review → approved` when reviewers sign off and all governance/policy checks pass.
+  3. `pending_review → rejected` when reviewers explicitly reject the model or required checks fail.
+  4. `approved → deprecated` when superseded by a newer version or a policy violation is detected.
 
 ## DatasetRecord
 
@@ -78,14 +79,17 @@
 ## TrainingJob & ExperimentMetric
 
 - **TrainingJob Fields**
-  - `id`, `model_entry_id`, `dataset_id`, `job_type (finetune, dist_train)`,
-    `resource_profile (GPU count, memory)`, `scheduler_id`, `status
+  - `id`, `model_entry_id`, `dataset_id`, `job_type (finetune, from_scratch, pretrain, distributed)`,
+    `resource_profile (GPU count, memory, or CPU cores/memory for CPU-only)`, `scheduler_id`, `status
     (queued, running, succeeded, failed, cancelled)`, `retry_policy`,
     `submitted_by`, `submitted_at`, `started_at`, `completed_at`
 - **ExperimentMetric Fields**
-  - `id`, `training_job_id`, `name`, `value`, `unit`, `timestamp`
+  - `id`, `training_job_id`, `name`, `value`, `unit`, `recorded_at`
 - **Validation**
   - Jobs must reference catalog-approved models/datasets.
+  - Metrics are recorded by training pods via `POST /training/jobs/{jobId}/metrics` API.
+  - Training pods receive `API_BASE_URL` environment variable to call metrics API.
+  - Metric recording failures do not stop training execution (non-blocking).
   - Retry policy must cap at 3 automatic retries unless override approved.
 
 ## ServingEndpoint & ObservabilitySnapshot

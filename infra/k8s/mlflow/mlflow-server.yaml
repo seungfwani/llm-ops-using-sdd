@@ -1,0 +1,158 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mlflow
+  labels:
+    name: mlflow
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mlflow-pvc
+  namespace: mlflow
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow-server
+  namespace: mlflow
+  labels:
+    app: mlflow
+    component: server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow
+      component: server
+  template:
+    metadata:
+      labels:
+        app: mlflow
+        component: server
+    spec:
+      containers:
+      - name: mlflow-server
+        image: ghcr.io/mlflow/mlflow:v2.14.0
+        ports:
+        - containerPort: 5000
+          name: http
+          protocol: TCP
+        env:
+        # Backend store configuration
+        - name: MLFLOW_BACKEND_STORE_URI
+          valueFrom:
+            configMapKeyRef:
+              name: mlflow-config
+              key: MLFLOW_BACKEND_STORE_URI
+        # Artifact store configuration
+        - name: MLFLOW_DEFAULT_ARTIFACT_ROOT
+          valueFrom:
+            configMapKeyRef:
+              name: mlflow-config
+              key: MLFLOW_DEFAULT_ARTIFACT_ROOT
+        - name: AWS_ENDPOINT_URL
+          valueFrom:
+            configMapKeyRef:
+              name: mlflow-config
+              key: AWS_ENDPOINT_URL
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: mlflow-secret
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: mlflow-secret
+              key: AWS_SECRET_ACCESS_KEY
+        # Server configuration
+        - name: MLFLOW_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: mlflow-config
+              key: MLFLOW_HOST
+        - name: MLFLOW_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: mlflow-config
+              key: MLFLOW_PORT
+        - name: MLFLOW_CORS_ALLOW_ORIGINS
+          valueFrom:
+            configMapKeyRef:
+              name: mlflow-config
+              key: MLFLOW_CORS_ALLOW_ORIGINS
+        # Command to start MLflow server
+        command:
+        - mlflow
+        args:
+        - server
+        - --host
+        - "0.0.0.0"
+        - --port
+        - "5000"
+        - --backend-store-uri
+        - $(MLFLOW_BACKEND_STORE_URI)
+        - --default-artifact-root
+        - $(MLFLOW_DEFAULT_ARTIFACT_ROOT)
+        - --serve-artifacts
+        volumeMounts:
+        - name: mlflow-storage
+          mountPath: /mlflow
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+      volumes:
+      - name: mlflow-storage
+        persistentVolumeClaim:
+          claimName: mlflow-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow-service
+  namespace: mlflow
+  labels:
+    app: mlflow
+    component: server
+spec:
+  type: ClusterIP
+  ports:
+  - port: 5000
+    targetPort: 5000
+    protocol: TCP
+    name: http
+  selector:
+    app: mlflow
+    component: server
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
+

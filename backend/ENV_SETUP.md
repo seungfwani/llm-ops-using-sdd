@@ -150,6 +150,30 @@ SERVING_MEMORY_LIMIT=16Gi
 | `USE_KSERVE` | `false` | KServe 사용 여부 |
 | `USE_GPU` | `true` | GPU 리소스 요청 여부 |
 | `SERVING_RUNTIME_IMAGE` | `vllm/vllm:latest` | 서빙 런타임 이미지 |
+| `EXPERIMENT_TRACKING_ENABLED` | `false` | 실험 추적 통합(MLflow 등) 활성화 여부 |
+| `EXPERIMENT_TRACKING_SYSTEM` | `mlflow` | 실험 추적 시스템 식별자 |
+| `SERVING_FRAMEWORK_ENABLED` | `false` | KServe/Ray Serve 등 서빙 프레임워크 통합 활성화 여부 |
+| `SERVING_FRAMEWORK_DEFAULT` | `kserve` | 기본 서빙 프레임워크 |
+| `WORKFLOW_ORCHESTRATION_ENABLED` | `false` | Argo Workflows 등 오케스트레이션 활성화 여부 |
+| `WORKFLOW_ORCHESTRATION_SYSTEM` | `argo_workflows` | 오케스트레이션 시스템 식별자 |
+| `MODEL_REGISTRY_ENABLED` | `false` | Hugging Face Hub 등 모델 레지스트리 통합 활성화 여부 |
+| `MODEL_REGISTRY_DEFAULT` | `huggingface` | 기본 모델 레지스트리 |
+| `DATA_VERSIONING_ENABLED` | `false` | DVC 등 데이터 버저닝 통합 활성화 여부 |
+| `DATA_VERSIONING_SYSTEM` | `dvc` | 데이터 버저닝 시스템 식별자 |
+| `MLFLOW_TRACKING_URI` | - | MLflow Tracking Server URL |
+| `MLFLOW_ENABLED` | `false` | MLflow 기능 활성화 여부 |
+| `MLFLOW_BACKEND_STORE_URI` | - | MLflow 백엔드 스토어(PostgreSQL 등) URI |
+| `MLFLOW_DEFAULT_ARTIFACT_ROOT` | - | MLflow 아티팩트 저장소(S3/MinIO) URI |
+| `ARGO_WORKFLOWS_ENABLED` | `false` | Argo Workflows 활성화 여부 |
+| `ARGO_WORKFLOWS_NAMESPACE` | `argo` | Argo Workflows 네임스페이스 |
+| `ARGO_WORKFLOWS_CONTROLLER_SERVICE` | `argo-workflows-server.argo.svc.cluster.local:2746` | Argo 컨트롤러 서비스 엔드포인트 |
+| `HUGGINGFACE_HUB_ENABLED` | `false` | Hugging Face Hub 통합 활성화 여부 |
+| `HUGGINGFACE_HUB_TOKEN` | - | Hugging Face 토큰(프라이빗 리포지토리용) |
+| `HUGGINGFACE_HUB_CACHE_DIR` | `/tmp/hf_cache` | Hugging Face 캐시 디렉터리 |
+| `DVC_ENABLED` | `false` | DVC 통합 활성화 여부 |
+| `DVC_REMOTE_NAME` | `minio` | DVC remote 이름 |
+| `DVC_REMOTE_URL` | - | DVC remote URL (예: `s3://datasets-dvc`) |
+| `DVC_CACHE_DIR` | `/tmp/dvc-cache` | DVC 캐시 디렉터리 경로 |
 
 ### 리소스 설정
 

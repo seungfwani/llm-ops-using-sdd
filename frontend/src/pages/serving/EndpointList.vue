@@ -3,8 +3,8 @@
     <header>
       <h1>Serving Endpoints</h1>
       <div class="header-actions">
-        <button @click="fetchEndpoints" :disabled="loading">Refresh</button>
-        <router-link to="/serving/endpoints/deploy" class="btn-primary">Deploy New</router-link>
+        <button @click="fetchEndpoints" :disabled="loading" class="btn-secondary">Refresh</button>
+        <router-link to="/serving/endpoints/deploy" class="btn-primary">New Endpoint</router-link>
       </div>
     </header>
 
@@ -195,6 +195,24 @@ header {
 
 .btn-primary:hover {
   background: #0056b3;
+}
+
+.btn-secondary {
+  padding: 0.5rem 1rem;
+  background: #6c757d;
+  color: white;
+  border-radius: 4px;
+  border: none;
+  cursor: pointer;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: #5a6268;
+}
+
+.btn-secondary:disabled {
+  background: #ccc;
+  cursor: not-allowed;
 }
 
 .filters {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from typing import Sequence
 from uuid import uuid4
 from pathlib import Path
@@ -10,8 +11,11 @@ from sqlalchemy.orm import Session
 
 from catalog import models as orm_models
 from catalog.repositories import DatasetRepository, ModelCatalogRepository
+from catalog.services.huggingface_importer import HuggingFaceImporter
 from core.clients.object_store import get_object_store_client
 from core.settings import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class CatalogService:
@@ -37,6 +41,7 @@ class CatalogService:
             lineage_dataset_ids=payload.get("lineage_dataset_ids", []),
             status=payload.get("status", "draft"),
             evaluation_summary=payload.get("evaluation_summary"),
+            model_family=payload["model_family"],  # Model family from training-serving-spec.md (required)
         )
 
         lineage_ids = entry.lineage_dataset_ids or []
@@ -56,10 +61,54 @@ class CatalogService:
         if not entry:
             raise ValueError("Entry not found")
 
+        # Only allow valid, user-facing status values here.
+        # Internal / legacy values (e.g. 'under_review', 'deprecated') are still
+        # permitted by the DB constraint for backwards compatibility, but should
+        # not be set via this API.
+        valid_statuses = ["draft", "pending_review", "approved", "rejected"]
+        if status not in valid_statuses:
+            raise ValueError(
+                f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
+            )
+
         entry.status = status
         self.session.commit()
         self.session.refresh(entry)
         return entry
+
+    def _ensure_bucket_exists(self, s3_client, bucket_name: str) -> None:
+        """Ensure bucket exists, create if it doesn't."""
+        try:
+            # Check if bucket exists
+            s3_client.head_bucket(Bucket=bucket_name)
+            logger.debug(f"Bucket '{bucket_name}' already exists")
+        except s3_client.exceptions.ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code == "404":
+                # Bucket doesn't exist, create it
+                logger.info(f"Bucket '{bucket_name}' does not exist, creating...")
+                try:
+                    # For MinIO, we might need to handle location constraint differently
+                    # Try without location constraint first (MinIO doesn't require it)
+                    try:
+                        s3_client.create_bucket(Bucket=bucket_name)
+                    except s3_client.exceptions.ClientError as create_error:
+                        # If that fails, try with location constraint (for S3)
+                        error_code = create_error.response.get("Error", {}).get("Code", "")
+                        if error_code == "IllegalLocationConstraintException":
+                            # For S3, we might need to specify region
+                            # But for MinIO, we can ignore this
+                            pass
+                        else:
+                            raise
+                    logger.info(f"Bucket '{bucket_name}' created successfully")
+                except Exception as create_e:
+                    logger.error(f"Failed to create bucket '{bucket_name}': {create_e}")
+                    raise ValueError(f"Failed to create bucket '{bucket_name}': {create_e}")
+            else:
+                # Other error (permission denied, etc.)
+                logger.error(f"Error checking bucket '{bucket_name}': {e}")
+                raise
 
     def delete_entry(self, entry_id: str) -> dict:
         """Delete a model catalog entry and optionally clean up storage files."""
@@ -131,11 +180,16 @@ class CatalogService:
 
         # Generate storage path
         settings = get_settings()
-        bucket_name = "models"  # Could be configurable
+        bucket_name = settings.object_store_bucket or settings.training_namespace
+        # Folder structure: models/{model_id}/{version}/
         storage_path = f"models/{model_id}/{entry.version}/"
 
         # Upload files to object storage
         s3_client = get_object_store_client()
+        
+        # Ensure bucket exists before uploading
+        self._ensure_bucket_exists(s3_client, bucket_name)
+        
         uploaded_files = []
 
         try:
@@ -190,6 +244,28 @@ class CatalogService:
                 except Exception:
                     pass  # Ignore cleanup errors
             raise
+
+    def import_from_huggingface(
+        self,
+        hf_model_id: str,
+        name: Optional[str] = None,
+        version: str = "1.0.0",
+        model_type: str = "base",
+        owner_team: str = "ml-platform",
+        hf_token: Optional[str] = None,
+        model_family: str = None,  # Required for training-serving-spec.md
+    ) -> orm_models.ModelCatalogEntry:
+        """Import a model from Hugging Face Hub."""
+        importer = HuggingFaceImporter(self.session)
+        return importer.import_model(
+            hf_model_id=hf_model_id,
+            name=name,
+            version=version,
+            model_type=model_type,
+            owner_team=owner_team,
+            hf_token=hf_token,
+            model_family=model_family,
+        )
 
     def _validate_model_files(self, files: list[UploadFile], model_type: str) -> None:
         """Validate uploaded files based on model type."""

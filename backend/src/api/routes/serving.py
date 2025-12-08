@@ -1,14 +1,21 @@
 """Serving endpoint API routes."""
 from __future__ import annotations
 
+import logging
 from typing import Optional
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+logger = logging.getLogger(__name__)
+
 from core.database import get_session
 from serving import schemas
 from serving.serving_service import ServingService
+from services.serving_deployment_service import ServingDeploymentService
+from integrations.serving.factory import ServingFrameworkFactory
+from services.integration_config import IntegrationConfigService
 
 router = APIRouter(prefix="/llm-ops/v1/serving", tags=["serving"])
 
@@ -16,6 +23,11 @@ router = APIRouter(prefix="/llm-ops/v1/serving", tags=["serving"])
 def get_serving_service(session: Session = Depends(get_session)) -> ServingService:
     """Dependency to get serving service."""
     return ServingService(session)
+
+
+def get_serving_deployment_service(session: Session = Depends(get_session)) -> ServingDeploymentService:
+    """Dependency to get serving deployment service."""
+    return ServingDeploymentService(session)
 
 
 @router.get("/endpoints", response_model=schemas.EnvelopeServingEndpointList)
@@ -32,19 +44,37 @@ def list_endpoints(
             model_entry_id=modelId,
             status=status,
         )
-        endpoint_responses = [
-            schemas.ServingEndpointResponse(
-                id=str(endpoint.id),
-                modelId=str(endpoint.model_entry_id),
-                environment=endpoint.environment,
-                route=endpoint.route,
-                status=endpoint.status,
-                minReplicas=endpoint.min_replicas,
-                maxReplicas=endpoint.max_replicas,
-                createdAt=endpoint.created_at,
+        endpoint_responses = []
+        for endpoint in endpoints:
+            # Parse deployment_spec if it exists
+            deployment_spec = None
+            if hasattr(endpoint, 'deployment_spec') and endpoint.deployment_spec:
+                try:
+                    deployment_spec = schemas.DeploymentSpec(**endpoint.deployment_spec)
+                except Exception:
+                    # If parsing fails, leave as None
+                    pass
+            
+            endpoint_responses.append(
+                schemas.ServingEndpointResponse(
+                    id=str(endpoint.id),
+                    modelId=str(endpoint.model_entry_id),
+                    environment=endpoint.environment,
+                    route=endpoint.route,
+                    runtimeImage=endpoint.runtime_image,
+                    status=endpoint.status,
+                    minReplicas=endpoint.min_replicas,
+                    maxReplicas=endpoint.max_replicas,
+                    useGpu=endpoint.use_gpu,
+                    cpuRequest=endpoint.cpu_request,
+                    cpuLimit=endpoint.cpu_limit,
+                    memoryRequest=endpoint.memory_request,
+                    memoryLimit=endpoint.memory_limit,
+                    autoscalePolicy=endpoint.autoscale_policy,
+                    deploymentSpec=deployment_spec,
+                    createdAt=endpoint.created_at,
+                )
             )
-            for endpoint in endpoints
-        ]
         return schemas.EnvelopeServingEndpointList(
             status="success",
             message="",
@@ -75,7 +105,21 @@ def deploy_endpoint(
             prompt_policy_id=request.promptPolicyId,
             use_gpu=request.useGpu,
             serving_runtime_image=request.servingRuntimeImage,
+            cpu_request=request.cpuRequest,
+            cpu_limit=request.cpuLimit,
+            memory_request=request.memoryRequest,
+            memory_limit=request.memoryLimit,
+            deployment_spec=request.deploymentSpec,
         )
+        # Parse deployment_spec if it exists
+        deployment_spec = None
+        if hasattr(endpoint, 'deployment_spec') and endpoint.deployment_spec:
+            try:
+                deployment_spec = schemas.DeploymentSpec(**endpoint.deployment_spec)
+            except Exception:
+                # If parsing fails, leave as None
+                pass
+        
         return schemas.EnvelopeServingEndpoint(
             status="success",
             message="Serving endpoint deployed successfully",
@@ -88,6 +132,13 @@ def deploy_endpoint(
                 status=endpoint.status,
                 minReplicas=endpoint.min_replicas,
                 maxReplicas=endpoint.max_replicas,
+                useGpu=endpoint.use_gpu,
+                cpuRequest=endpoint.cpu_request,
+                cpuLimit=endpoint.cpu_limit,
+                memoryRequest=endpoint.memory_request,
+                memoryLimit=endpoint.memory_limit,
+                autoscalePolicy=endpoint.autoscale_policy,
+                deploymentSpec=deployment_spec,
                 createdAt=endpoint.created_at,
             ),
         )
@@ -119,6 +170,15 @@ def get_endpoint(
             data=None,
         )
 
+    # Parse deployment_spec if it exists
+    deployment_spec = None
+    if hasattr(endpoint, 'deployment_spec') and endpoint.deployment_spec:
+        try:
+            deployment_spec = schemas.DeploymentSpec(**endpoint.deployment_spec)
+        except Exception:
+            # If parsing fails, leave as None
+            pass
+    
     return schemas.EnvelopeServingEndpoint(
         status="success",
         message="",
@@ -131,6 +191,13 @@ def get_endpoint(
             status=endpoint.status,
             minReplicas=endpoint.min_replicas,
             maxReplicas=endpoint.max_replicas,
+            useGpu=endpoint.use_gpu,
+            cpuRequest=endpoint.cpu_request,
+            cpuLimit=endpoint.cpu_limit,
+            memoryRequest=endpoint.memory_request,
+            memoryLimit=endpoint.memory_limit,
+            autoscalePolicy=endpoint.autoscale_policy,
+            deploymentSpec=deployment_spec,
             createdAt=endpoint.created_at,
         ),
     )
@@ -152,6 +219,16 @@ def rollback_endpoint(
             )
 
         endpoint = service.get_endpoint(endpointId)
+        
+        # Parse deployment_spec if it exists
+        deployment_spec = None
+        if endpoint and hasattr(endpoint, 'deployment_spec') and endpoint.deployment_spec:
+            try:
+                deployment_spec = schemas.DeploymentSpec(**endpoint.deployment_spec)
+            except Exception:
+                # If parsing fails, leave as None
+                pass
+        
         return schemas.EnvelopeServingEndpoint(
             status="success",
             message="Endpoint rolled back successfully",
@@ -160,9 +237,17 @@ def rollback_endpoint(
                 modelId=str(endpoint.model_entry_id),
                 environment=endpoint.environment,
                 route=endpoint.route,
+                runtimeImage=endpoint.runtime_image,
                 status=endpoint.status,
                 minReplicas=endpoint.min_replicas,
                 maxReplicas=endpoint.max_replicas,
+                useGpu=endpoint.use_gpu,
+                cpuRequest=endpoint.cpu_request,
+                cpuLimit=endpoint.cpu_limit,
+                memoryRequest=endpoint.memory_request,
+                memoryLimit=endpoint.memory_limit,
+                autoscalePolicy=endpoint.autoscale_policy,
+                deploymentSpec=deployment_spec,
                 createdAt=endpoint.created_at,
             ) if endpoint else None,
         )
@@ -183,14 +268,37 @@ def rollback_endpoint(
 @router.post("/endpoints/{endpointId}/redeploy", response_model=schemas.EnvelopeServingEndpoint)
 def redeploy_endpoint(
     endpointId: str,
-    useGpu: Optional[bool] = Query(None, description="Whether to request GPU resources. If not provided, uses endpoint's current setting"),
-    servingRuntimeImage: Optional[str] = Query(None, description="Container image for model serving runtime. If not provided, uses endpoint's current setting"),
+    request: schemas.RedeployEndpointRequest,
     service: ServingService = Depends(get_serving_service),
 ) -> schemas.EnvelopeServingEndpoint:
-    """Redeploy a serving endpoint with the same configuration."""
+    """Redeploy a serving endpoint with the same or updated configuration."""
+    logger.info(f"Redeploy request received for endpoint {endpointId}")
+    logger.debug(f"Redeploy request body: {request.model_dump() if hasattr(request, 'model_dump') else request}")
+    
     try:
-        endpoint = service.redeploy_endpoint(endpointId, use_gpu=useGpu, serving_runtime_image=servingRuntimeImage)
-        return schemas.EnvelopeServingEndpoint(
+        logger.info(f"Calling service.redeploy_endpoint() for endpoint {endpointId}")
+        endpoint = service.redeploy_endpoint(
+            endpointId,
+            use_gpu=request.useGpu,
+            serving_runtime_image=request.servingRuntimeImage,
+            cpu_request=request.cpuRequest,
+            cpu_limit=request.cpuLimit,
+            memory_request=request.memoryRequest,
+            memory_limit=request.memoryLimit,
+            autoscale_policy=request.autoscalePolicy,
+            serving_framework=request.servingFramework,
+            deployment_spec=request.deploymentSpec,
+        )
+        # Parse deployment_spec if it exists
+        deployment_spec = None
+        if hasattr(endpoint, 'deployment_spec') and endpoint.deployment_spec:
+            try:
+                deployment_spec = schemas.DeploymentSpec(**endpoint.deployment_spec)
+            except Exception:
+                # If parsing fails, leave as None
+                pass
+        
+        result = schemas.EnvelopeServingEndpoint(
             status="success",
             message="Serving endpoint redeployed successfully",
             data=schemas.ServingEndpointResponse(
@@ -202,16 +310,27 @@ def redeploy_endpoint(
                 status=endpoint.status,
                 minReplicas=endpoint.min_replicas,
                 maxReplicas=endpoint.max_replicas,
+                useGpu=endpoint.use_gpu,
+                cpuRequest=endpoint.cpu_request,
+                cpuLimit=endpoint.cpu_limit,
+                memoryRequest=endpoint.memory_request,
+                memoryLimit=endpoint.memory_limit,
+                autoscalePolicy=endpoint.autoscale_policy,
+                deploymentSpec=deployment_spec,
                 createdAt=endpoint.created_at,
             ),
         )
+        logger.info(f"Successfully redeployed endpoint {endpointId}")
+        return result
     except ValueError as e:
+        logger.error(f"Validation error for endpoint {endpointId}: {e}")
         return schemas.EnvelopeServingEndpoint(
             status="fail",
-            message=str(e),
+            message=f"Invalid request: {str(e)}",
             data=None,
         )
     except Exception as e:
+        logger.error(f"Unexpected error redeploying endpoint {endpointId}: {e}", exc_info=True)
         return schemas.EnvelopeServingEndpoint(
             status="fail",
             message=f"Failed to redeploy endpoint: {str(e)}",
@@ -244,6 +363,15 @@ def delete_endpoint(
                 data=None,
             )
         
+        # Parse deployment_spec if it exists
+        deployment_spec = None
+        if hasattr(endpoint, 'deployment_spec') and endpoint.deployment_spec:
+            try:
+                deployment_spec = schemas.DeploymentSpec(**endpoint.deployment_spec)
+            except Exception:
+                # If parsing fails, leave as None
+                pass
+        
         return schemas.EnvelopeServingEndpoint(
             status="success",
             message="Serving endpoint deleted successfully",
@@ -252,9 +380,17 @@ def delete_endpoint(
                 modelId=str(endpoint.model_entry_id),
                 environment=endpoint.environment,
                 route=endpoint.route,
+                runtimeImage=endpoint.runtime_image,
                 status=endpoint.status,
                 minReplicas=endpoint.min_replicas,
                 maxReplicas=endpoint.max_replicas,
+                useGpu=endpoint.use_gpu,
+                cpuRequest=endpoint.cpu_request,
+                cpuLimit=endpoint.cpu_limit,
+                memoryRequest=endpoint.memory_request,
+                memoryLimit=endpoint.memory_limit,
+                autoscalePolicy=endpoint.autoscale_policy,
+                deploymentSpec=deployment_spec,
                 createdAt=endpoint.created_at,
             ),
         )
@@ -268,6 +404,208 @@ def delete_endpoint(
         return schemas.EnvelopeServingEndpoint(
             status="fail",
             message=f"Failed to delete endpoint: {str(e)}",
+            data=None,
+        )
+
+
+@router.get("/endpoints/{endpointId}/deployment", response_model=schemas.EnvelopeServingDeployment)
+def get_deployment(
+    endpointId: str,
+    deployment_service: ServingDeploymentService = Depends(get_serving_deployment_service),
+) -> schemas.EnvelopeServingDeployment:
+    """Get serving deployment details for an endpoint."""
+    try:
+        deployment = deployment_service.get_deployment(UUID(endpointId))
+        if not deployment:
+            return schemas.EnvelopeServingDeployment(
+                status="fail",
+                message=f"Deployment not found for endpoint {endpointId}",
+                data=None,
+            )
+        
+        return schemas.EnvelopeServingDeployment(
+            status="success",
+            message="",
+            data=schemas.ServingDeploymentResponse(
+                id=str(deployment.id),
+                serving_endpoint_id=str(deployment.serving_endpoint_id),
+                serving_framework=deployment.serving_framework,
+                framework_resource_id=deployment.framework_resource_id,
+                framework_namespace=deployment.framework_namespace,
+                replica_count=deployment.replica_count,
+                min_replicas=deployment.min_replicas,
+                max_replicas=deployment.max_replicas,
+                autoscaling_metrics=deployment.autoscaling_metrics,
+                resource_requests=deployment.resource_requests,
+                resource_limits=deployment.resource_limits,
+                framework_status=deployment.framework_status,
+                created_at=deployment.created_at,
+                updated_at=deployment.updated_at,
+            ),
+        )
+    except ValueError as e:
+        return schemas.EnvelopeServingDeployment(
+            status="fail",
+            message=str(e),
+            data=None,
+        )
+    except Exception as e:
+        return schemas.EnvelopeServingDeployment(
+            status="fail",
+            message=f"Failed to get deployment: {str(e)}",
+            data=None,
+        )
+
+
+@router.patch("/endpoints/{endpointId}/deployment", response_model=schemas.EnvelopeServingDeployment)
+def update_deployment(
+    endpointId: str,
+    request: schemas.UpdateDeploymentRequest,
+    deployment_service: ServingDeploymentService = Depends(get_serving_deployment_service),
+) -> schemas.EnvelopeServingDeployment:
+    """Update serving deployment configuration."""
+    try:
+        deployment = deployment_service.update_deployment(
+            endpoint_id=UUID(endpointId),
+            min_replicas=request.min_replicas,
+            max_replicas=request.max_replicas,
+            resource_requests=request.resource_requests,
+            resource_limits=request.resource_limits,
+        )
+        
+        return schemas.EnvelopeServingDeployment(
+            status="success",
+            message="Deployment updated successfully",
+            data=schemas.ServingDeploymentResponse(
+                id=str(deployment.id),
+                serving_endpoint_id=str(deployment.serving_endpoint_id),
+                serving_framework=deployment.serving_framework,
+                framework_resource_id=deployment.framework_resource_id,
+                framework_namespace=deployment.framework_namespace,
+                replica_count=deployment.replica_count,
+                min_replicas=deployment.min_replicas,
+                max_replicas=deployment.max_replicas,
+                autoscaling_metrics=deployment.autoscaling_metrics,
+                resource_requests=deployment.resource_requests,
+                resource_limits=deployment.resource_limits,
+                framework_status=deployment.framework_status,
+                created_at=deployment.created_at,
+                updated_at=deployment.updated_at,
+            ),
+        )
+    except ValueError as e:
+        return schemas.EnvelopeServingDeployment(
+            status="fail",
+            message=str(e),
+            data=None,
+        )
+    except Exception as e:
+        return schemas.EnvelopeServingDeployment(
+            status="fail",
+            message=f"Failed to update deployment: {str(e)}",
+            data=None,
+        )
+
+
+@router.get("/frameworks", response_model=schemas.EnvelopeServingFrameworks)
+def list_frameworks(
+    session: Session = Depends(get_session),
+) -> schemas.EnvelopeServingFrameworks:
+    """List available serving frameworks and their capabilities."""
+    try:
+        from core.settings import get_settings
+        
+        settings = get_settings()
+        integration_config = IntegrationConfigService(session)
+        supported_frameworks = ServingFrameworkFactory.get_supported_frameworks()
+        
+        frameworks = []
+        for framework_name in supported_frameworks:
+            config = integration_config.get_config("serving", framework_name)
+            enabled = config.get("enabled", False) if config else False
+            
+            # For KServe, use settings.use_kserve as the primary source (default framework)
+            # If settings.use_kserve is True, KServe is enabled regardless of integration config
+            if framework_name == "kserve":
+                enabled = settings.use_kserve if settings.use_kserve else enabled
+            
+            # Map framework names to display names
+            display_names = {
+                "kserve": "KServe",
+                "ray_serve": "Ray Serve",
+            }
+            
+            # Define capabilities per framework
+            capabilities_map = {
+                "kserve": ["autoscaling", "canary_deployment", "gpu_support", "multi_framework"],
+                "ray_serve": ["autoscaling", "gpu_support", "distributed_serving"],
+            }
+            
+            frameworks.append(schemas.ServingFramework(
+                name=framework_name,
+                display_name=display_names.get(framework_name, framework_name.title()),
+                enabled=enabled,
+                capabilities=capabilities_map.get(framework_name, []),
+            ))
+        
+        return schemas.EnvelopeServingFrameworks(
+            status="success",
+            message="",
+            data={"frameworks": frameworks},
+        )
+    except Exception as e:
+        return schemas.EnvelopeServingFrameworks(
+            status="fail",
+            message=f"Failed to list frameworks: {str(e)}",
+            data=None,
+        )
+
+
+@router.get("/images", response_model=schemas.EnvelopeImageConfig)
+def get_image_config(
+    session: Session = Depends(get_session),
+) -> schemas.EnvelopeImageConfig:
+    """Get container image configuration for training and serving."""
+    try:
+        from core.image_config import get_image_config
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        image_config = get_image_config()
+        
+        # Build response with all image configurations
+        # Use the actual loaded images from image_config
+        train_images = {}
+        for job_type in image_config.train_images.keys():
+            job_config = image_config.train_images[job_type]
+            train_images[job_type] = {
+                "gpu": job_config.get("gpu", ""),
+                "cpu": job_config.get("cpu", ""),
+            }
+        
+        serve_images = {}
+        for serve_target in image_config.serve_images.keys():
+            serve_config = image_config.serve_images[serve_target]
+            serve_images[serve_target] = {
+                "gpu": serve_config.get("gpu", ""),
+                "cpu": serve_config.get("cpu", ""),
+            }
+        
+        return schemas.EnvelopeImageConfig(
+            status="success",
+            message="",
+            data=schemas.ImageConfigResponse(
+                train_images=train_images,
+                serve_images=serve_images,
+            ),
+        )
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Failed to get image configuration: {e}", exc_info=True)
+        return schemas.EnvelopeImageConfig(
+            status="fail",
+            message=f"Failed to get image configuration: {str(e)}",
             data=None,
         )
 

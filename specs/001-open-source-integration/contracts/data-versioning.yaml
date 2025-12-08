@@ -1,0 +1,236 @@
+openapi: 3.0.3
+info:
+  title: Data Versioning Integration API
+  description: |
+    API endpoints for integrating open-source data versioning tools (DVC, etc.)
+    with the LLM Ops platform dataset management.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8000/llm-ops/v1
+    description: Local development server
+
+paths:
+  /catalog/datasets/{datasetId}/versions:
+    post:
+      summary: Create dataset version
+      description: Creates a new dataset version using the open-source versioning tool.
+      operationId: createDatasetVersion
+      tags:
+        - Data Versioning
+      parameters:
+        - name: datasetId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateVersionRequest'
+      responses:
+        '200':
+          description: Success response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  message:
+                    type: string
+                  data:
+                    $ref: '#/components/schemas/DatasetVersion'
+
+    get:
+      summary: List dataset versions
+      description: Lists all versions for a dataset.
+      operationId: listDatasetVersions
+      tags:
+        - Data Versioning
+      parameters:
+        - name: datasetId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      versions:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/DatasetVersion'
+
+  /catalog/datasets/{datasetId}/versions/{versionId}/diff:
+    get:
+      summary: Compare dataset versions
+      description: Gets diff between two dataset versions.
+      operationId: compareDatasetVersions
+      tags:
+        - Data Versioning
+      parameters:
+        - name: datasetId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: versionId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: baseVersionId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Success response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  message:
+                    type: string
+                  data:
+                    $ref: '#/components/schemas/VersionDiff'
+
+  /catalog/datasets/{datasetId}/versions/{versionId}/restore:
+    post:
+      summary: Restore dataset version
+      description: Restores a dataset to a specific version.
+      operationId: restoreDatasetVersion
+      tags:
+        - Data Versioning
+      parameters:
+        - name: datasetId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: versionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Success response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  message:
+                    type: string
+                  data:
+                    $ref: '#/components/schemas/DatasetVersion'
+
+components:
+  schemas:
+    DatasetVersion:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        dataset_record_id:
+          type: string
+          format: uuid
+        versioning_system:
+          type: string
+          example: dvc
+        version_id:
+          type: string
+          example: abc123def456
+        parent_version_id:
+          type: string
+          nullable: true
+        version_tag:
+          type: string
+          nullable: true
+        checksum:
+          type: string
+        storage_uri:
+          type: string
+        diff_summary:
+          type: object
+        file_count:
+          type: integer
+        total_size_bytes:
+          type: integer
+        compression_ratio:
+          type: number
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    CreateVersionRequest:
+      type: object
+      properties:
+        version_tag:
+          type: string
+        parent_version_id:
+          type: string
+          nullable: true
+
+    VersionDiff:
+      type: object
+      properties:
+        base_version_id:
+          type: string
+        target_version_id:
+          type: string
+        added_rows:
+          type: integer
+        removed_rows:
+          type: integer
+        modified_rows:
+          type: integer
+        schema_changes:
+          type: array
+          items:
+            type: object
+
+    ErrorResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: error
+        message:
+          type: string
+        data:
+          type: object
+          nullable: true
+

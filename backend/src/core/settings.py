@@ -52,6 +52,15 @@ class Settings(BaseSettings):
     # Use HTTPS for object storage (set to true for production S3)
     object_store_secure: bool = False
     
+    # Object storage bucket name (unified bucket per namespace)
+    # Format: llm-ops-{namespace} (e.g., llm-ops-dev, llm-ops-stg, llm-ops-prod)
+    # If not set, will be derived from training_namespace
+    # Folder structure within bucket:
+    #   - models/{model_id}/{version}/
+    #   - datasets/{dataset_id}/{version}/
+    #   - training/{job_id}/
+    object_store_bucket: str | None = None
+    
     # =========================================================================
     # Application Configuration
     # =========================================================================
@@ -81,25 +90,31 @@ class Settings(BaseSettings):
     # Serving Configuration
     # =========================================================================
     # Model serving runtime image (vLLM, TGI, etc.)
+    # NOTE: This is only used as a last resort fallback. The platform automatically
+    # selects appropriate images based on DeploymentSpec.serve_target and model metadata.
+    # 
     # Options:
-    #   - vllm/vllm-server:latest (official vLLM server image)
-    #   - vllm/vllm:latest (may not exist, use vllm/vllm-server instead)
-    #   - ghcr.io/vllm/vllm:latest (GitHub Container Registry)
-    #   - huggingface/text-generation-inference:latest (TGI alternative)
-    #   - python:3.11-slim (for custom runtime, requires building your own image)
-    # Note: For local development, you may need to build a custom image or use a different runtime
-    serving_runtime_image: str = "python:3.11-slim"  # Default to lightweight image for local testing
+    #   - ghcr.io/huggingface/text-generation-inference:latest (TGI, for HuggingFace models)
+    #   - ghcr.io/vllm/vllm:latest (vLLM, for other models)
+    #   - python:3.11-slim (NOT RECOMMENDED - only for custom runtime development)
+    # 
+    # For proper image selection, configure SERVE_IMAGE_GENERATION_GPU/CPU and
+    # SERVE_IMAGE_RAG_GPU/CPU environment variables instead. See image_config.py for details.
+    # Default: TGI on GHCR as fallback for HuggingFace models
+    serving_runtime_image: str = "ghcr.io/huggingface/text-generation-inference:latest"
     
     # Use KServe InferenceService (requires Knative + Istio)
     # Set to False if KServe is not properly installed (missing Knative/Istio dependencies)
     # Set to True if KServe with Knative Serving and Istio is installed
+    # Default: False for minimum requirements (CPU-only development)
     use_kserve: bool = False
     
     # KServe controller namespace
     kserve_namespace: str = "kserve"
     
     # Request GPU resources for serving. Set to False to use CPU-only deployment
-    use_gpu: bool = True
+    # Default: False for minimum requirements (CPU-only development)
+    use_gpu: bool = False
     
     # =========================================================================
     # Serving Resource Limits (GPU-enabled)
@@ -107,28 +122,162 @@ class Settings(BaseSettings):
     # CPU and memory requests/limits when GPU is enabled
     # Format: "1" (1 core), "500m" (0.5 core), "2Gi" (2 gibibytes), "512Mi" (512 mebibytes)
     # Adjust based on your cluster capacity
+    # Note: Model download during startup may require additional memory
+    # Increase memory_limit if you see OOM kills during model download
+    # TGI model downloads can use significant memory - increase if needed
     serving_cpu_request: str = "1"  # CPU request
     serving_cpu_limit: str = "2"  # CPU limit
     serving_memory_request: str = "2Gi"  # Memory request
-    serving_memory_limit: str = "4Gi"  # Memory limit
+    serving_memory_limit: str = "16Gi"  # Memory limit (increased for large model downloads)
     
     # =========================================================================
     # Serving Resource Limits (CPU-only)
     # =========================================================================
     # CPU and memory requests/limits when GPU is disabled
-    # Use smaller values for local development
-    serving_cpu_only_cpu_request: str = "1"  # CPU request for CPU-only deployment
-    serving_cpu_only_cpu_limit: str = "2"  # CPU limit for CPU-only deployment
-    serving_cpu_only_memory_request: str = "1Gi"  # Memory request for CPU-only deployment
-    serving_cpu_only_memory_limit: str = "2Gi"  # Memory limit for CPU-only deployment
+    # Minimum requirements for local development (CPU-only mode)
+    # These values are optimized for minimum resource usage
+    # Note: Model download during startup may require additional memory
+    # Increase memory_limit if you see OOM kills during model download
+    serving_cpu_only_cpu_request: str = "500m"  # CPU request for CPU-only deployment (minimum)
+    serving_cpu_only_cpu_limit: str = "1"  # CPU limit for CPU-only deployment (minimum)
+    serving_cpu_only_memory_request: str = "512Mi"  # Memory request for CPU-only deployment (minimum)
+    serving_cpu_only_memory_limit: str = "1Gi"  # Memory limit (minimum for small models)
 
     # Optional override for local development: if set, internal inference calls
     # will use this base URL instead of Kubernetes cluster DNS.
     # Example: http://localhost:8001 (port-forwarded serving service)
     serving_local_base_url: AnyHttpUrl | None = None
+    
+    # =========================================================================
+    # Training Resource Limits (CPU-only)
+    # =========================================================================
+    # CPU and memory requests/limits for CPU-only training jobs
+    # Use when useGpu=false is specified in training job submission
+    # Format: "4" (4 cores), "8Gi" (8 gibibytes)
+    # Note: Reduced defaults for local development (minikube typically has ~6GB memory)
+    training_cpu_only_cpu_request: str = "2"  # CPU request for CPU-only training (reduced for local dev)
+    training_cpu_only_cpu_limit: str = "4"  # CPU limit for CPU-only training (reduced for local dev)
+    training_cpu_only_memory_request: str = "2Gi"  # Memory request for CPU-only training (reduced for local dev)
+    training_cpu_only_memory_limit: str = "4Gi"  # Memory limit for CPU-only training (reduced for local dev)
+
+    # =========================================================================
+    # Training Resource Limits (GPU-enabled)
+    # =========================================================================
+    # CPU and memory requests/limits for GPU training jobs
+    # Format: "4" (4 cores), "8Gi" (8 gibibytes)
+    # Adjust based on your cluster capacity and model size
+    training_gpu_cpu_request: str = "4"  # CPU request for GPU training
+    training_gpu_cpu_limit: str = "8"  # CPU limit for GPU training
+    training_gpu_memory_request: str = "4Gi"  # Memory request for GPU training (reduced for small clusters)
+    training_gpu_memory_limit: str = "8Gi"  # Memory limit for GPU training (reduced for small clusters)
+    
+    # Distributed training uses more resources per pod
+    training_gpu_distributed_memory_request: str = "16Gi"  # Memory request for distributed GPU training
+    training_gpu_distributed_memory_limit: str = "32Gi"  # Memory limit for distributed GPU training
+    
+    # =========================================================================
+    # Training Configuration
+    # =========================================================================
+    # Kubernetes namespace for training jobs
+    # Format: llm-ops-{environment} (e.g., llm-ops-dev, llm-ops-stg, llm-ops-prod)
+    # Default: llm-ops-dev for local development
+    training_namespace: str = "llm-ops-dev"
+    
+    # GPU node selector (optional, for targeting specific GPU nodes)
+    # Example: {"accelerator": "nvidia-tesla-v100"} or {"node-type": "gpu"}
+    # Leave empty dict {} to allow scheduling on any node
+    training_gpu_node_selector: dict = {}
+    
+    # GPU node tolerations (optional, for nodes with taints)
+    # Example: [{"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}]
+    # Leave empty list [] if no tolerations needed
+    training_gpu_tolerations: list = []
+    
+    # API base URL for training pods to record metrics
+    # Leave empty ("") to disable metric recording from training pods
+    # Format options:
+    #   - Same namespace: http://{service-name}:{port} (e.g., http://llm-ops-api:8000)
+    #   - Cross namespace: http://{service-name}.{namespace}.svc.cluster.local:{port}
+    #   - External URL: http://api.example.com:8000 (if API is accessible from cluster)
+    #   - Local development (minikube): http://host.minikube.internal:8000/llm-ops/v1
+    #   - Local development (Docker Desktop): http://host.docker.internal:8000/llm-ops/v1
+    #   - Local development (general): http://{your-local-ip}:8000/llm-ops/v1
+    #   - Example: http://llm-ops-api.llm-ops-dev.svc.cluster.local:8000/llm-ops/v1
+    # Note: For local development, use host.minikube.internal (minikube) or host.docker.internal (Docker Desktop)
+    #       or your local machine's IP address that is accessible from Kubernetes cluster
+    training_api_base_url: str = ""
+    
+    # =========================================================================
+    # Training Job Status Sync Configuration
+    # =========================================================================
+    # Interval in seconds for checking training job statuses (default: 30 seconds)
+    # Set to 0 to disable automatic status checking
+    training_job_status_sync_interval: int = 30
+    
+    # =========================================================================
+    # Hugging Face Import Configuration
+    # =========================================================================
+    # Maximum model size in GB that can be imported from Hugging Face Hub
+    # Set to 0 or negative value to disable size limit
+    # Default: 5 GB
+    huggingface_max_download_size_gb: float = 5.0
+    
+    # =========================================================================
+    # Open Source Integration Configuration
+    # =========================================================================
+    # Integration feature flags (enable/disable integrations)
+    experiment_tracking_enabled: bool = False
+    experiment_tracking_system: str = "mlflow"  # Options: "mlflow", "wandb", etc.
+    serving_framework_enabled: bool = False
+    serving_framework_default: str = "kserve"  # Options: "kserve", "ray_serve", etc.
+    workflow_orchestration_enabled: bool = False
+    workflow_orchestration_system: str = "argo_workflows"  # Options: "argo_workflows", "kubeflow", etc.
+    model_registry_enabled: bool = True  # Default to True for better UX
+    model_registry_default: str = "huggingface"  # Options: "huggingface", "modelscope", etc.
+    data_versioning_enabled: bool = False
+    data_versioning_system: str = "dvc"  # Options: "dvc", "lakefs", etc.
+    
+    # Environment identifier (dev, stg, prod)
+    environment: str = "dev"
+    
+    # MLflow Configuration
+    mlflow_tracking_uri: AnyHttpUrl | None = None  # e.g., http://mlflow-service.mlflow.svc.cluster.local:5000
+    mlflow_enabled: bool = False
+    mlflow_backend_store_uri: str | None = None  # PostgreSQL URI for MLflow backend
+    mlflow_default_artifact_root: str | None = None  # S3 URI for MLflow artifacts
+    
+    # KServe Configuration (enhanced)
+    kserve_namespace: str = "kserve"  # Already exists, keeping for reference
+    
+    # Argo Workflows Configuration
+    argo_workflows_enabled: bool = False
+    argo_workflows_namespace: str = "argo"
+    argo_workflows_controller_service: str = "argo-workflows-server.argo.svc.cluster.local:2746"
+    
+    # Hugging Face Hub Configuration
+    huggingface_hub_enabled: bool = False
+    huggingface_hub_token: SecretStr | None = None  # Optional, for private repos
+    huggingface_hub_cache_dir: str = "/tmp/hf_cache"
+    
+    # DVC Configuration
+    dvc_enabled: bool = False
+    dvc_remote_name: str = "minio"
+    dvc_remote_url: str | None = None  # e.g., s3://datasets-dvc
+    dvc_cache_dir: str = "/tmp/dvc-cache"
 
 
 @lru_cache()
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    # If object_store_bucket is not set, derive it from training_namespace
+    if settings.object_store_bucket is None:
+        # training_namespace is already in format "llm-ops-{env}"
+        settings.object_store_bucket = settings.training_namespace
+    return settings
+
+
+def get_object_store_bucket() -> str:
+    """Get the unified bucket name for object storage."""
+    settings = get_settings()
+    return settings.object_store_bucket or settings.training_namespace
 

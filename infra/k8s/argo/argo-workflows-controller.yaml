@@ -1,0 +1,99 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argo
+  labels:
+    name: argo
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: argo-workflows-controller
+  namespace: argo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argo-workflows-controller
+  namespace: argo
+  labels:
+    app: argo-workflows
+    component: controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: argo-workflows
+      component: controller
+  template:
+    metadata:
+      labels:
+        app: argo-workflows
+        component: controller
+    spec:
+      serviceAccountName: argo-workflows-controller
+      containers:
+      - name: workflow-controller
+        image: quay.io/argoproj/workflow-controller:v3.5.5
+        args:
+        - --configmap=argo-workflows-config
+        - --executor-image=quay.io/argoproj/argoexec:v3.5.5
+        - --namespaced=false
+        - --workflow-namespace=argo
+        ports:
+        - containerPort: 9090
+          name: metrics
+          protocol: TCP
+        env:
+        - name: ARGO_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /metrics
+            port: 9090
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /metrics
+            port: 9090
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argo-workflows-config
+  namespace: argo
+data:
+  config: |
+    executor:
+      image: quay.io/argoproj/argoexec:v3.5.5
+    workflow:
+      namespace: argo
+    artifactRepository:
+      archiveLogs: true
+      s3:
+        bucket: argo-workflows
+        endpoint: minio.minio.svc.cluster.local:9000
+        insecure: true
+        accessKeySecret:
+          name: argo-workflows-s3-secret
+          key: accesskey
+        secretKeySecret:
+          name: argo-workflows-s3-secret
+          key: secretkey
+

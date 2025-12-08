@@ -2,7 +2,6 @@
   <section class="chat-test">
     <header>
       <h1>Chat with Serving Model</h1>
-      <router-link to="/serving/endpoints" class="btn-back">← Back to Endpoints</router-link>
     </header>
 
     <div class="chat-container">

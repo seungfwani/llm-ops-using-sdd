@@ -3,8 +3,9 @@
     <header>
       <h1>Model Catalog</h1>
       <div class="header-actions">
-      <button @click="fetchModels" :disabled="loading">Refresh</button>
-        <router-link to="/catalog/models/new" class="btn-primary">Create New Model</router-link>
+        <button @click="fetchModels" :disabled="loading" class="btn-secondary">Refresh</button>
+        <router-link to="/catalog/models/import" class="btn-secondary">Import from Registry</router-link>
+        <router-link to="/catalog/models/new" class="btn-primary">New Model</router-link>
       </div>
     </header>
 
@@ -31,6 +32,14 @@
       <label>
         Owner Team:
         <input v-model="filters.owner_team" @input="debouncedFetch" placeholder="Filter by team" />
+      </label>
+      <label class="search-label">
+        Search:
+        <input
+          v-model="filters.search"
+          @input="debouncedFetch"
+          placeholder="Name, version, or registry ID"
+        />
       </label>
     </div>
 
@@ -60,6 +69,9 @@
             <span :class="`status-badge status-${model.status}`">
               {{ model.status }}
             </span>
+            <span v-if="!model.storage_uri && model.metadata?.source === 'huggingface'" class="importing-badge">
+              (다운로드 중...)
+            </span>
           </td>
           <td>{{ model.owner_team }}</td>
           <td>
@@ -78,7 +90,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, reactive, computed } from 'vue';
+import { onMounted, onUnmounted, ref, reactive, computed } from 'vue';
 import { catalogClient, type CatalogModel } from '@/services/catalogClient';
 
 const models = ref<CatalogModel[]>([]);
@@ -90,6 +102,7 @@ const filters = reactive({
   type: '',
   status: '',
   owner_team: '',
+  search: '',
 });
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -113,6 +126,16 @@ const filteredModels = computed(() => {
   if (filters.owner_team) {
     const teamLower = filters.owner_team.toLowerCase();
     result = result.filter(m => m.owner_team.toLowerCase().includes(teamLower));
+  }
+  if (filters.search) {
+    const q = filters.search.toLowerCase();
+    result = result.filter(m => {
+      const inName = m.name.toLowerCase().includes(q);
+      const inVersion = m.version.toLowerCase().includes(q);
+      const hfId =
+        (m.metadata?.huggingface_model_id as string | undefined)?.toLowerCase() || '';
+      return inName || inVersion || (hfId && hfId.includes(q));
+    });
   }
   
   return result;
@@ -158,7 +181,27 @@ async function handleDelete(modelId: string, modelName: string) {
   }
 }
 
-onMounted(fetchModels);
+let refreshInterval: ReturnType<typeof setInterval> | null = null;
+
+onMounted(() => {
+  fetchModels();
+  // Auto-refresh every 5 seconds to check for download completion
+  refreshInterval = setInterval(() => {
+    // Only refresh if there are models with no storage_uri (downloading)
+    const hasDownloadingModels = models.value.some(
+      m => !m.storage_uri && m.metadata?.source === 'huggingface'
+    );
+    if (hasDownloadingModels) {
+      fetchModels();
+    }
+  }, 5000);
+});
+
+onUnmounted(() => {
+  if (refreshInterval) {
+    clearInterval(refreshInterval);
+  }
+});
 </script>
 
 <style scoped>
@@ -190,6 +233,20 @@ header {
 
 .btn-primary:hover {
   background: #0056b3;
+}
+
+.btn-secondary {
+  padding: 0.5rem 1rem;
+  background: #6c757d;
+  color: white;
+  text-decoration: none;
+  border-radius: 4px;
+  border: none;
+  cursor: pointer;
+}
+
+.btn-secondary:hover {
+  background: #5a6268;
 }
 
 .filters {
@@ -288,6 +345,26 @@ header {
 .status-rejected {
   background: #f8d7da;
   color: #721c24;
+}
+
+.importing-badge {
+  margin-left: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  background: #e7f3ff;
+  color: #004085;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
 }
 
 .btn-link {

@@ -2,33 +2,100 @@
   <section class="model-create">
     <header>
       <h1>Create New Model</h1>
-      <router-link to="/catalog/models" class="btn-back">← Back to List</router-link>
     </header>
 
     <form @submit.prevent="handleSubmit" class="create-form">
+      <!-- Model Type Selection -->
       <div class="form-section">
-        <h2>Basic Information</h2>
-        <label>
-          Name *
-          <input v-model="form.name" required placeholder="e.g., gpt-4, llama-2" />
-        </label>
-        <label>
-          Version *
-          <input v-model="form.version" required placeholder="e.g., 1.0.0, v2" />
-        </label>
+        <h2>Model Type</h2>
         <label>
           Type *
           <select v-model="form.type" required>
-            <option value="base">Base</option>
-            <option value="fine-tuned">Fine-tuned</option>
-            <option value="external">External</option>
+            <option value="">Select model type</option>
+            <option value="base">Base Model - Pre-trained models from various sources</option>
+            <option value="fine-tuned">Fine-tuned Model - Models fine-tuned on custom datasets</option>
+            <option value="external">External Model - Models accessed via API (OpenAI, Ollama, etc.)</option>
           </select>
-        </label>
-        <label>
-          Owner Team *
-          <input v-model="form.owner_team" required placeholder="e.g., ml-team, nlp-team" />
+          <small class="help-text">
+            <span v-if="form.type === 'base'">Base models are pre-trained models that can be used as starting points for fine-tuning.</span>
+            <span v-else-if="form.type === 'fine-tuned'">Fine-tuned models are trained on custom datasets, typically starting from a base model.</span>
+            <span v-else-if="form.type === 'external'">External models are accessed via API and don't require file uploads.</span>
+            <span v-else>Select a model type to continue.</span>
+          </small>
         </label>
       </div>
+        <!-- Base/Fine-tuned Model: File upload section -->
+        <div v-if="form.type === 'base' || form.type === 'fine-tuned'" class="form-section">
+          <h2>Upload Model Files</h2>
+          <div class="file-upload-section">
+            <label>
+              Model Files
+              <div class="file-upload-area" 
+                   @drop.prevent="handleDrop"
+                   @dragover.prevent="dragover = true"
+                   @dragleave.prevent="dragover = false"
+                   :class="{ 'dragover': dragover }">
+                <input 
+                  type="file" 
+                  ref="fileInput"
+                  @change="handleFileSelect"
+                  multiple
+                  accept=".bin,.safetensors,.json,.txt,.pt,.pth,.onnx"
+                  style="display: none"
+                />
+                <p v-if="selectedFiles.length === 0" class="upload-placeholder">
+                  Drag and drop files here or <button type="button" @click="fileInput?.click()" class="link-button">browse</button>
+                </p>
+                <ul v-else class="file-list">
+                  <li v-for="(file, index) in selectedFiles" :key="index" class="file-item">
+                    <span>{{ file.name }} ({{ formatFileSize(file.size) }})</span>
+                    <button type="button" @click="removeFile(index)" class="remove-file">×</button>
+                  </li>
+                </ul>
+              </div>
+            </label>
+            <small class="help-text">Upload model files (weights, config, tokenizer, etc.). Files will be uploaded after model creation.</small>
+            <div v-if="uploadProgress > 0 && uploadProgress < 100" class="upload-progress">
+              <div class="progress-bar">
+                <div class="progress-fill" :style="{ width: uploadProgress + '%' }"></div>
+              </div>
+              <p class="progress-text">Uploading... {{ uploadProgress }}%</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Basic Information -->
+        <div class="form-section">
+          <h2>Model Information</h2>
+          
+          <label>
+            Model Family * <span class="required">*</span>
+            <select v-model="form.model_family" required>
+              <option value="">Select model family</option>
+              <option value="llama">Llama</option>
+              <option value="mistral">Mistral</option>
+              <option value="gemma">Gemma</option>
+              <option value="bert">BERT (for embedding models only)</option>
+            </select>
+            <small class="help-text">
+              Select the model architecture family. This is used to ensure compatibility with training and serving operations.
+            </small>
+          </label>
+          
+          <label>
+            Name *
+            <input v-model="form.name" required placeholder="e.g., llama-3-8b-base, mistral-7b-instruct" />
+          </label>
+          <label>
+            Version *
+            <input v-model="form.version" required placeholder="e.g., 1.0.0, v2" />
+          </label>
+          <label>
+            Owner Team *
+            <input v-model="form.owner_team" required placeholder="e.g., ml-team, nlp-team" />
+          </label>
+          <input type="hidden" v-model="form.type" />
+        </div>
 
       <div class="form-section">
         <h2>Metadata</h2>
@@ -120,60 +187,17 @@
         <small class="help-text">Enter dataset IDs used to train/fine-tune this model, separated by commas</small>
       </div>
 
-      <div v-if="form.type !== 'external'" class="form-section">
-        <h2>Model Files (Optional)</h2>
-        <div class="file-upload-section">
-        <label>
-          Upload Model Files
-          <div class="file-upload-area" 
-               @drop.prevent="handleDrop"
-               @dragover.prevent="dragover = true"
-               @dragleave.prevent="dragover = false"
-               :class="{ 'dragover': dragover }">
-            <input 
-              type="file" 
-              ref="fileInput"
-              @change="handleFileSelect"
-              multiple
-              accept=".bin,.safetensors,.json,.txt,.pt,.pth,.onnx"
-              style="display: none"
-            />
-            <p v-if="selectedFiles.length === 0" class="upload-placeholder">
-              Drag and drop files here or <button type="button" @click="fileInput?.click()" class="link-button">browse</button>
-            </p>
-            <ul v-else class="file-list">
-              <li v-for="(file, index) in selectedFiles" :key="index" class="file-item">
-                <span>{{ file.name }} ({{ formatFileSize(file.size) }})</span>
-                <button type="button" @click="removeFile(index)" class="remove-file">×</button>
-              </li>
-            </ul>
-          </div>
-        </label>
-          <div v-if="uploadProgress > 0 && uploadProgress < 100" class="upload-progress">
-            <div class="progress-bar">
-              <div class="progress-fill" :style="{ width: uploadProgress + '%' }"></div>
-            </div>
-            <p class="progress-text">Uploading... {{ uploadProgress }}%</p>
-          </div>
-          <small class="help-text">Upload model files (weights, config, tokenizer, etc.). Files will be uploaded after model creation.</small>
-        </div>
-      </div>
-      
-      <div v-else class="form-section">
-        <div class="info-box">
-          <strong>External Model</strong>
-          <p>External models (OpenAI, Ollama, etc.) don't require file uploads. The model will be accessed via API.</p>
-        </div>
-      </div>
 
-      <div class="form-actions">
-        <button type="button" @click="$router.push('/catalog/models')" class="btn-secondary">
-          Cancel
-        </button>
-        <button :disabled="loading" type="submit" class="btn-primary">
-          {{ loading ? 'Creating...' : 'Create Model' }}
-        </button>
-      </div>
+        <div class="form-actions">
+          <router-link to="/catalog/models" class="btn-secondary">Cancel</router-link>
+          <button 
+            type="submit" 
+            :disabled="loading || !form.type" 
+            class="btn-primary"
+          >
+            {{ loading ? 'Creating...' : 'Create Model' }}
+          </button>
+        </div>
 
       <div v-if="message" :class="['message', messageType]">
         {{ message }}
@@ -201,8 +225,9 @@ const createdModelId = ref<string | null>(null);
 const form = reactive({
   name: '',
   version: '',
-  type: 'base',
+  type: '',
   owner_team: '',
+  model_family: '',
 });
 
 const metadataText = ref('{}');
@@ -223,7 +248,7 @@ const metadataPlaceholder = computed(() => {
   return '{"description": "...", "framework": "...", "parameters": "..."}';
 });
 
-// Reset external config when type changes
+// Reset config when type changes
 watch(() => form.type, (newType) => {
   if (newType !== 'external') {
     externalProvider.value = '';
@@ -237,13 +262,35 @@ watch(() => form.type, (newType) => {
       metadataText.value = '{}';
     }
   }
+  // Reset file selection when type changes
+  selectedFiles.value = [];
 });
+
+function resetForm() {
+  router.push('/catalog/models');
+}
 
 async function handleSubmit() {
   loading.value = true;
   message.value = '';
   
   try {
+    // Validate model_family
+    if (!form.model_family || form.model_family.trim() === '') {
+      message.value = 'Model Family is required';
+      messageType.value = 'error';
+      loading.value = false;
+      return;
+    }
+
+    // Validate file upload for base/fine-tuned models
+    if ((form.type === 'base' || form.type === 'fine-tuned') && selectedFiles.value.length === 0) {
+      message.value = 'Please select model files to upload';
+      messageType.value = 'error';
+      loading.value = false;
+      return;
+    }
+
     // Validate external provider config if external type
     if (form.type === 'external') {
       if (!externalProvider.value) {
@@ -431,22 +478,7 @@ async function handleFileUpload(modelId: string) {
 }
 
 header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
   margin-bottom: 2rem;
-}
-
-.btn-back {
-  padding: 0.5rem 1rem;
-  background: #6c757d;
-  color: white;
-  text-decoration: none;
-  border-radius: 4px;
-}
-
-.btn-back:hover {
-  background: #5a6268;
 }
 
 .create-form {
@@ -688,6 +720,185 @@ header {
 
 .provider-config label {
   margin-bottom: 1rem;
+}
+
+.import-section {
+  margin-bottom: 2rem;
+  padding: 1.5rem;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border: 1px solid #dee2e6;
+}
+
+.import-option h2 {
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+  color: #333;
+}
+
+.import-option p {
+  color: #666;
+  margin-bottom: 1rem;
+}
+
+.import-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.import-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.import-form input {
+  padding: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+
+.hf-model-input {
+  font-family: monospace;
+}
+
+.btn-import {
+  padding: 0.75rem 1.5rem;
+  background: #28a745;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 500;
+  transition: background 0.2s;
+  align-self: flex-start;
+}
+
+.btn-import:hover:not(:disabled) {
+  background: #218838;
+}
+
+.btn-import:disabled {
+  background: #6c757d;
+  cursor: not-allowed;
+}
+
+.import-message {
+  padding: 0.75rem;
+  border-radius: 4px;
+  margin-top: 1rem;
+}
+
+.import-message.success {
+  background: #d4edda;
+  color: #155724;
+  border: 1px solid #c3e6cb;
+}
+
+.import-message.error {
+  background: #f8d7da;
+  color: #721c24;
+  border: 1px solid #f5c6cb;
+}
+
+.type-selector {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 1.5rem;
+  margin-top: 1rem;
+}
+
+.type-option {
+  padding: 1.5rem;
+  border: 2px solid #dee2e6;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.3s;
+  background: white;
+}
+
+.type-option:hover {
+  border-color: #007bff;
+  box-shadow: 0 4px 12px rgba(0, 123, 255, 0.15);
+}
+
+.type-option h3 {
+  margin: 0 0 0.5rem 0;
+  color: #333;
+}
+
+.type-option p {
+  margin: 0 0 1rem 0;
+  color: #666;
+  font-size: 0.9rem;
+}
+
+.type-option ul {
+  margin: 0;
+  padding-left: 1.5rem;
+  color: #666;
+  font-size: 0.85rem;
+}
+
+.type-option li {
+  margin: 0.5rem 0;
+}
+
+.import-method-selector {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.method-option {
+  display: block;
+  cursor: pointer;
+}
+
+.method-option input[type="radio"] {
+  display: none;
+}
+
+.method-content {
+  padding: 1.5rem;
+  border: 2px solid #dee2e6;
+  border-radius: 8px;
+  transition: all 0.3s;
+  background: white;
+}
+
+.method-option input[type="radio"]:checked + .method-content {
+  border-color: #007bff;
+  background: #e7f3ff;
+}
+
+.method-option:hover .method-content {
+  border-color: #007bff;
+  box-shadow: 0 2px 8px rgba(0, 123, 255, 0.1);
+}
+
+.method-content h3 {
+  margin: 0 0 0.5rem 0;
+  color: #333;
+  font-size: 1.1rem;
+}
+
+.method-content p {
+  margin: 0;
+  color: #666;
+  font-size: 0.9rem;
+}
+
+.huggingface-import-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem;
+  background: #f8f9fa;
+  border-radius: 8px;
 }
 
 .info-box {

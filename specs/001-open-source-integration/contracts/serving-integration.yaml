@@ -1,0 +1,183 @@
+openapi: 3.0.3
+info:
+  title: Serving Framework Integration API
+  description: |
+    API endpoints for integrating open-source serving frameworks (KServe, Ray Serve, etc.)
+    with the LLM Ops platform. All endpoints maintain the standard `/llm-ops/v1` contract.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8000/llm-ops/v1
+    description: Local development server
+
+paths:
+  /serving/endpoints/{endpointId}/deployment:
+    get:
+      summary: Get serving deployment details
+      description: Retrieves framework-specific deployment details for a serving endpoint.
+      operationId: getServingDeployment
+      tags:
+        - Serving Integration
+      parameters:
+        - name: endpointId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Success response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  message:
+                    type: string
+                  data:
+                    $ref: '#/components/schemas/ServingDeployment'
+
+    patch:
+      summary: Update serving deployment
+      description: Updates framework-specific deployment configuration (e.g., replica counts, autoscaling).
+      operationId: updateServingDeployment
+      tags:
+        - Serving Integration
+      parameters:
+        - name: endpointId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateDeploymentRequest'
+      responses:
+        '200':
+          description: Success response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  message:
+                    type: string
+                  data:
+                    $ref: '#/components/schemas/ServingDeployment'
+
+  /serving/frameworks:
+    get:
+      summary: List available serving frameworks
+      description: Returns list of available serving frameworks and their capabilities.
+      operationId: listServingFrameworks
+      tags:
+        - Serving Integration
+      responses:
+        '200':
+          description: Success response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      frameworks:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ServingFramework'
+
+components:
+  schemas:
+    ServingDeployment:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        serving_endpoint_id:
+          type: string
+          format: uuid
+        serving_framework:
+          type: string
+          example: kserve
+        framework_resource_id:
+          type: string
+          example: my-model-predictor
+        framework_namespace:
+          type: string
+          example: llm-ops-dev
+        replica_count:
+          type: integer
+          example: 2
+        min_replicas:
+          type: integer
+          example: 1
+        max_replicas:
+          type: integer
+          example: 10
+        autoscaling_metrics:
+          type: object
+        resource_requests:
+          type: object
+        resource_limits:
+          type: object
+        framework_status:
+          type: object
+
+    UpdateDeploymentRequest:
+      type: object
+      properties:
+        min_replicas:
+          type: integer
+        max_replicas:
+          type: integer
+        autoscaling_metrics:
+          type: object
+
+    ServingFramework:
+      type: object
+      properties:
+        name:
+          type: string
+          example: kserve
+        display_name:
+          type: string
+          example: KServe
+        enabled:
+          type: boolean
+        capabilities:
+          type: array
+          items:
+            type: string
+          example: [autoscaling, canary_deployment, gpu_support]
+
+    ErrorResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: error
+        message:
+          type: string
+        data:
+          type: object
+          nullable: true
+
