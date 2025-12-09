@@ -64,8 +64,9 @@ class KServeConverter:
                 },
             }
 
-        # Build autoscaling annotations
+        # RawDeployment를 기본으로 설정하되, 기존 Knative autoscaling 주석도 유지
         annotations: Dict[str, str] = {
+            "serving.kserve.io/deploymentMode": "Standard",
             "autoscaling.knative.dev/minScale": str(1),
             "autoscaling.knative.dev/maxScale": str(10),
             "autoscaling.knative.dev/target": str(spec.runtime.max_concurrent_requests),
@@ -88,7 +89,9 @@ class KServeConverter:
                             "name": "kserve-container",
                             "resources": resources,
                             "env": [
+                                {"name": "PORT", "value": "8080"},
                                 {"name": "MODEL_URI", "value": model_uri},
+                                {"name": "MODEL_STORAGE_URI", "value": model_uri},
                                 {"name": "MAX_CONCURRENT_REQUESTS", "value": str(spec.runtime.max_concurrent_requests)},
                                 {"name": "MAX_INPUT_TOKENS", "value": str(spec.runtime.max_input_tokens)},
                                 {"name": "MAX_OUTPUT_TOKENS", "value": str(spec.runtime.max_output_tokens)},

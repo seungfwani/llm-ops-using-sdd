@@ -54,14 +54,38 @@ class ArgoWorkflowsAdapter(OrchestrationAdapter):
             
             settings = get_settings()
             if settings.kubeconfig_path:
+                logger.info(f"ArgoAdapter: Loading Kubernetes config from: {settings.kubeconfig_path}")
                 k8s_config.load_kube_config(config_file=settings.kubeconfig_path)
             else:
+                logger.info("ArgoAdapter: Loading in-cluster Kubernetes config")
                 k8s_config.load_incluster_config()
             
+            # Configure SSL verification based on settings
+            configuration = client.Configuration.get_default_copy()
+            if not settings.kubernetes_verify_ssl:
+                logger.warning("ArgoAdapter: SSL verification is disabled for Kubernetes API client")
+                configuration.verify_ssl = False
+                # Also disable SSL warnings
+                import urllib3
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                # Update all API clients to use this configuration
+                client.Configuration.set_default(configuration)
+            
             self._k8s_client = client.CustomObjectsApi()
+            self._k8s_core_api = client.CoreV1Api()
             self._k8s_available = True
+            
+            # Test Kubernetes connection
+            try:
+                logger.info("ArgoAdapter: Testing Kubernetes API connection...")
+                # Test connection by listing namespaces (simple API call)
+                namespaces = self._k8s_core_api.list_namespace(limit=1)
+                logger.info(f"ArgoAdapter: Kubernetes API connection successful. Cluster accessible (tested via namespace list)")
+            except Exception as e:
+                logger.error(f"ArgoAdapter: Failed to connect to Kubernetes API: {e}", exc_info=True)
+                self._k8s_available = False
         except Exception as e:
-            logger.warning(f"Failed to initialize Kubernetes client: {e}")
+            logger.warning(f"ArgoAdapter: Failed to initialize Kubernetes client: {e}", exc_info=True)
             self._k8s_client = None
             self._k8s_available = False
     

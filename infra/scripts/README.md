@@ -97,7 +97,7 @@
 - 그 외 → kubernetes 모드
 
 **환경 변수 (선택사항):**
-- `KSERVE_VERSION`: KServe 버전 (기본값: v0.11.0)
+- `KSERVE_VERSION`: KServe 버전 (기본값: v0.16.0)
 - `OBJECT_STORE_ACCESS_KEY`: MinIO access key (기본값: llmops)
 - `OBJECT_STORE_SECRET_KEY`: MinIO secret key (기본값: llmops-secret)
 - `OBJECT_STORE_ENDPOINT`: Object store endpoint URL
@@ -418,7 +418,7 @@ cd ../../scripts
 KServe 설치 시 다음과 같은 에러가 발생할 수 있습니다:
 ```
 resource mapping not found for name: "serving-cert" namespace: "kserve" 
-from "https://github.com/kserve/kserve/releases/download/v0.11.0/kserve.yaml": 
+from "https://github.com/kserve/kserve/releases/download/v0.16.0/kserve.yaml": 
 no matches for kind "Certificate" in version "cert-manager.io/v1"
 ```
 

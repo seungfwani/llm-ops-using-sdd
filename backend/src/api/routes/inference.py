@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, Header, status
@@ -23,6 +23,34 @@ logger = logging.getLogger(__name__)
 
 # Note: This router handles inference requests at /llm-ops/v1/serve/{route_name}/chat
 router = APIRouter(prefix="/llm-ops/v1/serve", tags=["inference"])
+
+
+def _get_endpoint_k8s_name(endpoint_id: str | UUID) -> str:
+    """
+    Generate short Kubernetes resource name from endpoint ID.
+    
+    KServe creates hostname: {name}-predictor-{namespace}
+    Kubernetes DNS label limit: 63 characters
+    Example: svc-2d4abaa49c00-predictor-llm-ops-dev = 43 chars (fits in 63)
+    
+    Args:
+        endpoint_id: Endpoint UUID
+        
+    Returns:
+        - If SERVING_INFERENCE_HOST_OVERRIDE is set, return that base host/IP
+          (e.g., http://10.0.0.5:8000) for direct access.
+        - Otherwise, short name like "svc-{first12chars}" (max 16 chars)
+    """
+    settings = get_settings()
+    
+    # If an override is provided (e.g., direct IP to node/service), use it
+    # so that subsequent URL building can skip cluster DNS hostnames.
+    if settings.serving_inference_host_override:
+        return str(settings.serving_inference_host_override).rstrip("/")
+    
+    endpoint_id_str = str(endpoint_id).replace("-", "")
+    short_id = endpoint_id_str[:12]  # Use first 12 chars of UUID (without hyphens)
+    return f"svc-{short_id}"
 
 
 @router.get("/health")
@@ -211,6 +239,7 @@ async def chat_completion(
                     messages=messages,
                     temperature=request.temperature,
                     max_tokens=request.max_tokens,
+                    template=request.template,
                     session=session,
                 )
                 response_content = result["content"]
@@ -264,6 +293,7 @@ async def _call_model_inference(
     messages: list[dict],
     temperature: float,
     max_tokens: int,
+    template: str | None,
     session: Session,
 ) -> dict:
     """Call the actual model for inference via KServe or raw Kubernetes deployment.
@@ -279,16 +309,23 @@ async def _call_model_inference(
         Dict with 'content', 'usage', and 'finish_reason'
     """
     settings = get_settings()
-    endpoint_name = f"serving-{endpoint.id}"
+    endpoint_name_or_host = _get_endpoint_k8s_name(endpoint.id)
     namespace = f"llm-ops-{endpoint.environment}"
+    service_name = None  # Set per-branch for accurate logging
 
     # If a local override is configured (e.g., port-forwarded service), use that.
     if settings.serving_local_base_url is not None:
-        service_name = f"{endpoint_name}-local"
+        service_name = f"{endpoint_name_or_host}-local"
         service_url = str(settings.serving_local_base_url).rstrip("/")
         namespace = "local"
         inference_url = f"{service_url}/v1/chat/completions"
+    # If DNS is unreachable (e.g., external node), allow direct host/IP override.
+    elif settings.serving_inference_host_override is not None:
+        service_name = str(endpoint_name_or_host)
+        service_url = str(endpoint_name_or_host).rstrip("/")
+        inference_url = f"{service_url}/v1/chat/completions"
     else:
+        endpoint_name = endpoint_name_or_host
         # Check if endpoint has a framework deployment
         deployment_repo = ServingDeploymentRepository(session)
         deployment = deployment_repo.get_by_endpoint_id(endpoint.id)
@@ -342,15 +379,23 @@ async def _call_model_inference(
                 # Assume OpenAI-compatible API (vLLM/TGI)
                 inference_url = f"{service_url}/v1/chat/completions"
 
+    # Ensure service_name is populated for logging paths (e.g., override branches)
+    if service_name is None:
+        service_name = str(endpoint_name_or_host)
+
     logger.info(f"Calling model inference at: {inference_url}")
     
-    # Prepare request payload (OpenAI-compatible format)
+    # Prepare request payload (OpenAI-compatible chat completions schema)
     payload = {
-        "model": model_entry.name,  # Model name for vLLM
+        "model": model_entry.name,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
+        "stream": False,
     }
+    if template:
+        # Optional custom field for runtimes that support template name
+        payload["template"] = template
     
     # Call KServe InferenceService or raw deployment
     try:
@@ -390,12 +435,25 @@ async def _call_model_inference(
                 raise ValueError(f"Invalid response format from model service: {data}")
                 
     except httpx.HTTPStatusError as e:
-        error_msg = f"Model service returned error {e.response.status_code}"
+        status_code = e.response.status_code
+        base_msg = f"Model service returned error {status_code}"
+        error_msg = base_msg
+        # 4xx 에러일 경우, 모델 서버가 내려준 human-friendly 메시지를 최대한 그대로 노출
         try:
             error_detail = e.response.json()
-            error_msg += f": {error_detail}"
-        except:
-            error_msg += f": {e.response.text}"
+            # OpenAI 호환 런타임에서 {'error': '...', 'error_type': '...'} 형태로 내려오는 경우 처리
+            if isinstance(error_detail, dict) and "error" in error_detail:
+                detail_error = error_detail.get("error")
+                detail_type = error_detail.get("error_type")
+                if detail_type:
+                    error_msg = f"{detail_type}: {detail_error}"
+                else:
+                    error_msg = str(detail_error)
+            else:
+                error_msg = f"{base_msg}: {error_detail}"
+        except Exception:
+            # JSON 파싱이 안 되면 원문 텍스트를 그대로 사용
+            error_msg = f"{base_msg}: {e.response.text}"
         logger.error(f"HTTP error calling model inference: {error_msg}")
         raise ValueError(error_msg) from e
     except httpx.TimeoutException:

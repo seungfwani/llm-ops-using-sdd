@@ -1,4 +1,30 @@
-# KServe 설치 문제 해결 가이드
+# KServe 설치 및 사용 가이드
+
+## 현재 플랫폼의 KServe 사용 방식
+
+**우리 플랫폼은 RawDeployment 모드로 KServe를 사용합니다.**
+
+### 왜 RawDeployment 모드인가?
+
+1. **기존 인프라와의 호환성**
+   - 이미 `llm-ops-dev` 네임스페이스에서 표준 Kubernetes Deployment를 사용 중
+   - 기존 인프라와 동일한 방식으로 작동
+
+2. **의존성 최소화**
+   - Knative Serving, Istio, Kourier 등 추가 컴포넌트 불필요
+   - KServe controller만 설치하면 됨
+
+3. **요구사항에 부합**
+   - 모델 서빙 관리가 목표 (서버리스/scale-to-zero 불필요)
+   - HPA를 통한 오토스케일링 지원
+   - 표준 Kubernetes 리소스로 관리 가능
+
+### RawDeployment 모드의 특징
+
+- **생성되는 리소스**: 표준 Kubernetes Deployment (Knative Service 아님)
+- **의존성**: Knative/Istio 불필요
+- **스케일링**: Kubernetes HPA 사용
+- **네트워킹**: 표준 Kubernetes Service 사용
 
 ## 문제: KServe Webhook 연결 실패
 
@@ -12,15 +38,29 @@ dial tcp 10.109.6.215:443: connect: connection refused
 ## 원인
 
 KServe 컨트롤러가 다음 의존성을 찾지 못합니다:
-1. **Knative Serving** - `Service.serving.knative.dev/v1` CRD
-2. **Istio** - `VirtualService.networking.istio.io/v1alpha3` CRD
+1. **Knative Serving** - `Service.serving.knative.dev/v1` CRD (RawDeployment 모드에서는 불필요)
+2. **Istio** - `VirtualService.networking.istio.io/v1alpha3` CRD (RawDeployment 모드에서는 불필요)
 3. **Webhook Server Pod** - webhook 서버가 실행되지 않음
 
 ## 해결 방법
 
-### 옵션 1: Raw Kubernetes Deployment 사용 (권장 - 빠른 해결)
+### 옵션 1: KServe RawDeployment 모드 사용 (현재 방식, 권장)
 
-KServe 없이 raw Kubernetes Deployment를 사용합니다.
+**설정:**
+```bash
+# backend/.env 파일에 추가
+USE_KSERVE=true
+```
+
+**특징:**
+- RawDeployment 모드로 작동 (코드에서 자동 설정)
+- Knative/Istio 불필요
+- 표준 Kubernetes Deployment 생성
+- 기존 인프라와 호환
+
+### 옵션 2: Raw Kubernetes Deployment 사용 (KServe 없이)
+
+KServe 없이 직접 Kubernetes Deployment를 사용합니다.
 
 **설정 변경:**
 ```bash
@@ -75,10 +115,10 @@ kubectl patch configmap/config-network \
 
 ```bash
 # 기존 KServe 삭제
-kubectl delete -f https://github.com/kserve/kserve/releases/download/v0.11.0/kserve.yaml
+kubectl delete -f https://github.com/kserve/kserve/releases/download/v0.16.0/kserve.yaml
 
 # KServe 재설치
-kubectl apply -f https://github.com/kserve/kserve/releases/download/v0.11.0/kserve.yaml
+kubectl apply -f https://github.com/kserve/kserve/releases/download/v0.16.0/kserve.yaml
 
 # 상태 확인
 kubectl get pods -n kserve
@@ -91,7 +131,7 @@ KServe v0.11.0+는 Serverless 모드로 Knative 없이도 작동할 수 있습�
 
 ```bash
 # KServe Serverless 설치
-kubectl apply -f https://github.com/kserve/kserve/releases/download/v0.11.0/kserve-serverless.yaml
+kubectl apply -f https://github.com/kserve/kserve/releases/download/v0.16.0/kserve-serverless.yaml
 ```
 
 ## 현재 상태 확인

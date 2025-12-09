@@ -25,8 +25,22 @@ REQUEST_LATENCY = Histogram(
 
 
 def setup_logging() -> None:
+    """Setup logging configuration from settings."""
+    settings = get_settings()
+    
+    # Map string log level to logging constant
+    log_level_map = {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+        "CRITICAL": logging.CRITICAL,
+    }
+    
+    log_level = log_level_map.get(settings.log_level.upper(), logging.INFO)
+    
     logging.basicConfig(
-        level=logging.INFO,
+        level=log_level,
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
 

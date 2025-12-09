@@ -81,7 +81,7 @@ echo ""
 echo "📦 Step 2: Checking KServe installation..."
 
 KSERVE_NAMESPACE="kserve"
-KSERVE_VERSION="${KSERVE_VERSION:-v0.11.0}"
+KSERVE_VERSION="${KSERVE_VERSION:-v0.16.0}"
 
 if ! kubectl get crd inferenceservices.serving.kserve.io &> /dev/null; then
     echo "   KServe not found, installing..."

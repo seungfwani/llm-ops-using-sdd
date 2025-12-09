@@ -570,6 +570,10 @@ unauthorized access.
     values) and production (larger values)
   - Default to reasonable values suitable for local development (CPU: 1/2,
     Memory: 1Gi/2Gi for CPU-only, CPU: 1/2, Memory: 2Gi/4Gi for GPU-enabled)
+- **FR-006g**: The serving API contract MUST capture rollout safety and model traceability:
+  - `POST /llm-ops/v1/serving/endpoints` request MUST include `version` (model version string) and `rollbackPlan` (human-readable plan or runbook link) in addition to existing fields.
+  - Serving endpoint responses MUST return `version`, `promptPolicyId`, `lastHealthCheck`, and `rollbackPlan` so that clients can audit deployed versions and rollback readiness.
+  - `PATCH /llm-ops/v1/serving/endpoints/{endpointId}` MUST allow updating `autoscalePolicy`, `promptPolicyId`, and `status` while preserving existing rollback metadata.
 - **FR-006h**: The serving subsystem MUST support per-endpoint override of the
   serving runtime image. The platform MUST:
   - Provide an optional `servingRuntimeImage` field on serving deployment and

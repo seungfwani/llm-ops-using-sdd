@@ -91,9 +91,11 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, reactive } from 'vue';
+import { onMounted, ref, reactive, onActivated, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import { servingClient, type ServingEndpoint, type ListEndpointsFilters } from '@/services/servingClient';
 
+const route = useRoute();
 const endpoints = ref<ServingEndpoint[]>([]);
 const loading = ref(false);
 const error = ref('');
@@ -120,7 +122,10 @@ async function fetchEndpoints() {
   try {
     const response = await servingClient.listEndpoints(filters);
     if (response.status === "success" && response.data) {
-      endpoints.value = response.data;
+      // Force Vue reactivity by creating a new array
+      endpoints.value = [...response.data];
+      // Status is automatically synced from Kubernetes in listEndpoints
+      // But we can also refresh status for all endpoints if needed
     } else {
       error.value = response.message || "Failed to load endpoints";
       endpoints.value = [];
@@ -142,8 +147,10 @@ async function handleDelete(endpointId: string, route: string) {
   try {
     const response = await servingClient.deleteEndpoint(endpointId);
     if (response.status === "success") {
-      // Remove from list
+      // Remove from list immediately for better UX
       endpoints.value = endpoints.value.filter(e => e.id !== endpointId);
+      // Also refresh from server to ensure consistency
+      await fetchEndpoints();
     } else {
       alert(`Delete failed: ${response.message}`);
     }
@@ -163,7 +170,16 @@ function formatDate(dateString: string): string {
   }
 }
 
+// Watch for refresh query parameter (from EndpointDetail delete)
+watch(() => route.query.refresh, () => {
+  if (route.query.refresh) {
+    fetchEndpoints();
+  }
+}, { immediate: true });
+
 onMounted(fetchEndpoints);
+// Also refresh when component is activated (e.g., navigating back from detail page)
+onActivated(fetchEndpoints);
 </script>
 
 <style scoped>

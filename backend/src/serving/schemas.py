@@ -12,12 +12,14 @@ class ServingEndpointRequest(BaseModel):
     """Request schema for deploying a serving endpoint."""
 
     modelId: str = Field(..., description="Model catalog entry ID")
+    version: str = Field(..., description="Model version string")
     environment: str = Field(..., pattern="^(dev|stg|prod)$")
     route: str = Field(..., description="Ingress route path")
     minReplicas: int = Field(default=1, ge=1)
     maxReplicas: int = Field(default=3, ge=1)
     autoscalePolicy: Optional[dict] = Field(default=None)
     promptPolicyId: Optional[str] = Field(default=None)
+    rollbackPlan: str = Field(..., description="Human-readable rollback plan or link to runbook")
     useGpu: Optional[bool] = Field(default=None, description="Whether to request GPU resources. If not provided, uses default from settings")
     servingRuntimeImage: Optional[str] = Field(default=None, description="Container image for model serving runtime (e.g., vLLM, TGI). If not provided, uses default from settings")
     cpuRequest: Optional[str] = Field(default=None, description="CPU request (e.g., '2', '1000m'). If not provided, uses default from settings")
@@ -33,12 +35,14 @@ class ServingEndpointResponse(BaseModel):
 
     id: str
     modelId: str
+    version: str
     environment: str
     route: str
     runtimeImage: Optional[str] = None
     status: str
     minReplicas: int
     maxReplicas: int
+    promptPolicyId: Optional[str] = None
     useGpu: Optional[bool] = None
     cpuRequest: Optional[str] = None
     cpuLimit: Optional[str] = None
@@ -46,10 +50,20 @@ class ServingEndpointResponse(BaseModel):
     memoryLimit: Optional[str] = None
     autoscalePolicy: Optional[dict] = None
     deploymentSpec: Optional[DeploymentSpec] = None
+    lastHealthCheck: Optional[datetime] = None
+    rollbackPlan: Optional[str] = None
     createdAt: datetime
 
     class Config:
         from_attributes = True
+
+
+class ServingEndpointPatch(BaseModel):
+    """Patch schema for updating a serving endpoint."""
+
+    autoscalePolicy: Optional[dict] = Field(default=None, description="Updated autoscaling policy")
+    promptPolicyId: Optional[str] = Field(default=None, description="Prompt policy binding")
+    status: Optional[str] = Field(default=None, pattern="^(deploying|healthy|degraded|failed)$", description="Operational status override")
 
 
 class EnvelopeServingEndpoint(BaseModel):
@@ -114,6 +128,9 @@ class ChatCompletionRequest(BaseModel):
     messages: list[ChatMessage] = Field(..., description="List of chat messages")
     temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="Sampling temperature")
     max_tokens: int = Field(default=500, ge=1, le=4000, description="Maximum tokens to generate")
+    # Optional template name expected by the serving runtime (e.g., vLLM prompt template)
+    # If provided, it is forwarded to the model service as-is.
+    template: str | None = Field(default=None, description="Prompt template name expected by the model service")
 
 
 class ChatCompletionChoice(BaseModel):

@@ -28,22 +28,46 @@ class ServingDeployer:
         """Initialize Kubernetes client."""
         try:
             if settings.kubeconfig_path:
+                logger.info(f"Loading Kubernetes config from: {settings.kubeconfig_path}")
                 config.load_kube_config(config_file=settings.kubeconfig_path)
             else:
+                logger.info("Loading in-cluster Kubernetes config")
                 config.load_incluster_config()
         except Exception as e:
             logger.warning(f"Failed to load kubeconfig: {e}, using default")
             try:
+                logger.info("Trying default kubeconfig location")
                 config.load_kube_config()
             except Exception:
                 logger.error("Could not initialize Kubernetes client")
                 raise
+
+        # Configure SSL verification based on settings
+        configuration = client.Configuration.get_default_copy()
+        if not settings.kubernetes_verify_ssl:
+            logger.warning("SSL verification is disabled for Kubernetes API client")
+            configuration.verify_ssl = False
+            # Also disable SSL warnings
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            # Update all API clients to use this configuration
+            client.Configuration.set_default(configuration)
 
         self.apps_api = client.AppsV1Api()
         self.core_api = client.CoreV1Api()
         self.autoscaling_api = client.AutoscalingV1Api()
         self.networking_api = client.NetworkingV1Api()
         self.custom_api = client.CustomObjectsApi()  # For KServe InferenceService CRD
+        
+        # Test Kubernetes connection
+        try:
+            logger.info("Testing Kubernetes API connection...")
+            # Test connection by listing namespaces (simple API call)
+            namespaces = self.core_api.list_namespace(limit=1)
+            logger.info(f"Kubernetes API connection successful. Cluster accessible (tested via namespace list)")
+        except Exception as e:
+            logger.error(f"Failed to connect to Kubernetes API: {e}", exc_info=True)
+            raise
 
     def _normalize_route(self, route: str) -> str:
         """
@@ -146,8 +170,15 @@ class ServingDeployer:
                 
                 if is_terminating:
                     logger.info(
-                        f"{resource_type} {endpoint_name} is terminating, waiting... ({waited}s)"
+                        f"{resource_type} {endpoint_name} is terminating, waiting... ({waited}s/{max_wait}s)"
                     )
+                    # If waiting too long, try removing finalizers
+                    if waited > 60 and waited % 30 == 0:
+                        logger.warning(
+                            f"{resource_type} {endpoint_name} has been terminating for {waited}s. "
+                            f"Attempting to remove finalizers to speed up deletion..."
+                        )
+                        self._remove_finalizers(endpoint_name, namespace, resource_type)
                 else:
                     logger.warning(
                         f"{resource_type} {endpoint_name} exists but not terminating. "
@@ -276,17 +307,36 @@ class ServingDeployer:
         try:
             exists, is_terminating = self._check_resource_exists(endpoint_name, namespace)
             if exists:
-                logger.warning(
-                    f"{resource_type} {endpoint_name} already exists in namespace {namespace}. "
-                    f"Deleting it before deploying..."
-                )
+                if is_terminating:
+                    logger.warning(
+                        f"{resource_type} {endpoint_name} is already being deleted. "
+                        f"Waiting for deletion to complete before deploying..."
+                    )
+                    # If already deleting, wait longer and try to remove finalizers if stuck
+                    try:
+                        self._ensure_resource_deleted(endpoint_name, namespace, resource_type, max_wait=180)
+                    except ValueError:
+                        # If still exists after waiting, try to force delete by removing finalizers
+                        logger.warning(
+                            f"{resource_type} {endpoint_name} is stuck in deletion. "
+                            f"Attempting to remove finalizers to force deletion..."
+                        )
+                        is_kserve = resource_type == "KServe InferenceService"
+                        self._remove_finalizers(endpoint_name, namespace, resource_type)
+                        # Wait again after removing finalizers
+                        self._ensure_resource_deleted(endpoint_name, namespace, resource_type, max_wait=60)
+                else:
+                    logger.warning(
+                        f"{resource_type} {endpoint_name} already exists in namespace {namespace}. "
+                        f"Deleting it before deploying..."
+                    )
                 try:
                     self.delete_endpoint(endpoint_name, namespace=namespace)
                 except Exception as e:
                     logger.warning(f"delete_endpoint() raised exception: {e}, will continue anyway")
                 
                 # Wait for complete deletion
-                self._ensure_resource_deleted(endpoint_name, namespace, resource_type)
+                    self._ensure_resource_deleted(endpoint_name, namespace, resource_type, max_wait=180)
         except Exception as e:
             logger.error(f"Error checking/deleting existing resource: {e}")
             raise ValueError(
@@ -393,6 +443,7 @@ class ServingDeployer:
 
         # Use KServe InferenceService if enabled, otherwise use raw Deployment
         if settings.use_kserve:
+            logger.info(f"KServe is enabled (USE_KSERVE=true). Attempting to deploy using KServe InferenceService...")
             # Check if KServe is actually available before using it
             try:
                 from integrations.serving.factory import ServingFrameworkFactory
@@ -402,8 +453,9 @@ class ServingDeployer:
                 }
                 adapter = ServingFrameworkFactory.create_adapter("kserve", config)
                 if adapter.is_available():
+                    logger.info("KServe adapter is available. Deploying InferenceService...")
                     try:
-                        return self._deploy_with_kserve_adapter(
+                        result = self._deploy_with_kserve_adapter(
                             endpoint_name=endpoint_name,
                             model_storage_uri=model_storage_uri,
                             route=route,
@@ -420,14 +472,26 @@ class ServingDeployer:
                             model_metadata=model_metadata,
                             deployment_spec=deployment_spec,
                         )
+                        logger.info(f"Successfully deployed KServe InferenceService {endpoint_name}")
+                        return result
                     except Exception as e:
-                        logger.error(f"KServe deployment failed: {e}")
+                        logger.error(f"KServe deployment failed: {e}", exc_info=True)
                         logger.warning("Falling back to raw Kubernetes Deployment")
                         # Continue to raw Deployment below
                 else:
-                    logger.warning("KServe is enabled but not available. Falling back to raw Deployment.")
+                    logger.warning(
+                        "KServe is enabled (USE_KSERVE=true) but InferenceService CRD is not available. "
+                        "Please check KServe installation: kubectl get crd inferenceservices.serving.kserve.io"
+                    )
+                    logger.warning("Falling back to raw Kubernetes Deployment.")
             except Exception as e:
-                logger.warning(f"Failed to check KServe availability: {e}. Falling back to raw Deployment.")
+                logger.warning(f"Failed to check KServe availability: {e}. Falling back to raw Deployment.", exc_info=True)
+        else:
+            logger.info(
+                "KServe is disabled (USE_KSERVE=false). "
+                "Deploying using raw Kubernetes Deployment. "
+                "To use KServe InferenceService, set USE_KSERVE=true in .env file."
+            )
         
         # Fallback to raw Deployment (when KServe is disabled or unavailable)
         
@@ -1452,109 +1516,41 @@ class ServingDeployer:
     def get_endpoint_status(
         self, endpoint_name: str, namespace: str = "default"
     ) -> Optional[dict]:
-        """Retrieve deployment status from Kubernetes."""
-        if settings.use_kserve:
-            return self._get_kserve_status(endpoint_name, namespace)
+        """
+        Retrieve deployment status from Kubernetes.
         
-        # Legacy: Get Deployment status
-        try:
-            deployment = self.apps_api.read_namespaced_deployment(
-                name=endpoint_name, namespace=namespace
-            )
-            
-            # Check actual pod status for more accurate status
-            pod_status = self._check_pod_status(endpoint_name, namespace)
-            deployment_status = self._map_deployment_status(deployment.status)
-            
-            # Use pod status if available, otherwise fall back to deployment status
-            final_status = pod_status if pod_status else deployment_status
-            
-            return {
-                "uid": deployment.metadata.uid,
-                "replicas": deployment.spec.replicas,
-                "ready_replicas": deployment.status.ready_replicas or 0,
-                "available_replicas": deployment.status.available_replicas or 0,
-                "status": final_status,
-            }
-        except ApiException as e:
-            if e.status == 404:
-                return None
-            logger.error(f"Failed to get deployment status for {endpoint_name}: {e}")
-            raise
-
-    def _get_kserve_status(
-        self, endpoint_name: str, namespace: str = "default"
-    ) -> Optional[dict]:
-        """Retrieve KServe InferenceService status using adapter."""
-        try:
-            # Try to use adapter first
-            config = {
-                "namespace": namespace,
-                "enabled": settings.use_kserve,
-            }
-            adapter = ServingFrameworkFactory.create_adapter("kserve", config)
-            
-            status_info = adapter.get_deployment_status(
-                framework_resource_id=endpoint_name,
+        This method uses Kubernetes operations service for operational status checks.
+        KServe handles deployment, Kubernetes handles operations.
+        """
+        logger.debug(f"Getting endpoint status for {endpoint_name} in namespace {namespace}")
+        
+        # Use Kubernetes operations service for status checking (operational task)
+        from serving.services.kubernetes_operations import KubernetesOperations
+        k8s_ops = KubernetesOperations()
+        
+        if settings.use_kserve:
+            logger.debug(f"Using KServe status check for {endpoint_name}")
+            status_info = k8s_ops.get_kserve_inferenceservice_status(
+                endpoint_name=endpoint_name,
                 namespace=namespace,
             )
-            
-            # Map adapter status to deployer format
-            return {
-                "uid": endpoint_name,  # Use endpoint_name as UID for compatibility
-                "replicas": status_info.get("replicas", 0),
-                "ready_replicas": status_info.get("ready_replicas", 0),
-                "available_replicas": status_info.get("ready_replicas", 0),
-                "status": status_info.get("status", "deploying"),
-            }
-        except Exception as e:
-            logger.warning(f"Failed to get KServe status via adapter: {e}, falling back to legacy")
-            # Fallback to legacy implementation
-            try:
-                inference_service = self.custom_api.get_namespaced_custom_object(
-                    group="serving.kserve.io",
-                    version="v1beta1",
-                    namespace=namespace,
-                    plural="inferenceservices",
-                    name=endpoint_name,
-                )
-                
-                status = inference_service.get("status", {})
-                conditions = status.get("conditions", [])
-                
-                # Find Ready condition
-                ready_condition = next(
-                    (c for c in conditions if c.get("type") == "Ready"),
-                    None
-                )
-                
-                ready_status = ready_condition.get("status", "Unknown") if ready_condition else "Unknown"
-                
-                # Check actual pod status for more accurate status
-                pod_status = self._check_pod_status(endpoint_name, namespace, is_kserve=True)
-                
-                # Determine final status: prefer pod status, fall back to KServe condition
-                if pod_status:
-                    final_status = pod_status
-                elif ready_status == "True":
-                    final_status = "healthy"
-                elif ready_status == "False":
-                    final_status = "degraded"
-                else:
-                    final_status = "deploying"
-                
+            if status_info:
                 return {
-                    "uid": inference_service.get("metadata", {}).get("uid", ""),
-                    "replicas": status.get("components", {}).get("predictor", {}).get("replicas", 0),
-                    "ready_replicas": status.get("components", {}).get("predictor", {}).get("readyReplicas", 0),
-                    "available_replicas": status.get("components", {}).get("predictor", {}).get("availableReplicas", 0),
-                    "status": final_status,
+                    "uid": status_info.get("uid", endpoint_name),
+                    "replicas": status_info.get("replicas", 0),
+                    "ready_replicas": status_info.get("ready_replicas", 0),
+                    "available_replicas": status_info.get("available_replicas", 0),
+                    "status": status_info.get("status", "deploying"),
                 }
-            except ApiException as api_e:
-                if api_e.status == 404:
-                    return None
-                logger.error(f"Failed to get KServe InferenceService status for {endpoint_name}: {api_e}")
-                raise
+            return None
+        
+        # Legacy: Get Deployment status
+        logger.debug(f"Using Deployment status check for {endpoint_name}")
+        status_info = k8s_ops.get_deployment_status(
+            endpoint_name=endpoint_name,
+                    namespace=namespace,
+        )
+        return status_info
 
     def rollback_endpoint(
         self, endpoint_name: str, namespace: str = "default"
@@ -2280,117 +2276,4 @@ class ServingDeployer:
             logger.error(f"Failed to delete KServe InferenceService {endpoint_name}: {e}")
             return False
 
-    def _check_pod_status(self, endpoint_name: str, namespace: str = "default", is_kserve: bool = False) -> Optional[str]:
-        """Check actual pod status to determine endpoint health."""
-        try:
-            # Get pods for this deployment
-            # For KServe, pods are labeled with the InferenceService name
-            # For raw Deployment, pods are labeled with app={endpoint_name}
-            if is_kserve:
-                # KServe pods are typically labeled with the service name
-                # Try multiple label selectors for KServe
-                label_selectors = [
-                    f"serving.kserve.io/inferenceservice={endpoint_name}",
-                    f"app={endpoint_name}",
-                ]
-                # Also try to find pods by name pattern (KServe pods are named like: {endpoint_name}-predictor-default-{hash})
-                # If label selector fails, we'll try to list all pods and filter by name
-            else:
-                label_selectors = [f"app={endpoint_name}"]
-            
-            pods = None
-            for label_selector in label_selectors:
-                try:
-                    pods = self.core_api.list_namespaced_pod(
-                        namespace=namespace,
-                        label_selector=label_selector,
-                    )
-                    if pods.items:
-                        break
-                except ApiException:
-                    continue
-            
-            # For KServe, if label selector didn't work, try finding pods by name pattern
-            if is_kserve and (not pods or not pods.items):
-                try:
-                    all_pods = self.core_api.list_namespaced_pod(namespace=namespace)
-                    # Filter pods that start with endpoint_name (KServe naming: {endpoint_name}-predictor-default-{hash})
-                    matching_pods = [p for p in all_pods.items if p.metadata.name.startswith(f"{endpoint_name}-predictor")]
-                    if matching_pods:
-                        # Create a mock response-like object
-                        class PodList:
-                            items = matching_pods
-                        pods = PodList()
-                except ApiException:
-                    pass
-            
-            if not pods or not pods.items:
-                return "deploying"  # No pods yet
-            
-            # Check for Pending pods with scheduling issues
-            pending_pods = [p for p in pods.items if p.status.phase == "Pending"]
-            if pending_pods:
-                # Check why pods are pending
-                for pod in pending_pods:
-                    if pod.status.conditions:
-                        for condition in pod.status.conditions:
-                            if condition.type == "PodScheduled" and condition.status != "True":
-                                reason = condition.reason or "Unknown"
-                                message = condition.message or ""
-                                logger.warning(
-                                    f"Pod {pod.metadata.name} is Pending: {reason} - {message}"
-                                )
-                                # Common reasons: Unschedulable (resource shortage), WaitForFirstConsumer (storage)
-                                if "Unschedulable" in reason or "Insufficient" in message:
-                                    return "deploying"  # Resource issue, still deploying
-                                elif "WaitForFirstConsumer" in reason:
-                                    return "deploying"  # Storage issue, still deploying
-                return "deploying"  # Pending pods mean still deploying
-            
-            # Check pod phases
-            pod_phases = [pod.status.phase for pod in pods.items]
-            ready_count = sum(1 for pod in pods.items if self._is_pod_ready(pod))
-            total_count = len(pods.items)
-            
-            # If all pods are running and ready
-            if all(phase == "Running" for phase in pod_phases) and ready_count == total_count and total_count > 0:
-                return "healthy"
-            
-            # If any pod is in error state
-            if any(phase in ["Failed", "Error"] for phase in pod_phases):
-                return "failed"
-            
-            # If pods are still being created or starting
-            if any(phase in ["Pending", "ContainerCreating"] for phase in pod_phases):
-                return "deploying"
-            
-            # If some pods are ready but not all
-            if ready_count > 0 and ready_count < total_count:
-                return "degraded"
-            
-            return "deploying"
-        except ApiException as e:
-            logger.warning(f"Failed to check pod status for {endpoint_name}: {e}")
-            return None
-    
-    @staticmethod
-    def _is_pod_ready(pod) -> bool:
-        """Check if a pod is ready."""
-        if not pod.status.conditions:
-            return False
-        for condition in pod.status.conditions:
-            if condition.type == "Ready":
-                return condition.status == "True"
-        return False
-
-    @staticmethod
-    def _map_deployment_status(status) -> str:
-        """Map Kubernetes deployment status to our status enum."""
-        if status.ready_replicas == status.replicas and status.replicas > 0:
-            return "healthy"
-        if status.unavailable_replicas:
-            return "degraded"
-        if status.replicas == 0:
-            return "failed"
-        return "deploying"
 

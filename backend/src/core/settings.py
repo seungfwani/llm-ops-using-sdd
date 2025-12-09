@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     # Default required role for API access
     default_required_role: str = "llm-ops-user"
     
+    # Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    # Default: INFO
+    log_level: str = "INFO"
+    
     # =========================================================================
     # Kubernetes Configuration
     # =========================================================================
@@ -85,6 +89,11 @@ class Settings(BaseSettings):
         if v == "":
             return None
         return v
+    
+    # Disable SSL verification for Kubernetes API (for self-signed certificates)
+    # WARNING: Only use this in development/testing environments
+    # Set to True to disable SSL certificate verification (not recommended for production)
+    kubernetes_verify_ssl: bool = True
     
     # =========================================================================
     # Serving Configuration
@@ -147,6 +156,12 @@ class Settings(BaseSettings):
     # will use this base URL instead of Kubernetes cluster DNS.
     # Example: http://localhost:8001 (port-forwarded serving service)
     serving_local_base_url: AnyHttpUrl | None = None
+    
+    # Optional override for inference calls when cluster DNS hostnames are not
+    # reachable (e.g., external nodes reachable only via IP). If set, the API
+    # will call this base URL directly for model inference.
+    # Example: http://10.0.0.5:8000 or http://203.0.113.10:8000
+    serving_inference_host_override: AnyHttpUrl | None = None
     
     # =========================================================================
     # Training Resource Limits (CPU-only)
