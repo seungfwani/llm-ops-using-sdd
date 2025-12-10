@@ -14,20 +14,24 @@ gpuPlugin:
 
 nvidia-device-plugin:
   namespaceOverride: kube-system
+
+  config:
+    # ConfigMap 안에서 디폴트로 사용할 config 이름
+    default: config.yaml
+
+    # 여기부터가 실제 config 내용 (파일명: 내용)
+    map:
+      config.yaml: |-
+        version: v1
+        sharing:
+          timeSlicing:
+            resources:
+              - name: nvidia.com/gpu
+                replicas: 10
+
   args:
     - --fail-on-init-error=false
     - --config-file=/config/config.yaml
-  config:
-    map:
-      name: nvidia-device-plugin-config
-      data:
-        config.yaml: |
-          version: v1
-          sharing:
-            timeSlicing:
-              resources:
-                - name: nvidia.com/gpu
-                  replicas: 10
 
 dependencies:
   postgresql:
@@ -93,5 +97,3 @@ objectStore:
 
 minioBucketJob:
   enabled: true
-
-

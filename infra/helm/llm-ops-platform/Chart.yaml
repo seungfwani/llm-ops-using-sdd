@@ -7,8 +7,8 @@ appVersion: "0.1.0"
 
 dependencies:
   - name: kserve
-    version: 0.16.0
-    repository: https://kserve.github.io/helm-charts
+    version: v0.16.0
+    repository: oci://ghcr.io/kserve/charts
     condition: kserve.enabled
   - name: nvidia-device-plugin
     version: 0.15.0
