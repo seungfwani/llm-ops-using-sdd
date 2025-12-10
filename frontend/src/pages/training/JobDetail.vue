@@ -249,12 +249,24 @@
 
             <div class="form-group">
               <label for="resubmit-gpuType">GPU Type: <span class="required">*</span></label>
-              <select id="resubmit-gpuType" v-model="resubmitForm.resourceProfile.gpuType" required>
-                <option value="nvidia-tesla-v100">NVIDIA Tesla V100</option>
-                <option value="nvidia-tesla-a100">NVIDIA Tesla A100</option>
-                <option value="nvidia-rtx-3090">NVIDIA RTX 3090</option>
-                <option value="nvidia-rtx-4090">NVIDIA RTX 4090</option>
+              <select
+                id="resubmit-gpuType"
+                v-model="resubmitForm.resourceProfile.gpuType"
+                required
+                :disabled="gpuTypesLoading || !gpuTypes.length"
+              >
+                <option v-if="gpuTypesLoading" disabled>Loading GPU types...</option>
+                <option v-else-if="!gpuTypes.length" disabled>No GPU types configured</option>
+                <option
+                  v-else
+                  v-for="gpu in gpuTypes"
+                  :key="gpu.id"
+                  :value="gpu.id"
+                >
+                  {{ gpu.label || gpu.id }}
+                </option>
               </select>
+              <small v-if="gpuTypesError" class="help-text error">{{ gpuTypesError }}</small>
             </div>
           </template>
 
@@ -367,7 +379,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRoute } from "vue-router";
-import { trainingClient, type TrainingJob } from "@/services/trainingClient";
+import { trainingClient, type TrainingJob, type GpuTypeOption, type EnvelopeGpuTypes } from "@/services/trainingClient";
 import { integrationClient, type ExperimentRun } from "@/services/integrationClient";
 
 const route = useRoute();
@@ -382,6 +394,9 @@ const resubmitting = ref(false);
 const registering = ref(false);
 const showResubmitModal = ref(false);
 const showRegisterModelModal = ref(false);
+const gpuTypes = ref<GpuTypeOption[]>([]);
+const gpuTypesLoading = ref(true);
+const gpuTypesError = ref("");
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 
 const mlflowUrl = computed(() => {
@@ -400,8 +415,8 @@ const resubmitForm = ref({
   useGpu: true,
   resourceProfile: {
     gpuCount: 1,
-    gpuType: "nvidia-tesla-v100",
-    numNodes: 2,
+    gpuType: "",
+    numNodes: 1,
     cpuCores: 4,
     memory: "8Gi",
     maxDuration: 60,
@@ -426,8 +441,28 @@ const refreshJob = async () => {
   await loadJob();
 };
 
+const loadGpuTypes = async () => {
+  gpuTypesLoading.value = true;
+  gpuTypesError.value = "";
+  try {
+    const res: EnvelopeGpuTypes = await trainingClient.listGpuTypes();
+    if (res.status === "success" && res.data?.gpuTypes) {
+      gpuTypes.value = res.data.gpuTypes.filter((g) => g.enabled !== false);
+      if (!resubmitForm.value.resourceProfile.gpuType && gpuTypes.value.length > 0) {
+        resubmitForm.value.resourceProfile.gpuType = gpuTypes.value[0].id;
+      }
+    } else {
+      gpuTypesError.value = res.message || "Failed to load GPU types";
+    }
+  } catch (e) {
+    gpuTypesError.value = String(e);
+  } finally {
+    gpuTypesLoading.value = false;
+  }
+};
+
 onMounted(async () => {
-  await loadJob();
+  await Promise.all([loadJob(), loadGpuTypes(), loadExperiment()]);
   // Auto-polling disabled - user can manually refresh using the Refresh button
   // startPolling();
 });
@@ -481,7 +516,7 @@ async function loadJob() {
           resubmitForm.value.resourceProfile.gpuType = rp.gpuType || "nvidia-tesla-v100";
           // Only set numNodes for distributed jobs
           if (job.value.jobType === "distributed") {
-            resubmitForm.value.resourceProfile.numNodes = rp.numNodes || 2;
+            resubmitForm.value.resourceProfile.numNodes = rp.numNodes || 1;
           } else {
             resubmitForm.value.resourceProfile.numNodes = undefined;
           }
@@ -532,10 +567,12 @@ function onUseGpuChange() {
   if (resubmitForm.value.useGpu) {
     // Switching to GPU - ensure GPU fields are set
     if (!resubmitForm.value.resourceProfile.gpuCount) resubmitForm.value.resourceProfile.gpuCount = 1;
-    if (!resubmitForm.value.resourceProfile.gpuType) resubmitForm.value.resourceProfile.gpuType = "nvidia-tesla-v100";
+    if (!resubmitForm.value.resourceProfile.gpuType && gpuTypes.value.length > 0) {
+      resubmitForm.value.resourceProfile.gpuType = gpuTypes.value[0].id;
+    }
     // Only set numNodes for distributed jobs
     if (job.value?.jobType === "distributed") {
-      if (!resubmitForm.value.resourceProfile.numNodes) resubmitForm.value.resourceProfile.numNodes = 2;
+      if (!resubmitForm.value.resourceProfile.numNodes) resubmitForm.value.resourceProfile.numNodes = 1;
     } else {
       resubmitForm.value.resourceProfile.numNodes = undefined;
     }

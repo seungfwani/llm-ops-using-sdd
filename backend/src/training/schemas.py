@@ -85,6 +85,29 @@ class EnvelopeTrainingJobList(BaseModel):
     data: Optional[TrainingJobListResponse] = None
 
 
+class GpuTypeOption(BaseModel):
+    """GPU type option for training job selection."""
+
+    id: str = Field(..., description="GPU type identifier (e.g., nvidia-rtx-4090)")
+    label: str = Field(..., description="Display label")
+    enabled: bool = True
+    priority: Optional[int] = None
+
+
+class GpuTypeListResponse(BaseModel):
+    """Response payload for GPU type list."""
+
+    gpuTypes: list[GpuTypeOption]
+
+
+class EnvelopeGpuTypes(BaseModel):
+    """Standard API envelope for GPU type list responses."""
+
+    status: str = Field(..., pattern="^(success|fail)$")
+    message: str = ""
+    data: Optional[GpuTypeListResponse] = None
+
+
 class ResubmitTrainingJobRequest(BaseModel):
     """Request schema for resubmitting a training job with updated resources."""
 

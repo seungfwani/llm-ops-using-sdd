@@ -1,0 +1,67 @@
+openapi: 3.0.3
+info:
+  title: GPU Types API
+  version: "1.0.0"
+paths:
+  /llm-ops/v1/training/gpu-types:
+    get:
+      summary: List available GPU types for training job submission
+      description: Returns configured GPU type options for the specified environment.
+      parameters:
+        - in: query
+          name: env
+          required: true
+          schema:
+            type: string
+            enum: [dev, stg, prod]
+          description: Environment code.
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success, fail]
+                  message:
+                    type: string
+                  data:
+                    type: object
+                    properties:
+                      gpuTypes:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                            label:
+                              type: string
+                            priority:
+                              type: integer
+                            enabled:
+                              type: boolean
+                          required: [id, label, enabled]
+                required: [status, message, data]
+          examples:
+            application/json:
+              status: success
+              message: ""
+              data:
+                gpuTypes:
+                  - id: nvidia-rtx-4090
+                    label: NVIDIA RTX 4090
+                    priority: 10
+                    enabled: true
+                  - id: nvidia-rtx-a6000
+                    label: NVIDIA RTX A6000
+                    priority: 20
+                    enabled: true
+        "400":
+          description: Invalid environment
+        "500":
+          description: Server error
+

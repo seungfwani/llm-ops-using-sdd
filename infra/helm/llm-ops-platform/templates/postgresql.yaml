@@ -1,0 +1,102 @@
+{{- if .Values.dependencies.postgresql.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgresql-pvc
+  labels:
+    {{- include "llmops.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.dependencies.postgresql.storage }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgresql-secret
+  labels:
+    {{- include "llmops.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  POSTGRES_USER: {{ .Values.dependencies.postgresql.secret.user | quote }}
+  POSTGRES_PASSWORD: {{ .Values.dependencies.postgresql.secret.password | quote }}
+  POSTGRES_DB: {{ .Values.dependencies.postgresql.secret.db | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgresql
+  labels:
+    app: postgresql
+    {{- include "llmops.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgresql
+  template:
+    metadata:
+      labels:
+        app: postgresql
+    spec:
+      containers:
+        - name: postgresql
+          image: {{ .Values.dependencies.postgresql.image }}
+          ports:
+            - containerPort: 5432
+              name: postgresql
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secret
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secret
+                  key: POSTGRES_DB
+          volumeMounts:
+            - name: postgresql-storage
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: {{ .Values.dependencies.postgresql.resources.requests.cpu | quote }}
+              memory: {{ .Values.dependencies.postgresql.resources.requests.memory | quote }}
+            limits:
+              cpu: {{ .Values.dependencies.postgresql.resources.limits.cpu | quote }}
+              memory: {{ .Values.dependencies.postgresql.resources.limits.memory | quote }}
+      volumes:
+        - name: postgresql-storage
+          persistentVolumeClaim:
+            claimName: postgresql-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql
+  labels:
+    app: postgresql
+    {{- include "llmops.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.dependencies.postgresql.service.type }}
+  ports:
+    - port: {{ .Values.dependencies.postgresql.service.port }}
+      targetPort: 5432
+      protocol: TCP
+      name: postgresql
+      {{- if eq .Values.dependencies.postgresql.service.type "NodePort" }}
+      nodePort: {{ .Values.dependencies.postgresql.service.nodePort }}
+      {{- end }}
+  selector:
+    app: postgresql
+{{- end }}
+

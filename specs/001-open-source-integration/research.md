@@ -1,3 +1,14 @@
+# Research Notes - 001-open-source-integration
+
+## Decisions
+
+- **Decision:** GPU 타입 리스트는 백엔드 설정/DB(예: env/ConfigMap, integration config 테이블)에서 관리하며 API로 노출한다.  
+  **Rationale:** 프론트 하드코딩 제거, 환경별 차이를 설정으로 분리, 캐싱/검증이 단순함.  
+  **Alternatives considered:** (1) 클러스터 노드 라벨 실시간 조회 - 노드 권한·속도 의존도가 높음. (2) 외부 자산 인벤토리 서비스 의존 - 추가 연동 비용과 가용성 리스크가 있음.
+
+## Notes
+- 리턴 스키마는 기존 `/llm-ops/v1` `{status,message,data}` 컨벤션을 따른다.
+- 환경 파라미터(env/dev/stg/prod)별로 다른 리스트를 반환할 수 있어야 한다.
 # Research: Open Source Integration for LLM Ops Platform
 
 **Branch**: `001-open-source-integration`  

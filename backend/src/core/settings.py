@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from pydantic import AnyUrl, AnyHttpUrl, SecretStr, field_validator
+from pydantic import AnyUrl, AnyHttpUrl, SecretStr, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -197,6 +197,31 @@ class Settings(BaseSettings):
     # Format: llm-ops-{environment} (e.g., llm-ops-dev, llm-ops-stg, llm-ops-prod)
     # Default: llm-ops-dev for local development
     training_namespace: str = "llm-ops-dev"
+    
+    # GPU type options (per-environment). Accepts comma-separated strings or lists.
+    training_gpu_types_dev: list[str] | str | None = None
+    training_gpu_types_stg: list[str] | str | None = None
+    training_gpu_types_prod: list[str] | str | None = None
+    
+    @field_validator(
+        "training_gpu_types_dev",
+        "training_gpu_types_stg",
+        "training_gpu_types_prod",
+        mode="before",
+    )
+    @classmethod
+    def _parse_gpu_types(cls, v):
+        """Normalize GPU type lists from env strings."""
+        if v is None:
+            return []
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return []
+            return [item.strip() for item in v.split(",") if item.strip()]
+        if isinstance(v, (list, tuple)):
+            return [str(item).strip() for item in v if str(item).strip()]
+        return []
     
     # GPU node selector (optional, for targeting specific GPU nodes)
     # Example: {"accelerator": "nvidia-tesla-v100"} or {"node-type": "gpu"}

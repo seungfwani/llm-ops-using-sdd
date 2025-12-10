@@ -12,14 +12,16 @@ class ServingEndpointRequest(BaseModel):
     """Request schema for deploying a serving endpoint."""
 
     modelId: str = Field(..., description="Model catalog entry ID")
-    version: str = Field(..., description="Model version string")
     environment: str = Field(..., pattern="^(dev|stg|prod)$")
     route: str = Field(..., description="Ingress route path")
     minReplicas: int = Field(default=1, ge=1)
     maxReplicas: int = Field(default=3, ge=1)
     autoscalePolicy: Optional[dict] = Field(default=None)
     promptPolicyId: Optional[str] = Field(default=None)
-    rollbackPlan: str = Field(..., description="Human-readable rollback plan or link to runbook")
+    rollbackPlan: Optional[str] = Field(
+        default=None,
+        description="Human-readable rollback plan or link to runbook (optional)",
+    )
     useGpu: Optional[bool] = Field(default=None, description="Whether to request GPU resources. If not provided, uses default from settings")
     servingRuntimeImage: Optional[str] = Field(default=None, description="Container image for model serving runtime (e.g., vLLM, TGI). If not provided, uses default from settings")
     cpuRequest: Optional[str] = Field(default=None, description="CPU request (e.g., '2', '1000m'). If not provided, uses default from settings")

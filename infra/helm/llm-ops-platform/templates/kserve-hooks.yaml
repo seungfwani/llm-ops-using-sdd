@@ -1,0 +1,148 @@
+{{- if and .Values.kserve.enabled (or .Values.kserve.selfSignedCert.enabled .Values.kserve.setDefaultDeploymentMode) }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kserve-hook-sa
+  labels:
+    {{- include "llmops.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kserve-hook-role
+  labels:
+    {{- include "llmops.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["get", "list", "create", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list"]
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["validatingwebhookconfigurations", "mutatingwebhookconfigurations"]
+    verbs: ["get", "list", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kserve-hook-binding
+  labels:
+    {{- include "llmops.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kserve-hook-role
+subjects:
+  - kind: ServiceAccount
+    name: kserve-hook-sa
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kserve-webhook-and-config-patch
+  labels:
+    {{- include "llmops.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "llmops.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: kserve-hook-sa
+      restartPolicy: OnFailure
+      containers:
+        - name: patch
+          image: {{ .Values.kserve.selfSignedCert.image }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: KNS
+              value: {{ default .Release.Namespace .Values.kserve.namespaceOverride | quote }}
+            - name: SERVICE_NAME
+              value: {{ .Values.kserve.selfSignedCert.serviceName | quote }}
+            - name: SECRET_NAME
+              value: {{ .Values.kserve.selfSignedCert.secretName | quote }}
+            - name: SET_DEFAULT_MODE
+              value: {{ ternary "true" "false" .Values.kserve.setDefaultDeploymentMode | quote }}
+            - name: ENABLE_CERT
+              value: {{ ternary "true" "false" .Values.kserve.selfSignedCert.enabled | quote }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -euo pipefail
+              apk add --no-cache openssl >/dev/null 2>&1 || true
+
+              ns="${KNS}"
+              svc="${SERVICE_NAME}"
+              secret="${SECRET_NAME}"
+              ca_bundle=""
+
+              create_cert() {
+                tmp=$(mktemp -d)
+                cd "$tmp"
+                openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes \
+                  -subj "/CN=${svc}.${ns}.svc" \
+                  -addext "subjectAltName=DNS:${svc}.${ns}.svc,DNS:${svc}.${ns}.svc.cluster.local" 2>/dev/null || \
+                openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes \
+                  -subj "/CN=${svc}.${ns}.svc"
+
+                kubectl create secret tls "${secret}" \
+                  --cert=cert.pem \
+                  --key=key.pem \
+                  -n "${ns}" --dry-run=client -o yaml | kubectl apply -f -
+
+                ca_bundle=$(cat cert.pem | base64 -w 0 2>/dev/null || cat cert.pem | base64 | tr -d '\n')
+                cd - >/dev/null
+                rm -rf "$tmp"
+              }
+
+              if [ "${ENABLE_CERT}" = "true" ]; then
+                if kubectl get secret "${secret}" -n "${ns}" >/dev/null 2>&1; then
+                  ca_bundle=$(kubectl get secret "${secret}" -n "${ns}" -o jsonpath='{.data.tls\.crt}' 2>/dev/null || true)
+                  echo "✅ Secret ${secret} already exists"
+                else
+                  echo "📝 Creating self-signed certificate secret ${secret} in ${ns}"
+                  create_cert
+                  echo "✅ Created secret ${secret}"
+                fi
+              fi
+
+              if [ -z "${ca_bundle}" ]; then
+                echo "ℹ️  No CA bundle available, skipping webhook patch"
+              else
+                for kind in validatingwebhookconfiguration mutatingwebhookconfiguration; do
+                  for webhook in $(kubectl get ${kind} -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep kserve || true); do
+                    count=$(kubectl get ${kind} "${webhook}" -o jsonpath='{.webhooks[*].name}' | wc -w | tr -d ' ')
+                    i=0
+                    while [ $i -lt $count ]; do
+                      kubectl patch ${kind} "${webhook}" \
+                        --type=json \
+                        -p="[{\"op\":\"replace\",\"path\":\"/webhooks/${i}/clientConfig/caBundle\",\"value\":\"${ca_bundle}\"}]" >/dev/null 2>&1 || \
+                      kubectl patch ${kind} "${webhook}" \
+                        --type=json \
+                        -p="[{\"op\":\"add\",\"path\":\"/webhooks/${i}/clientConfig/caBundle\",\"value\":\"${ca_bundle}\"}]" >/dev/null 2>&1 || true
+                      i=$((i+1))
+                    done
+                  done
+                done
+              fi
+
+              if [ "${SET_DEFAULT_MODE}" = "true" ]; then
+                if kubectl get configmap inferenceservice-config -n "${ns}" >/dev/null 2>&1; then
+                  kubectl patch configmap inferenceservice-config -n "${ns}" \
+                    --type=merge \
+                    -p '{"data":{"deploy":"{\"defaultDeploymentMode\":\"Standard\"}"}}' >/dev/null 2>&1 || true
+                  echo "✅ Patched inferenceservice-config defaultDeploymentMode=Standard"
+                else
+                  echo "ℹ️  ConfigMap inferenceservice-config not found in ${ns}, skipped"
+                fi
+              fi
+{{- end }}
+

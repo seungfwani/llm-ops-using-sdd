@@ -1,0 +1,17 @@
+apiVersion: v2
+name: llm-ops-platform
+description: LLM Ops Platform core stack (deps, KServe, GPU plugin)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+
+dependencies:
+  - name: kserve
+    version: 0.16.0
+    repository: https://kserve.github.io/helm-charts
+    condition: kserve.enabled
+  - name: nvidia-device-plugin
+    version: 0.15.0
+    repository: https://nvidia.github.io/k8s-device-plugin
+    condition: gpuPlugin.enabled
+

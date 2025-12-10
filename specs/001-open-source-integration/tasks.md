@@ -1,3 +1,34 @@
+# Tasks - Open Source Integration (GPU 타입 동적 제공)
+
+## Phase 1 - Setup
+- [X] T001 Add sample GPU 타입 config placeholders in `backend/env.example` and document new keys in `backend/src/core/settings.py`
+
+## Phase 2 - Foundational
+- [X] T002 Add integration config accessor to fetch GPU 타입 리스트 by env in `backend/src/services/integration_config.py`
+- [X] T003 Add GPU 타입 list/validation schema helpers in `backend/src/training/schemas.py`
+
+## Phase 3 - User Story 1 (Dynamic GPU 타입 제공)
+- [X] T004 [US1] Expose `GET /llm-ops/v1/training/gpu-types` route in `backend/src/api/routes/training.py` returning `{status,message,data.gpuTypes}`
+- [X] T005 [US1] Implement GPU 타입 fetch service (env filter, enabled only, ordering) in `backend/src/training/services.py`
+- [X] T006 [US1] Enforce training submission validation: `gpu_type` required when `use_gpu=true` and must match enabled list (env-scoped) in `backend/src/training/services.py`
+- [X] T007 [P] [US1] Add backend tests for GPU 타입 list endpoint and validation in `backend/tests/api/test_training_gpu_types.py`
+- [X] T008 [P] [US1] Add API client method to fetch GPU 타입 옵션 in `frontend/src/services/trainingClient.ts`
+- [X] T009 [US1] Update Training JobSubmit UI to load GPU 타입 목록 (loading/error/empty states) in `frontend/src/pages/training/JobSubmit.vue`
+- [X] T010 [P] [US1] Add frontend unit/E2E test for dynamic GPU 타입 select in `frontend/tests/unit/training/jobSubmit.spec.ts`
+
+## Phase 4 - Polish & Docs
+- [X] T011 Update quickstart/docs with GPU 타입 API usage and config instructions in `specs/001-open-source-integration/quickstart.md`
+
+## Dependencies
+- Phase 1 → Phase 2 → Phase 3 → Phase 4
+- Within Phase 3: T005 before T004/T006; T004 before frontend consumption (T008, T009). Tests (T007, T010) can run after corresponding impls.
+
+## Parallelization Examples
+- After T005: backend route (T004) and frontend client/UI (T008, T009) can proceed; tests (T007, T010) in parallel once code exists.
+
+## Implementation Strategy
+- MVP: Complete Phase 1–3 (T001–T009) to deliver dynamic GPU 타입 selection end-to-end.
+- Add tests (T007, T010) and docs (T011) before close-out.
 # Tasks: Open Source Integration for LLM Ops Platform
 
 **Input**: Design documents from `/specs/001-open-source-integration/`

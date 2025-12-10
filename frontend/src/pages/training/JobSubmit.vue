@@ -6,7 +6,7 @@
 
     <form @submit.prevent="submitJob">
       <div class="form-section">
-        <h2>Job Configuration</h2>
+        <h2 class="section-title">Job Configuration</h2>
         
         <div class="form-group">
           <label for="jobType">Job Type: <span class="required">*</span></label>
@@ -61,7 +61,7 @@
       </div>
 
       <div class="form-section">
-        <h2>Resource Configuration</h2>
+        <h2 class="section-title">Resource Configuration</h2>
         
         <div class="form-group">
           <label>
@@ -104,12 +104,24 @@
 
           <div class="form-group">
             <label for="gpuType">GPU Type: <span class="required">*</span></label>
-            <select id="gpuType" v-model="form.resourceProfile.gpuType" :required="form.useGpu">
-              <option value="nvidia-tesla-v100">NVIDIA Tesla V100</option>
-              <option value="nvidia-tesla-a100">NVIDIA Tesla A100</option>
-              <option value="nvidia-rtx-3090">NVIDIA RTX 3090</option>
-              <option value="nvidia-rtx-4090">NVIDIA RTX 4090</option>
+            <select
+              id="gpuType"
+              v-model="form.resourceProfile.gpuType"
+              :required="form.useGpu"
+              :disabled="gpuTypesLoading || !gpuTypes.length"
+            >
+              <option v-if="gpuTypesLoading" disabled>Loading GPU types...</option>
+              <option v-else-if="!gpuTypes.length" disabled>No GPU types configured</option>
+              <option
+                v-else
+                v-for="gpu in gpuTypes"
+                :key="gpu.id"
+                :value="gpu.id"
+              >
+                {{ gpu.label || gpu.id }}
+              </option>
             </select>
+            <small v-if="gpuTypesError" class="help-text error">{{ gpuTypesError }}</small>
           </div>
         </template>
 
@@ -152,122 +164,132 @@
       </div>
 
       <div class="form-section">
-        <h2>Training Job Configuration</h2>
-        <p class="step-intro" style="margin-bottom: 1rem; color: #666; font-size: 0.9rem;">
-          아래 필드들을 입력하면 자동으로 검증되고 실험 추적 시스템에 기록됩니다.
-        </p>
-        
-        <div class="form-group">
-          <label for="modelFamily">Model Family: <span class="required">*</span></label>
-          <select id="modelFamily" v-model="trainJobSpec.model_family" required>
-            <option value="">Select model family</option>
-            <option value="llama">Llama</option>
-            <option value="mistral">Mistral</option>
-            <option value="gemma">Gemma</option>
-            <option value="bert">BERT</option>
-          </select>
-          <small class="help-text">Select the model architecture family</small>
-        </div>
+        <h2 class="section-title">Advanced Settings</h2>
+        <label style="display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" v-model="showAdvanced" />
+          고급 설정 보기 (TrainJobSpec, 추가 하이퍼파라미터)
+        </label>
+      </div>
 
-        <div class="form-group">
-          <label for="trainJobType">Job Type (Standardized): <span class="required">*</span></label>
-          <select id="trainJobType" v-model="trainJobSpec.job_type" @change="onTrainJobTypeChange" required>
-            <option value="">Select job type</option>
-            <option value="PRETRAIN">PRETRAIN (from scratch)</option>
-            <option value="SFT">SFT (Supervised Fine-tuning)</option>
-            <option value="RAG_TUNING">RAG_TUNING (RAG retriever/reader)</option>
-            <option value="RLHF">RLHF (Reward Modeling + PPO)</option>
-            <option value="EMBEDDING">EMBEDDING (Embedding model)</option>
-          </select>
-          <small class="help-text">Select the type of training job</small>
-        </div>
+      <template v-if="showAdvanced">
+        <div class="form-section">
+          <h2 class="section-title">Training Job Configuration</h2>
+          <p class="step-intro" style="margin-bottom: 1rem; color: #666; font-size: 0.9rem;">
+            아래 필드들을 입력하면 자동으로 검증되고 실험 추적 시스템에 기록됩니다.
+          </p>
+          
+          <div class="form-group">
+            <label for="modelFamily">Model Family: <span class="required">*</span></label>
+            <select id="modelFamily" v-model="trainJobSpec.model_family" required>
+              <option value="">Select model family</option>
+              <option value="llama">Llama</option>
+              <option value="mistral">Mistral</option>
+              <option value="gemma">Gemma</option>
+              <option value="bert">BERT</option>
+            </select>
+            <small class="help-text">Select the model architecture family</small>
+          </div>
 
-        <div v-if="trainJobSpec.job_type && trainJobSpec.job_type !== 'PRETRAIN'" class="form-group">
-          <label for="baseModelRef">Base Model Reference: <span class="required">*</span></label>
-          <input
-            id="baseModelRef"
-            v-model="trainJobSpec.base_model_ref"
-            type="text"
-            :required="trainJobSpec.job_type !== 'PRETRAIN'"
-            placeholder="e.g., llama-3-8b-pretrain-v1"
-          />
-          <small class="help-text">Required for SFT/RAG_TUNING/RLHF (reference to pretrained model)</small>
-        </div>
+          <div class="form-group">
+            <label for="trainJobType">Job Type (Standardized): <span class="required">*</span></label>
+            <select id="trainJobType" v-model="trainJobSpec.job_type" @change="onTrainJobTypeChange" required>
+              <option value="">Select job type</option>
+              <option value="PRETRAIN">PRETRAIN (from scratch)</option>
+              <option value="SFT">SFT (Supervised Fine-tuning)</option>
+              <option value="RAG_TUNING">RAG_TUNING (RAG retriever/reader)</option>
+              <option value="RLHF">RLHF (Reward Modeling + PPO)</option>
+              <option value="EMBEDDING">EMBEDDING (Embedding model)</option>
+            </select>
+            <small class="help-text">Select the type of training job</small>
+          </div>
 
-        <div class="form-group">
-          <label for="trainingMethod">Training Method: <span class="required">*</span></label>
-          <select id="trainingMethod" v-model="trainJobSpec.method" required>
-            <option value="full">Full (full parameter training)</option>
-            <option value="lora">LoRA (Low-Rank Adaptation)</option>
-            <option value="qlora">QLoRA (Quantized LoRA)</option>
-          </select>
-          <small class="help-text">PRETRAIN must use 'full', others allow lora/qlora/full</small>
-        </div>
+          <div v-if="trainJobSpec.job_type && trainJobSpec.job_type !== 'PRETRAIN'" class="form-group">
+            <label for="baseModelRef">Base Model Reference: <span class="required">*</span></label>
+            <input
+              id="baseModelRef"
+              v-model="trainJobSpec.base_model_ref"
+              type="text"
+              :required="trainJobSpec.job_type !== 'PRETRAIN'"
+              placeholder="e.g., llama-3-8b-pretrain-v1"
+            />
+            <small class="help-text">Required for SFT/RAG_TUNING/RLHF (reference to pretrained model)</small>
+          </div>
 
-        <div class="form-group">
-          <h3 style="margin: 1rem 0 0.5rem 0; font-size: 1rem;">Hyperparameters</h3>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-            <div>
-              <label for="learningRate">Learning Rate: <span class="required">*</span></label>
-              <input id="learningRate" v-model.number="trainJobSpec.hyperparams.lr" type="number" step="0.0001" min="0" required />
+          <div class="form-group">
+            <label for="trainingMethod">Training Method: <span class="required">*</span></label>
+            <select id="trainingMethod" v-model="trainJobSpec.method" required>
+              <option value="full">Full (full parameter training)</option>
+              <option value="lora">LoRA (Low-Rank Adaptation)</option>
+              <option value="qlora">QLoRA (Quantized LoRA)</option>
+            </select>
+            <small class="help-text">PRETRAIN must use 'full', others allow lora/qlora/full</small>
+          </div>
+
+          <div class="form-group">
+            <h3 class="subsection-title">Hyperparameters</h3>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+              <div>
+                <label for="learningRate">Learning Rate: <span class="required">*</span></label>
+                <input id="learningRate" v-model.number="trainJobSpec.hyperparams.lr" type="number" step="0.0001" min="0" required />
+              </div>
+              <div>
+                <label for="batchSize">Batch Size: <span class="required">*</span></label>
+                <input id="batchSize" v-model.number="trainJobSpec.hyperparams.batch_size" type="number" min="1" required />
+              </div>
+              <div>
+                <label for="numEpochs">Number of Epochs: <span class="required">*</span></label>
+                <input id="numEpochs" v-model.number="trainJobSpec.hyperparams.num_epochs" type="number" min="1" required />
+              </div>
+              <div>
+                <label for="maxSeqLen">Max Sequence Length: <span class="required">*</span></label>
+                <input id="maxSeqLen" v-model.number="trainJobSpec.hyperparams.max_seq_len" type="number" min="1" required />
+              </div>
+              <div>
+                <label for="precision">Precision: <span class="required">*</span></label>
+                <select id="precision" v-model="trainJobSpec.hyperparams.precision" required>
+                  <option value="fp16">FP16</option>
+                  <option value="bf16">BF16</option>
+                </select>
+              </div>
             </div>
-            <div>
-              <label for="batchSize">Batch Size: <span class="required">*</span></label>
-              <input id="batchSize" v-model.number="trainJobSpec.hyperparams.batch_size" type="number" min="1" required />
-            </div>
-            <div>
-              <label for="numEpochs">Number of Epochs: <span class="required">*</span></label>
-              <input id="numEpochs" v-model.number="trainJobSpec.hyperparams.num_epochs" type="number" min="1" required />
-            </div>
-            <div>
-              <label for="maxSeqLen">Max Sequence Length: <span class="required">*</span></label>
-              <input id="maxSeqLen" v-model.number="trainJobSpec.hyperparams.max_seq_len" type="number" min="1" required />
-            </div>
-            <div>
-              <label for="precision">Precision: <span class="required">*</span></label>
-              <select id="precision" v-model="trainJobSpec.hyperparams.precision" required>
-                <option value="fp16">FP16</option>
-                <option value="bf16">BF16</option>
-              </select>
+          </div>
+
+          <div class="form-group">
+            <h3 class="subsection-title">Output Configuration</h3>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+              <div>
+                <label for="artifactName">Artifact Name: <span class="required">*</span></label>
+                <input id="artifactName" v-model="trainJobSpec.output.artifact_name" type="text" required placeholder="e.g., llama-3-8b-sft-v1" />
+              </div>
+              <div>
+                <label for="saveFormat">Save Format: <span class="required">*</span></label>
+                <select id="saveFormat" v-model="trainJobSpec.output.save_format" required>
+                  <option value="hf">Hugging Face</option>
+                  <option value="safetensors">SafeTensors</option>
+                </select>
+              </div>
             </div>
           </div>
         </div>
 
-        <div class="form-group">
-          <h3 style="margin: 1rem 0 0.5rem 0; font-size: 1rem;">Output Configuration</h3>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-            <div>
-              <label for="artifactName">Artifact Name: <span class="required">*</span></label>
-              <input id="artifactName" v-model="trainJobSpec.output.artifact_name" type="text" required placeholder="e.g., llama-3-8b-sft-v1" />
-            </div>
-            <div>
-              <label for="saveFormat">Save Format: <span class="required">*</span></label>
-              <select id="saveFormat" v-model="trainJobSpec.output.save_format" required>
-                <option value="hf">Hugging Face</option>
-                <option value="safetensors">SafeTensors</option>
-              </select>
-            </div>
+        <div class="form-section">
+          <h2 class="section-title">Advanced Options (Legacy)</h2>
+          <p class="step-intro" style="margin-bottom: 1rem; color: #666; font-size: 0.9rem;">
+            기존 방식의 하이퍼파라미터 설정 (TrainJobSpec과 함께 사용 가능)
+          </p>
+          
+          <div class="form-group">
+            <label for="hyperparameters">Additional Hyperparameters (JSON):</label>
+            <textarea
+              id="hyperparameters"
+              v-model="hyperparametersJson"
+              rows="6"
+              placeholder='{"batch_size": 32, "epochs": 10, ...}'
+            ></textarea>
+            <small class="help-text">Optional: Additional training hyperparameters (will be merged with architecture config if provided)</small>
           </div>
         </div>
-      </div>
-
-      <div class="form-section">
-        <h2>Advanced Options (Legacy)</h2>
-        <p class="step-intro" style="margin-bottom: 1rem; color: #666; font-size: 0.9rem;">
-          기존 방식의 하이퍼파라미터 설정 (TrainJobSpec과 함께 사용 가능)
-        </p>
-        
-        <div class="form-group">
-          <label for="hyperparameters">Additional Hyperparameters (JSON):</label>
-          <textarea
-            id="hyperparameters"
-            v-model="hyperparametersJson"
-            rows="6"
-            placeholder='{"batch_size": 32, "epochs": 10, ...}'
-          ></textarea>
-          <small class="help-text">Optional: Additional training hyperparameters (will be merged with architecture config if provided)</small>
-        </div>
-      </div>
+      </template>
 
       <div class="form-actions">
         <button type="button" @click="router.push('/training/jobs')" class="btn-cancel">Cancel</button>
@@ -284,7 +306,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, watch } from "vue";
 import { useRouter } from "vue-router";
-import { trainingClient, type TrainingJobRequest, type TrainJobSpec, type DatasetRef } from "@/services/trainingClient";
+import { trainingClient, type TrainingJobRequest, type TrainJobSpec, type DatasetRef, type GpuTypeOption } from "@/services/trainingClient";
 import { catalogClient } from "@/services/catalogClient";
 
 const router = useRouter();
@@ -296,9 +318,9 @@ const form = reactive<TrainingJobRequest>({
   useGpu: true,
   resourceProfile: {
     gpuCount: 1,
-    gpuType: "nvidia-tesla-v100",
+    gpuType: "",
     maxDuration: 60,
-    numNodes: 2,
+    numNodes: 1,
     cpuCores: 4,
     memory: "8Gi",
   },
@@ -324,7 +346,7 @@ const trainJobSpec = reactive<Partial<TrainJobSpec>>({
   method: "lora",
   resources: {
     gpus: 1,
-    gpu_type: "A100",
+    gpu_type: "",
     nodes: 1,
   },
   output: {
@@ -336,6 +358,10 @@ const trainJobSpec = reactive<Partial<TrainJobSpec>>({
 
 const models = ref<Array<{ id: string; name: string; version: string }>>([]);
 const datasets = ref<Array<{ id: string; name: string; version: string; storage_uri?: string }>>([]);
+const gpuTypes = ref<GpuTypeOption[]>([]);
+const gpuTypesLoading = ref(true);
+const gpuTypesError = ref("");
+const showAdvanced = ref(false);
 const submitting = ref(false);
 const message = ref("");
 const messageType = ref<"success" | "error">("success");
@@ -460,7 +486,9 @@ const onUseGpuChange = () => {
   if (form.useGpu) {
     // Switching to GPU - ensure GPU fields are set
     if (!form.resourceProfile.gpuCount) form.resourceProfile.gpuCount = 1;
-    if (!form.resourceProfile.gpuType) form.resourceProfile.gpuType = "nvidia-tesla-v100";
+    if (!form.resourceProfile.gpuType && gpuTypes.value.length > 0) {
+      form.resourceProfile.gpuType = gpuTypes.value[0].id;
+    }
   } else {
     // Switching to CPU-only - ensure CPU fields are set
     if (!form.resourceProfile.cpuCores) form.resourceProfile.cpuCores = 4;
@@ -486,15 +514,47 @@ const validateArchitecture = () => {
   }
 };
 
+const applyDefaultGpuType = () => {
+  if (!form.resourceProfile.gpuType && gpuTypes.value.length > 0) {
+    form.resourceProfile.gpuType = gpuTypes.value[0].id;
+  }
+  if (!trainJobSpec.resources?.gpu_type && gpuTypes.value.length > 0) {
+    trainJobSpec.resources = {
+      ...(trainJobSpec.resources || {}),
+      gpu_type: gpuTypes.value[0].id,
+    };
+  }
+};
+
+const loadGpuTypes = async () => {
+  gpuTypesLoading.value = true;
+  gpuTypesError.value = "";
+  try {
+    const res = await trainingClient.listGpuTypes();
+    if (res.status === "success" && res.data?.gpuTypes) {
+      gpuTypes.value = res.data.gpuTypes.filter((g) => g.enabled !== false);
+      applyDefaultGpuType();
+    } else {
+      gpuTypesError.value = res.message || "Failed to load GPU types";
+    }
+  } catch (e) {
+    gpuTypesError.value = String(e);
+  } finally {
+    gpuTypesLoading.value = false;
+  }
+};
+
 onMounted(async () => {
   // Load models and datasets for selection
   try {
-    const modelsRes = await catalogClient.listModels();
+    await loadGpuTypes();
+    
+    const modelsRes = await catalogClient.listModels("approved");
     if (modelsRes.status === "success" && modelsRes.data) {
       models.value = Array.isArray(modelsRes.data) ? modelsRes.data : [modelsRes.data];
     }
     
-    const datasetsRes = await catalogClient.listDatasets();
+    const datasetsRes = await catalogClient.listDatasets(true);
     if (datasetsRes.status === "success" && datasetsRes.data) {
       const datasetsArray = Array.isArray(datasetsRes.data) ? datasetsRes.data : [datasetsRes.data];
       datasets.value = datasetsArray;
@@ -561,7 +621,7 @@ async function submitJob() {
       // Update resources from form
       if (form.useGpu && form.resourceProfile.gpuCount) {
         trainJobSpec.resources.gpus = form.resourceProfile.gpuCount;
-        trainJobSpec.resources.gpu_type = form.resourceProfile.gpuType || "A100";
+        trainJobSpec.resources.gpu_type = form.resourceProfile.gpuType || gpuTypes.value[0]?.id || "";
       }
       if (form.resourceProfile.numNodes) {
         trainJobSpec.resources.nodes = form.resourceProfile.numNodes;
@@ -600,7 +660,7 @@ async function submitJob() {
 
 <style scoped>
 .job-submit {
-  max-width: 800px;
+  max-width: 900px;
   margin: 0 auto;
   padding: 20px;
 }
@@ -609,50 +669,52 @@ header {
   margin-bottom: 30px;
 }
 
-.back-link {
-  display: inline-block;
-  margin-bottom: 10px;
-  color: #007bff;
-  text-decoration: none;
-  font-size: 14px;
-}
-
-.back-link:hover {
-  text-decoration: underline;
-}
-
-h1 {
+header h1 {
   margin: 0;
-  font-size: 24px;
+  font-size: 28px;
   font-weight: 600;
 }
 
 .form-section {
-  background: white;
-  border: 1px solid #e9ecef;
+  background: #fff;
+  border: 1px solid #e0e0e0;
   border-radius: 8px;
-  padding: 20px;
-  margin-bottom: 20px;
+  padding: 24px;
+  margin-bottom: 24px;
 }
 
-.form-section h2 {
-  margin: 0 0 20px 0;
-  font-size: 18px;
+.section-title {
+  margin: 0 0 12px 0;
+  font-size: 20px;
   font-weight: 600;
-  color: #495057;
+  color: #333;
   border-bottom: 2px solid #e9ecef;
   padding-bottom: 10px;
 }
 
+.subsection-title {
+  margin: 0 0 12px 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #444;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
 .form-group {
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 .form-group label {
   display: block;
   margin-bottom: 8px;
   font-weight: 500;
-  color: #495057;
+  color: #333;
   font-size: 14px;
 }
 
@@ -664,11 +726,12 @@ h1 {
 .form-group input,
 .form-group textarea {
   width: 100%;
-  padding: 10px;
-  border: 1px solid #ced4da;
+  padding: 10px 12px;
+  border: 1px solid #ddd;
   border-radius: 4px;
   font-size: 14px;
   font-family: inherit;
+  transition: border-color 0.2s;
 }
 
 .form-group select:disabled {
@@ -676,16 +739,25 @@ h1 {
   cursor: not-allowed;
 }
 
+.form-group input:focus,
+.form-group select:focus,
+.form-group textarea:focus {
+  outline: none;
+  border-color: #007bff;
+  box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.1);
+}
+
 .form-group textarea {
   font-family: monospace;
   resize: vertical;
 }
 
-.help-text {
+.help-text,
+small {
   display: block;
-  margin-top: 5px;
+  margin-top: 6px;
   font-size: 12px;
-  color: #6c757d;
+  color: #666;
 }
 
 .error-text {
@@ -697,19 +769,22 @@ h1 {
 
 .form-actions {
   display: flex;
-  gap: 10px;
   justify-content: flex-end;
-  margin-top: 30px;
+  gap: 12px;
+  margin-top: 32px;
+  padding-top: 24px;
+  border-top: 2px solid #e9ecef;
 }
 
-button {
+.btn-submit,
+.btn-cancel {
   padding: 12px 24px;
   border: none;
   border-radius: 4px;
-  font-size: 14px;
-  font-weight: 500;
   cursor: pointer;
-  transition: background 0.2s;
+  font-size: 15px;
+  font-weight: 500;
+  transition: all 0.2s;
 }
 
 .btn-submit {
@@ -722,9 +797,8 @@ button {
 }
 
 .btn-submit:disabled {
-  background: #6c757d;
+  background: #ccc;
   cursor: not-allowed;
-  opacity: 0.6;
 }
 
 .btn-cancel {
@@ -732,13 +806,13 @@ button {
   color: white;
 }
 
-.btn-cancel:hover {
+.btn-cancel:hover:not(:disabled) {
   background: #5a6268;
 }
 
 .message {
   margin-top: 20px;
-  padding: 12px;
+  padding: 12px 16px;
   border-radius: 4px;
   font-size: 14px;
 }
@@ -753,5 +827,19 @@ button {
   background: #f8d7da;
   color: #721c24;
   border: 1px solid #f5c6cb;
+}
+
+@media (max-width: 768px) {
+  .job-submit {
+    padding: 16px;
+  }
+  
+  .form-row {
+    grid-template-columns: 1fr;
+  }
+  
+  .form-section {
+    padding: 16px;
+  }
 }
 </style>

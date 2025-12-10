@@ -24,8 +24,8 @@ class CatalogService:
         self.models = ModelCatalogRepository(session)
         self.datasets = DatasetRepository(session)
 
-    def list_entries(self) -> Sequence[orm_models.ModelCatalogEntry]:
-        return self.models.list()
+    def list_entries(self, status: str | None = None) -> Sequence[orm_models.ModelCatalogEntry]:
+        return self.models.list(status=status)
 
     def get_entry(self, entry_id: str) -> orm_models.ModelCatalogEntry | None:
         return self.models.get(entry_id)
@@ -351,6 +351,7 @@ class CatalogService:
             ".ckpt",  # TensorFlow checkpoint
             ".tflite",  # TensorFlow Lite
             ".md",  # Documentation files bundled with models (e.g., README.md)
+            ".jinja",  # Prompt/template files (e.g., chat_template.jinja)
         }
 
         filenames = [f.filename for f in files]

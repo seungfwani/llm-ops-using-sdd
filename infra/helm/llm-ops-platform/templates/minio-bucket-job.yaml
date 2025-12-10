@@ -1,0 +1,45 @@
+{{- if and .Values.minioBucketJob.enabled .Values.objectStore.createBucket }}
+{{- if .Values.dependencies.minio.enabled }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-create-bucket
+  labels:
+    {{- include "llmops.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "llmops.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: {{ .Values.objectStore.jobImage }}
+          env:
+            - name: MC_HOST_local
+              value: http://$(MINIO_ROOT_USER):$(MINIO_ROOT_PASSWORD)@{{ .Values.objectStore.endpoint | trimPrefix "http://" | trimPrefix "https://" }}
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: minio-secret
+                  key: MINIO_ROOT_USER
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: MINIO_ROOT_PASSWORD
+          command:
+            - /bin/sh
+            - -c
+            - >
+              mc ls local || exit 1;
+              mc mb --ignore-existing local/{{ .Values.objectStore.bucket }};
+              mc anonymous set none local/{{ .Values.objectStore.bucket }};
+{{- end }}
+{{- end }}
+

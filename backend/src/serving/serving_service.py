@@ -55,7 +55,6 @@ class ServingService:
     def deploy_endpoint(
         self,
         model_entry_id: str,
-        model_version: str,
         environment: str,
         route: str,
         min_replicas: int = 1,
@@ -107,10 +106,8 @@ class ServingService:
             raise ValueError(f"Model entry {model_entry_id} not found")
         if model_entry.status != "approved":
             raise ValueError(f"Model entry {model_entry_id} is not approved")
-        if model_entry.version != model_version:
-            raise ValueError(
-                f"Model entry {model_entry_id} version mismatch: expected {model_entry.version}, got {model_version}"
-            )
+        # Always use the catalog entry's version as the effective model version.
+        effective_model_version = model_entry.version
 
         # Check if route already exists in this environment
         existing = self.endpoint_repo.get_by_route(environment, route)
@@ -899,13 +896,15 @@ class ServingService:
             if success:
                 logger.info(f"Successfully deleted Kubernetes resources for endpoint {endpoint_id}")
             else:
-                logger.warning(f"Failed to delete Kubernetes resources for {endpoint_id}, but continuing with database deletion")
+                logger.warning(f"Failed to delete Kubernetes resources for {endpoint_id}; skipping database deletion")
+                return False
         except Exception as k8s_error:
-            # Log the error but continue with database deletion
+            # Log the error and do NOT delete from DB if k8s cleanup failed
             logger.error(f"Exception while deleting Kubernetes resources for {endpoint_id}: {k8s_error}", exc_info=True)
-            logger.warning(f"Continuing with database deletion despite Kubernetes deletion failure")
+            logger.warning("Skipping database deletion because Kubernetes resources were not cleaned up")
+            return False
 
-        # Delete from database (always, even if Kubernetes deletion failed)
+        # Delete from database only after Kubernetes resources are confirmed deleted
         try:
             self.endpoint_repo.delete(endpoint)
             logger.info(f"Deleted serving endpoint {endpoint_id} from database")

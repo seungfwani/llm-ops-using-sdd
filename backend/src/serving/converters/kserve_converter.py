@@ -1,6 +1,8 @@
 """DeploymentSpec to KServe InferenceService format converter."""
 
 from typing import Dict, Any, Optional
+from urllib.parse import urlparse
+
 from serving.schemas import DeploymentSpec
 
 
@@ -80,21 +82,95 @@ class KServeConverter:
 
         # Prepare container args/env so runtime actually loads provided model_uri
         container_args = None
+
+        # Detect S3/MinIO URI; if so, sync to local path via initContainer + emptyDir
+        parsed = urlparse(model_uri)
+        is_s3_scheme = parsed.scheme in ("s3", "minio", "s3+http", "s3+https")
+        local_model_path = model_uri
+
+        volumes = []
+        volume_mounts = []
+        init_containers = []
+
+        if is_s3_scheme:
+            local_model_path = f"/models/{parsed.netloc}{parsed.path}".rstrip("/")
+            volumes.append(
+                {
+                    "name": "model-cache",
+                    "emptyDir": {},
+                }
+            )
+            volume_mounts.append(
+                {
+                    "name": "model-cache",
+                    "mountPath": "/models",
+                }
+            )
+            init_env = [
+                {
+                    "name": "AWS_ACCESS_KEY_ID",
+                    "valueFrom": {
+                        "secretKeyRef": {
+                            "name": "llm-ops-object-store-credentials",
+                            "key": "access-key-id",
+                        }
+                    },
+                },
+                {
+                    "name": "AWS_SECRET_ACCESS_KEY",
+                    "valueFrom": {
+                        "secretKeyRef": {
+                            "name": "llm-ops-object-store-credentials",
+                            "key": "secret-access-key",
+                        }
+                    },
+                },
+                {
+                    "name": "AWS_ENDPOINT_URL",
+                    "valueFrom": {
+                        "configMapKeyRef": {
+                            "name": "llm-ops-object-store-config",
+                            "key": "endpoint-url",
+                        }
+                    },
+                },
+                {"name": "AWS_DEFAULT_REGION", "value": "us-east-1"},
+            ]
+            sync_cmd = (
+                f"mkdir -p '{local_model_path}' && "
+                f"aws s3 sync '{model_uri}' '{local_model_path}' --no-progress"
+            )
+            init_containers.append(
+                {
+                    "name": "sync-model",
+                    "image": "amazon/aws-cli:2.15.50",
+                    "command": ["/bin/sh", "-c"],
+                    "args": [sync_cmd],
+                    "env": init_env,
+                    "volumeMounts": volume_mounts,
+                }
+            )
+
         env = [
             {"name": "PORT", "value": "8080"},
-            {"name": "MODEL_URI", "value": model_uri},
-            {"name": "MODEL_STORAGE_URI", "value": model_uri},
+            {"name": "MODEL_STORAGE_URI", "value": local_model_path},
             {"name": "MAX_CONCURRENT_REQUESTS", "value": str(spec.runtime.max_concurrent_requests)},
             {"name": "MAX_INPUT_TOKENS", "value": str(spec.runtime.max_input_tokens)},
             {"name": "MAX_OUTPUT_TOKENS", "value": str(spec.runtime.max_output_tokens)},
             {"name": "SERVE_TARGET", "value": spec.serve_target},
+            # Force offline/local loading; prevent HF Hub lookups
+            {"name": "HF_HUB_OFFLINE", "value": "1"},
+            {"name": "TRANSFORMERS_OFFLINE", "value": "1"},
+            {"name": "HF_ENDPOINT", "value": ""},
+            {"name": "HF_HUB_DISABLE_TELEMETRY", "value": "1"},
+            {"name": "HF_HOME", "value": "/tmp/hf_cache"},
         ]
 
         if is_vllm:
             # vLLM entrypoint needs explicit --model argument; set port to 8080 for KServe
             container_args = [
                 "--model",
-                model_uri,
+                local_model_path,
                 "--host",
                 "0.0.0.0",
                 "--port",
@@ -106,17 +182,11 @@ class KServeConverter:
                 # Ensure CPU mode is enforced before model flag
                 container_args = ["--device", "cpu"] + container_args
         elif is_tgi:
-            # TGI defaults to bigscience/bloom-560m when MODEL_ID is missing.
-            # Prefer HF ID from metadata; fall back to storage URI (e.g., MinIO/S3).
-            hf_model_id = None
-            if model_metadata and isinstance(model_metadata, dict):
-                hf_model_id = model_metadata.get("huggingface_model_id") or model_metadata.get("model_id")
-            model_id = hf_model_id or model_uri
-            env.append({"name": "MODEL_ID", "value": model_id})
-            # Explicit launcher args so port/model align with KServe expectations
+            # Always use local_model_path as model-id to avoid HF Hub resolution.
+            env.append({"name": "MODEL_ID", "value": local_model_path})
             container_args = [
                 "--model-id",
-                model_id,
+                local_model_path,
                 "--hostname",
                 "0.0.0.0",
                 "--port",
@@ -148,9 +218,16 @@ class KServeConverter:
             },
         }
 
-        # Attach container args when needed so runtime loads correct model
+        # Attach container args and mounts when needed so runtime loads correct model
+        container_spec = inference_service["spec"]["predictor"]["containers"][0]
         if container_args:
-            inference_service["spec"]["predictor"]["containers"][0]["args"] = container_args
+            container_spec["args"] = container_args
+        if volume_mounts:
+            container_spec["volumeMounts"] = volume_mounts
+        if init_containers:
+            inference_service["spec"]["predictor"]["initContainers"] = init_containers
+        if volumes:
+            inference_service["spec"]["predictor"]["volumes"] = volumes
 
         # Add canary deployment config if rollout strategy is canary
         if spec.rollout and spec.rollout.strategy == "canary" and spec.rollout.traffic_split:

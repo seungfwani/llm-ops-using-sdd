@@ -20,6 +20,10 @@ This specification defines the migration strategy from custom implementations to
 - Q: When should training-serving-spec.md validation rules be applied, and how should existing training jobs and serving endpoints be handled? → A: Immediate validation with existing data rejection - All newly submitted training jobs and serving deployments MUST be validated immediately against training-serving-spec.md rules. Existing submitted jobs MUST also be re-validated, and jobs that do not satisfy the spec MUST be rejected.
 - Q: How should the platform handle local development environments without GPU support? → A: CPU-based image fallback - The platform MUST support both GPU and CPU-based container images for each job_type and serve_target. When GPU is unavailable or `use_gpu=False`, the platform MUST automatically select CPU-based images from configuration. Image configuration MUST support both `gpu` and `cpu` variants for all training and serving images to enable local development without GPU hardware.
 
+### Session 2025-12-10
+
+- Q: How should the training UI obtain available GPU types for job submission? → A: Backend-configured list - The backend must expose GPU type options sourced from configuration/DB (e.g., env/ConfigMap or integration config), and the frontend must fetch and render this list instead of hardcoding values.
+
 ## Assumptions & Dependencies
 
 - The existing platform architecture (FastAPI backend, Vue.js frontend, PostgreSQL, Kubernetes) remains the foundation.
@@ -188,6 +192,9 @@ Users navigate the platform through a reorganized top navigation menu that group
 - **FR-029**: The platform MUST validate all training job submissions immediately against training-serving-spec.md rules (model_family whitelist, dataset type compatibility, base_model_ref requirements, method constraints, etc.). Jobs that fail validation MUST be rejected with clear error messages indicating which rule was violated. Validation MUST occur before job submission is accepted.
 - **FR-030**: The platform MUST validate all serving deployment requests immediately against training-serving-spec.md DeploymentSpec rules (model_family compatibility, job_type and serve_target compatibility, resource constraints, etc.). Deployments that fail validation MUST be rejected with clear error messages.
 - **FR-031**: The platform MUST re-validate existing training jobs and serving endpoints against training-serving-spec.md rules. Jobs or deployments that do not satisfy the spec MUST be marked as non-compliant and MUST be rejected for execution or updates. The platform MUST provide migration guidance or tools to help users update non-compliant jobs to meet the spec requirements.
+- **FR-032**: Training job submission UI MUST obtain selectable GPU types from a backend API that sources its list from configuration/DB (e.g., env/ConfigMap or integration config). Hardcoded GPU type options in the frontend are prohibited. The backend MUST validate requested gpu_type against the configured list per environment.
+- **FR-033**: The platform MUST provide a Helm-based deployment package that installs core dependencies (PostgreSQL, Redis, MinIO), NVIDIA device plugin, and KServe using the official KServe Helm chart. Namespace creation MUST be handled via Helm CLI `--namespace --create-namespace` (no namespace manifests). Default service ports MUST match the existing scripts (PostgreSQL 5432, Redis 6379, MinIO API 9000, MinIO Console 9001).
+- **FR-034**: The Helm package MUST configure GPU time-slicing by default with NVIDIA device plugin (kube-system) exposing 10 slices per GPU via timeSlicing. It MUST include post-install/upgrade hooks that (a) create or reuse a self-signed webhook certificate for KServe if cert-manager is absent, (b) patch KServe webhooks with the CA bundle, and (c) set `inferenceservice-config` `defaultDeploymentMode=Standard` (RawDeployment) in the KServe namespace.
 
 ### Key Entities *(include if feature involves data)*
 

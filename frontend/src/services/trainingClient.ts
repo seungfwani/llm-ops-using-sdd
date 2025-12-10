@@ -137,6 +137,21 @@ export interface EnvelopeExperiment {
   data?: Experiment;
 }
 
+export interface GpuTypeOption {
+  id: string;
+  label: string;
+  enabled: boolean;
+  priority?: number;
+}
+
+export interface EnvelopeGpuTypes {
+  status: "success" | "fail";
+  message: string;
+  data?: {
+    gpuTypes: GpuTypeOption[];
+  };
+}
+
 export const trainingClient = {
   async listJobs(filters?: ListJobsFilters): Promise<EnvelopeTrainingJobList> {
     const params = new URLSearchParams();
@@ -203,6 +218,14 @@ export const trainingClient = {
     const response = await apiClient.post<EnvelopeTrainingJob>(
       `/training/jobs/${jobId}/register-model`,
       request
+    );
+    return response.data;
+  },
+
+  async listGpuTypes(env?: "dev" | "stg" | "prod"): Promise<EnvelopeGpuTypes> {
+    const query = env ? `?env=${env}` : "";
+    const response = await apiClient.get<EnvelopeGpuTypes>(
+      `/training/gpu-types${query}`
     );
     return response.data;
   },

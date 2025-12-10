@@ -109,7 +109,6 @@ def deploy_endpoint(
     try:
         endpoint = service.deploy_endpoint(
             model_entry_id=request.modelId,
-            model_version=request.version,
             environment=request.environment,
             route=request.route,
             min_replicas=request.minReplicas,

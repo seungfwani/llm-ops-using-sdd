@@ -16,9 +16,83 @@ from serving.converters.kserve_converter import KServeConverter
 from serving.converters.ray_serve_converter import RayServeConverter
 from serving.schemas import DeploymentSpec
 from services.integration_config import IntegrationConfigService
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+def _build_s3_sync_resources(
+    model_uri: str,
+    target_root: str = "/models",
+    aws_cli_image: str = "amazon/aws-cli:2.15.50",
+):
+    """
+    Build K8s volume/initContainer specs to sync an S3/MinIO model URI to a local path.
+    Returns (local_model_path, volumes, volume_mounts, init_containers).
+    """
+    parsed = urlparse(model_uri)
+    local_model_path = f"{target_root}/{parsed.netloc}{parsed.path}".rstrip("/")
+
+    volumes = [
+        client.V1Volume(
+            name="model-cache",
+            empty_dir=client.V1EmptyDirVolumeSource(),
+        )
+    ]
+    volume_mounts = [
+        client.V1VolumeMount(
+            name="model-cache",
+            mount_path=target_root,
+        )
+    ]
+    init_env = [
+        client.V1EnvVar(
+            name="AWS_ACCESS_KEY_ID",
+            value_from=client.V1EnvVarSource(
+                secret_key_ref=client.V1SecretKeySelector(
+                    name="llm-ops-object-store-credentials",
+                    key="access-key-id",
+                )
+            ),
+        ),
+        client.V1EnvVar(
+            name="AWS_SECRET_ACCESS_KEY",
+            value_from=client.V1EnvVarSource(
+                secret_key_ref=client.V1SecretKeySelector(
+                    name="llm-ops-object-store-credentials",
+                    key="secret-access-key",
+                )
+            ),
+        ),
+        client.V1EnvVar(
+            name="AWS_ENDPOINT_URL",
+            value_from=client.V1EnvVarSource(
+                config_map_key_ref=client.V1ConfigMapKeySelector(
+                    name="llm-ops-object-store-config",
+                    key="endpoint-url",
+                )
+            ),
+        ),
+        client.V1EnvVar(name="AWS_DEFAULT_REGION", value="us-east-1"),
+    ]
+
+    sync_cmd = (
+        f"mkdir -p '{local_model_path}' && "
+        f"aws s3 sync '{model_uri}' '{local_model_path}' --no-progress"
+    )
+    init_containers = [
+        client.V1Container(
+            name="sync-model",
+            image=aws_cli_image,
+            command=["/bin/sh", "-c"],
+            args=[sync_cmd],
+            env=init_env,
+            volume_mounts=volume_mounts,
+        )
+    ]
+
+    return local_model_path, volumes, volume_mounts, init_containers
 
 
 class ServingDeployer:
@@ -603,37 +677,38 @@ class ServingDeployer:
                     "--served-model-name", endpoint_name,
                 ]
         elif is_tgi:
-            # TGI uses --model-id for Hugging Face model ID
-            # Try to extract Hugging Face model ID from metadata
-            hf_model_id = None
-            if model_metadata and isinstance(model_metadata, dict):
-                hf_model_id = model_metadata.get("huggingface_model_id")
-            
-            if hf_model_id:
-                # Use Hugging Face model ID - TGI will download it
+            parsed = urlparse(model_storage_uri)
+            is_s3_scheme = parsed.scheme in ("s3", "minio", "s3+http", "s3+https")
+
+            if is_s3_scheme:
+                local_model_path, volumes, volume_mounts, init_containers = _build_s3_sync_resources(
+                    model_storage_uri
+                )
+
                 container_args = [
-                    "--model-id", hf_model_id,
+                    "--model-id", local_model_path,
                     "--hostname", "0.0.0.0",
                     "--port", "8000",
                 ]
-                # Add --disable-custom-kernels for CPU-only mode
                 if not use_gpu:
                     container_args.append("--disable-custom-kernels")
                     logger.info("TGI CPU-only mode: Added --disable-custom-kernels flag")
-                logger.info(f"Using Hugging Face model ID for TGI: {hf_model_id}")
+
+                logger.info(
+                    f"TGI: initContainer will sync {model_storage_uri} to {local_model_path}, "
+                    f"serving locally."
+                )
             else:
-                # Fallback: TGI may not work well without HF model ID
-                logger.warning("No Hugging Face model ID found in metadata for TGI")
-                logger.warning("TGI requires Hugging Face model ID. Model may fail to load.")
-                # Still try to set MODEL_ID env var as fallback
+                # Local/posix path already provided
                 container_args = [
+                    "--model-id", model_storage_uri,
                     "--hostname", "0.0.0.0",
                     "--port", "8000",
                 ]
-                # Add --disable-custom-kernels for CPU-only mode
                 if not use_gpu:
                     container_args.append("--disable-custom-kernels")
                     logger.info("TGI CPU-only mode: Added --disable-custom-kernels flag")
+                logger.info(f"TGI: loading model from local path {model_storage_uri}")
         
         # Build environment variables list
         env_vars = [
@@ -672,6 +747,12 @@ class ServingDeployer:
                 name="AWS_DEFAULT_REGION",
                 value="us-east-1",  # Default region, can be made configurable
             ),
+            # Force offline/MinIO loading; prevent Hugging Face Hub network calls
+            client.V1EnvVar(name="HF_HUB_OFFLINE", value="1"),
+            client.V1EnvVar(name="TRANSFORMERS_OFFLINE", value="1"),
+            client.V1EnvVar(name="HF_ENDPOINT", value=""),
+            client.V1EnvVar(name="HF_HUB_DISABLE_TELEMETRY", value="1"),
+            client.V1EnvVar(name="HF_HOME", value="/tmp/hf_cache"),
         ]
         
         # Add TGI-specific environment variables for better download handling
@@ -734,12 +815,20 @@ class ServingDeployer:
                 logger.warning("Consider importing model from Hugging Face to get huggingface_model_id in metadata")
                 logger.warning("Alternatively, use vLLM runtime which supports S3 paths directly")
         
-        # No init containers needed:
-        # - vLLM: Supports S3 paths directly via --model argument
-        # - TGI: Should use Hugging Face model ID (--model-id) for direct download
-        init_containers = None
-        volumes = None
-        volume_mounts = None
+        # Preserve any init_containers/volumes/volume_mounts set in runtime-specific branches.
+        # If none were set, default to None.
+        try:
+            init_containers
+        except NameError:
+            init_containers = None
+        try:
+            volumes
+        except NameError:
+            volumes = None
+        try:
+            volume_mounts
+        except NameError:
+            volume_mounts = None
         
         # Ensure container_args is not None (empty list is OK, but None will cause issues)
         if container_args is None:
@@ -1584,29 +1673,60 @@ class ServingDeployer:
     ) -> bool:
         """Rollback KServe InferenceService by scaling down."""
         try:
-            # Get current InferenceService
-            inference_service = self.custom_api.get_namespaced_custom_object(
-                group="serving.kserve.io",
-                version="v1beta1",
-                namespace=namespace,
-                plural="inferenceservices",
-                name=endpoint_name,
-            )
-            
-            # Scale down to 0 replicas
-            inference_service["spec"]["predictor"]["minReplicas"] = 0
-            inference_service["spec"]["predictor"]["maxReplicas"] = 0
-            
-            self.custom_api.patch_namespaced_custom_object(
-                group="serving.kserve.io",
-                version="v1beta1",
-                namespace=namespace,
-                plural="inferenceservices",
-                name=endpoint_name,
-                body=inference_service,
-            )
-            logger.info(f"Rolled back KServe InferenceService {endpoint_name}")
-            return True
+            # Scale down backing deployments immediately (best-effort)
+            try:
+                deployments = self.apps_api.list_namespaced_deployment(
+                    namespace=namespace,
+                    label_selector=f"serving.kserve.io/inferenceservice={endpoint_name}",
+                )
+                for deploy in deployments.items:
+                    name = deploy.metadata.name
+                    self.apps_api.patch_namespaced_deployment_scale(
+                        name=name,
+                        namespace=namespace,
+                        body={"spec": {"replicas": 0}},
+                    )
+                    logger.info(f"Scaled down KServe deployment {name} to 0 replicas")
+            except ApiException as e:
+                # Non-blocking: still try to patch InferenceService
+                logger.warning(
+                    f"Failed to scale down predictor deployments for {endpoint_name}: {e}"
+                )
+
+            patch_body = {
+                "spec": {
+                    "predictor": {
+                        "scaling": {"minReplicas": 0},
+                        "minReplicas": 0,
+                        "replicas": 0,
+                    }
+                }
+            }
+
+            # Retry on resourceVersion conflict (409)
+            for attempt in range(3):
+                try:
+                    self.custom_api.patch_namespaced_custom_object(
+                        group="serving.kserve.io",
+                        version="v1beta1",
+                        namespace=namespace,
+                        plural="inferenceservices",
+                        name=endpoint_name,
+                        body=patch_body,
+                    )
+                    logger.info(f"Rolled back KServe InferenceService {endpoint_name}")
+                    return True
+                except ApiException as e:
+                    if e.status == 409 and attempt < 2:
+                        logger.warning(
+                            f"Conflict patching InferenceService {endpoint_name}, retrying (attempt {attempt+2}/3)"
+                        )
+                        time.sleep(1)
+                        continue
+                    logger.error(
+                        f"Failed to rollback KServe InferenceService {endpoint_name}: {e}"
+                    )
+                    return False
         except ApiException as e:
             logger.error(f"Failed to rollback KServe InferenceService {endpoint_name}: {e}")
             return False
