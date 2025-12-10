@@ -1024,6 +1024,7 @@ class ServingDeployer:
                     model_uri=model_storage_uri,
                     namespace=namespace,
                     endpoint_name=endpoint_name,
+                    model_metadata=model_metadata,
                 )
                 
                 # Deploy InferenceService using Kubernetes CustomObjectsApi
