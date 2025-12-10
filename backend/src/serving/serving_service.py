@@ -887,7 +887,7 @@ class ServingService:
 
         # Always try to delete Kubernetes resources, regardless of model type
         # The endpoint may have Kubernetes resources even if model_entry_id is None or external
-            endpoint_name = _get_endpoint_k8s_name(endpoint.id)
+        endpoint_name = _get_endpoint_k8s_name(endpoint.id)
         namespace = f"llm-ops-{endpoint.environment}"
         
         try:

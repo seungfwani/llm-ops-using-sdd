@@ -17,6 +17,7 @@ from services.experiment_tracking_service import ExperimentTrackingService
 from services.integration_config import IntegrationConfigService
 from training.converters.mlflow_converter import MLflowConverter
 from training.repositories import ExperimentMetricRepository, TrainingJobRepository
+from catalog.repositories import ModelCatalogRepository
 from training.scheduler import KubernetesScheduler
 from training.schemas import TrainJobSpec
 from training.validators.train_job_spec_validator import TrainJobSpecValidator
@@ -471,48 +472,34 @@ class TrainingJobService:
                     
                     updated = True
                     
-                    # Auto-register output model if enabled
+                    # Link existing output model if already registered by training pod
                     try:
                         output_model_config = job.resource_profile.get("outputModelConfig", {})
-                        auto_register = output_model_config.get("autoRegisterOutputModel", True)
-                        
-                        if auto_register and not job.output_model_entry_id:
-                            # Get output model name and version from config or generate defaults
-                            output_model_name = output_model_config.get("outputModelName")
-                            output_model_version = output_model_config.get("outputModelVersion")
-                            
-                            if not output_model_name:
-                                output_model_name = self._generate_model_name(job)
-                            if not output_model_version:
-                                output_model_version = self._generate_model_version(job)
-                            
-                            logger.info(
-                                f"Auto-registering output model for job {job.id}: "
-                                f"name={output_model_name}, version={output_model_version}"
+                        if not job.output_model_entry_id:
+                            output_model_name = output_model_config.get("outputModelName") or self._generate_model_name(job)
+                            output_model_version = output_model_config.get("outputModelVersion") or self._generate_model_version(job)
+                            model_type = "fine-tuned" if job.job_type == "finetune" else "base"
+
+                            model_repo = ModelCatalogRepository(self.session)
+                            existing = model_repo.get_by_name_type_version(
+                                output_model_name, model_type, output_model_version
                             )
-                            
-                            try:
-                                # Use storage URI from job if available (to match training pod upload path)
-                                storage_uri_for_registration = job.output_model_storage_uri if job.output_model_storage_uri else None
-                                self.register_output_model(
-                                    job_id=str(job.id),
-                                    model_name=output_model_name,
-                                    model_version=output_model_version,
-                                    storage_uri=storage_uri_for_registration,  # Use same URI as training pod
-                                    owner_team=job.submitted_by,
-                                    metadata=None,
+                            if existing:
+                                job.output_model_entry_id = existing.id
+                                self.job_repo.update(job)
+                                logger.info(
+                                    f"Linked existing model {existing.id} to training job {job.id} "
+                                    f"(name={output_model_name}, version={output_model_version})"
                                 )
-                                logger.info(f"Successfully auto-registered output model for job {job.id}")
-                            except Exception as e:
-                                # Log error but don't fail the status update
-                                logger.error(
-                                    f"Failed to auto-register output model for job {job.id}: {e}",
-                                    exc_info=True
+                            else:
+                                logger.warning(
+                                    f"No existing model found for job {job.id} "
+                                    f"(name={output_model_name}, version={output_model_version}); "
+                                    f"skipping backend auto-registration to avoid duplicates"
                                 )
                     except Exception as e:
-                        # Log error but don't fail the status update
                         logger.warning(
-                            f"Error during auto-registration check for job {job.id}: {e}",
+                            f"Error while linking output model for job {job.id}: {e}",
                             exc_info=True
                         )
             elif k8s_status_str == "failed" or k8s_failed > 0:
