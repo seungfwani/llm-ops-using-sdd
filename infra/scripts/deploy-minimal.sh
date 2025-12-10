@@ -15,10 +15,18 @@ MINIKUBE_MEMORY="${MINIKUBE_MEMORY:-8192}"  # 8GB
 MINIKUBE_CPUS="${MINIKUBE_CPUS:-4}"
 MINIKUBE_DISK_SIZE="${MINIKUBE_DISK_SIZE:-30g}"
 
+# ============================================================================
+# kubectl wrapper 설정
+# ============================================================================
+# deploy-minimal.sh는 minikube 전용이지만, 일관성을 위해 KUBECTL_CMD 패턴 사용
+CLUSTER_TYPE="minikube"
+KUBECTL_CMD=("minikube" "kubectl" "--")
+
 echo "🚀 LLM Ops Platform 최소 사양 배포"
 echo "   Environment: ${ENVIRONMENT}"
 echo "   Namespace: ${NAMESPACE}"
 echo "   Mode: CPU-only (최소 사양)"
+echo "   Cluster type: ${CLUSTER_TYPE}"
 echo ""
 
 # ============================================================================
@@ -26,15 +34,16 @@ echo ""
 # ============================================================================
 echo "🔍 Checking prerequisites..."
 
-if ! command -v kubectl &> /dev/null; then
-    echo "❌ kubectl is not installed. Please install kubectl first."
-    exit 1
-fi
-
 if ! command -v minikube &> /dev/null; then
     echo "❌ minikube is not installed. Please install minikube first."
     echo "   💡 macOS: brew install minikube"
     echo "   💡 Linux: https://minikube.sigs.k8s.io/docs/start/"
+    exit 1
+fi
+
+# minikube kubectl 이 실제로 동작하는지
+if ! minikube kubectl -- version --client &> /dev/null; then
+    echo "❌ minikube kubectl is not working properly."
     exit 1
 fi
 
@@ -79,7 +88,7 @@ fi
 echo "   Waiting for Minikube to be ready..."
 minikube status
 
-if ! kubectl cluster-info &> /dev/null; then
+if ! "${KUBECTL_CMD[@]}" cluster-info &> /dev/null; then
     echo "❌ Cannot connect to Kubernetes cluster"
     exit 1
 fi
@@ -92,14 +101,14 @@ echo ""
 # ============================================================================
 echo "📦 Step 2: Creating namespace..."
 
-if kubectl get namespace "${NAMESPACE}" &> /dev/null; then
+if "${KUBECTL_CMD[@]}" get namespace "${NAMESPACE}" &> /dev/null; then
     echo "   ✅ Namespace ${NAMESPACE} already exists"
 else
     echo "   Creating namespace: ${NAMESPACE}"
-    kubectl create namespace "${NAMESPACE}"
+    "${KUBECTL_CMD[@]}" create namespace "${NAMESPACE}"
     
     # Add labels
-    kubectl label namespace "${NAMESPACE}" \
+    "${KUBECTL_CMD[@]}" label namespace "${NAMESPACE}" \
         environment="${ENVIRONMENT}" \
         managed-by="llm-ops-platform" \
         minimal-resources="true" \
@@ -122,9 +131,9 @@ echo ""
 cd "${ROOT_DIR}/infra/k8s/dependencies"
 
 # Create namespace if it doesn't exist (should already exist, but just in case)
-if ! kubectl get namespace "${NAMESPACE}" &> /dev/null; then
-    kubectl create namespace "${NAMESPACE}"
-    kubectl label namespace "${NAMESPACE}" \
+if ! "${KUBECTL_CMD[@]}" get namespace "${NAMESPACE}" &> /dev/null; then
+    "${KUBECTL_CMD[@]}" create namespace "${NAMESPACE}"
+    "${KUBECTL_CMD[@]}" label namespace "${NAMESPACE}" \
         managed-by="llm-ops-platform" \
         minimal-resources="true" \
         --overwrite
@@ -132,14 +141,14 @@ fi
 
 # Apply all manifests with namespace override
 echo "   Generating manifests with kustomize..."
-if ! kubectl kustomize . > /tmp/k8s-manifests.yaml 2>&1; then
+if ! "${KUBECTL_CMD[@]}" kustomize . > /tmp/k8s-manifests.yaml 2>&1; then
     echo "❌ Failed to generate manifests with kustomize"
     cat /tmp/k8s-manifests.yaml
     exit 1
 fi
 
 echo "   Replacing namespace and applying manifests..."
-if ! sed "s/namespace: llm-ops-dev/namespace: ${NAMESPACE}/g" /tmp/k8s-manifests.yaml | kubectl apply -f -; then
+if ! sed "s/namespace: llm-ops-dev/namespace: ${NAMESPACE}/g" /tmp/k8s-manifests.yaml | "${KUBECTL_CMD[@]}" apply -f -; then
     echo "❌ Failed to apply Kubernetes manifests"
     exit 1
 fi
@@ -148,23 +157,23 @@ rm -f /tmp/k8s-manifests.yaml
 # Wait for deployments to be ready
 echo "   Waiting for deployments to be ready..."
 
-if kubectl get deployment postgresql -n "${NAMESPACE}" &> /dev/null; then
+if "${KUBECTL_CMD[@]}" get deployment postgresql -n "${NAMESPACE}" &> /dev/null; then
     echo "   Waiting for PostgreSQL..."
-    kubectl wait --for=condition=available --timeout=300s deployment/postgresql -n "${NAMESPACE}" || {
+    "${KUBECTL_CMD[@]}" wait --for=condition=available --timeout=300s deployment/postgresql -n "${NAMESPACE}" || {
         echo "   ⚠️  Warning: PostgreSQL may not be fully ready"
     }
 fi
 
-if kubectl get deployment redis -n "${NAMESPACE}" &> /dev/null; then
+if "${KUBECTL_CMD[@]}" get deployment redis -n "${NAMESPACE}" &> /dev/null; then
     echo "   Waiting for Redis..."
-    kubectl wait --for=condition=available --timeout=300s deployment/redis -n "${NAMESPACE}" || {
+    "${KUBECTL_CMD[@]}" wait --for=condition=available --timeout=300s deployment/redis -n "${NAMESPACE}" || {
         echo "   ⚠️  Warning: Redis may not be fully ready"
     }
 fi
 
-if kubectl get deployment minio -n "${NAMESPACE}" &> /dev/null; then
+if "${KUBECTL_CMD[@]}" get deployment minio -n "${NAMESPACE}" &> /dev/null; then
     echo "   Waiting for MinIO..."
-    kubectl wait --for=condition=available --timeout=300s deployment/minio -n "${NAMESPACE}" || {
+    "${KUBECTL_CMD[@]}" wait --for=condition=available --timeout=300s deployment/minio -n "${NAMESPACE}" || {
         echo "   ⚠️  Warning: MinIO may not be fully ready"
     }
 fi
@@ -195,12 +204,12 @@ echo ""
 echo "📊 Step 5: Checking resource usage..."
 
 echo "   Current resource requests:"
-kubectl get pods -n "${NAMESPACE}" -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[*].resources.requests.cpu}{"\t"}{.spec.containers[*].resources.requests.memory}{"\n"}{end}' 2>/dev/null | column -t || echo "   (Resource information not available)"
+"${KUBECTL_CMD[@]}" get pods -n "${NAMESPACE}" -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[*].resources.requests.cpu}{"\t"}{.spec.containers[*].resources.requests.memory}{"\n"}{end}' 2>/dev/null | column -t || echo "   (Resource information not available)"
 
 echo ""
 echo "   Total resource requests (approximate):"
-TOTAL_CPU=$(kubectl get pods -n "${NAMESPACE}" -o jsonpath='{range .items[*]}{.spec.containers[*].resources.requests.cpu}{" "}{end}' 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+m?$' | sed 's/m$//' | awk '{sum+=$1} END {print sum/1000}')
-TOTAL_MEMORY=$(kubectl get pods -n "${NAMESPACE}" -o jsonpath='{range .items[*]}{.spec.containers[*].resources.requests.memory}{" "}{end}' 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+Mi?$' | sed 's/Mi$//' | awk '{sum+=$1} END {print sum}')
+TOTAL_CPU=$("${KUBECTL_CMD[@]}" get pods -n "${NAMESPACE}" -o jsonpath='{range .items[*]}{.spec.containers[*].resources.requests.cpu}{" "}{end}' 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+m?$' | sed 's/m$//' | awk '{sum+=$1} END {print sum/1000}')
+TOTAL_MEMORY=$("${KUBECTL_CMD[@]}" get pods -n "${NAMESPACE}" -o jsonpath='{range .items[*]}{.spec.containers[*].resources.requests.memory}{" "}{end}' 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+Mi?$' | sed 's/Mi$//' | awk '{sum+=$1} END {print sum}')
 echo "   CPU: ~${TOTAL_CPU:-0.6} cores"
 echo "   Memory: ~${TOTAL_MEMORY:-1000}Mi (~1GB)"
 echo ""
@@ -218,10 +227,10 @@ if [[ ! $REPLY =~ ^[Nn]$ ]]; then
     echo ""
     
     # Start port-forwards in background
-    kubectl port-forward -n "${NAMESPACE}" svc/postgresql 5432:5432 >/dev/null 2>&1 &
-    kubectl port-forward -n "${NAMESPACE}" svc/redis 6379:6379 >/dev/null 2>&1 &
-    kubectl port-forward -n "${NAMESPACE}" svc/minio 9000:9000 >/dev/null 2>&1 &
-    kubectl port-forward -n "${NAMESPACE}" svc/minio 9001:9001 >/dev/null 2>&1 &
+    "${KUBECTL_CMD[@]}" port-forward -n "${NAMESPACE}" svc/postgresql 5432:5432 >/dev/null 2>&1 &
+    "${KUBECTL_CMD[@]}" port-forward -n "${NAMESPACE}" svc/redis 6379:6379 >/dev/null 2>&1 &
+    "${KUBECTL_CMD[@]}" port-forward -n "${NAMESPACE}" svc/minio 9000:9000 >/dev/null 2>&1 &
+    "${KUBECTL_CMD[@]}" port-forward -n "${NAMESPACE}" svc/minio 9001:9001 >/dev/null 2>&1 &
     
     echo "   ✅ Port-forwards started"
     echo "   - PostgreSQL: localhost:5432"
@@ -253,9 +262,9 @@ echo "   KServe: Not installed (CPU-only mode)"
 echo "   Object Storage: Configured"
 echo ""
 echo "🔍 Check status with:"
-echo "   kubectl get pods -n ${NAMESPACE}"
-echo "   kubectl get svc -n ${NAMESPACE}"
-echo "   kubectl top pods -n ${NAMESPACE}"
+echo "   ${KUBECTL_CMD[*]} get pods -n ${NAMESPACE}"
+echo "   ${KUBECTL_CMD[*]} get svc -n ${NAMESPACE}"
+echo "   ${KUBECTL_CMD[*]} top pods -n ${NAMESPACE}"
 echo ""
 
 echo "🖥️  Local Development Setup:"

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from core.database import get_session
 from services.experiment_tracking_service import ExperimentTrackingService
+from services.integration_config import IntegrationConfigService
 from training import schemas
 from training.services import TrainingJobService
 
@@ -25,6 +26,39 @@ def get_training_service(session: Session = Depends(get_session)) -> TrainingJob
 def get_experiment_tracking_service(session: Session = Depends(get_session)) -> ExperimentTrackingService:
     """Dependency to get experiment tracking service."""
     return ExperimentTrackingService(session)
+
+
+def get_integration_config_service(session: Session = Depends(get_session)) -> IntegrationConfigService:
+    """Dependency to get integration config service."""
+    return IntegrationConfigService(session)
+
+
+@router.get("/gpu-types", response_model=schemas.EnvelopeGpuTypes)
+def list_gpu_types(
+    env: Optional[str] = Query(
+        None,
+        description="Environment code (dev, stg, prod). Defaults to server environment.",
+    ),
+    config_service: IntegrationConfigService = Depends(get_integration_config_service),
+) -> schemas.EnvelopeGpuTypes:
+    """List configured GPU types for training submission."""
+    target_env = (env or config_service.settings.environment or "").lower()
+    try:
+        gpu_types = config_service.get_gpu_types(environment=target_env)
+        return schemas.EnvelopeGpuTypes(
+            status="success",
+            message="",
+            data=schemas.GpuTypeListResponse(
+                gpuTypes=[schemas.GpuTypeOption(**item) for item in gpu_types]
+            ),
+        )
+    except Exception as e:
+        logger.error(f"Failed to list GPU types for env={target_env}: {e}")
+        return schemas.EnvelopeGpuTypes(
+            status="fail",
+            message=f"Failed to list GPU types: {str(e)}",
+            data=None,
+        )
 
 
 @router.get("/jobs", response_model=schemas.EnvelopeTrainingJobList)

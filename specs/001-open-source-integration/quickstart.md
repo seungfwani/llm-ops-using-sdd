@@ -1,3 +1,22 @@
+# Quickstart - GPU 타입 동적 제공
+
+1) 설정 준비  
+- 환경별 GPU 타입 리스트를 env/ConfigMap 또는 integration config 테이블에 등록한다. 예:  
+  - `gpuTypes.dev=["nvidia-rtx-4090","nvidia-rtx-a6000"]`
+
+2) 백엔드  
+- 신규 엔드포인트 `GET /llm-ops/v1/training/gpu-types?env=dev` 구현.  
+- 응답 스키마: `{status,message,data:{gpuTypes:[{id,label,priority,enabled}]}}` (see `contracts/gpu-types.yaml`).  
+- 검증: `gpu_type` 제출 시 환경별 enabled 리스트에 속하는지 검사.
+
+3) 프론트엔드  
+- Job Submit 페이지에서 초기 로딩 시 위 엔드포인트 호출하여 select 옵션 생성.  
+- 로딩/에러/빈 리스트 상태를 표시하고, 실패 시 재시도 버튼 제공.
+
+4) 테스트  
+- 단위: 백엔드 validator가 잘못된 env/gpu_type을 거부하는지 검증.  
+- 통합: dev/stg 각각에서 GET 응답 값이 설정과 일치하는지 확인.  
+- E2E: GPU 타입 리스트를 기반으로 제출된 Job이 성공적으로 생성되는지 확인.
 # Quickstart: Open Source Integration Setup
 
 **Branch**: `001-open-source-integration`  

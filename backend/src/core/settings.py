@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from pydantic import AnyUrl, AnyHttpUrl, SecretStr, field_validator
+from pydantic import AnyUrl, AnyHttpUrl, SecretStr, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     # Default required role for API access
     default_required_role: str = "llm-ops-user"
     
+    # Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    # Default: INFO
+    log_level: str = "INFO"
+    
     # =========================================================================
     # Kubernetes Configuration
     # =========================================================================
@@ -85,6 +89,11 @@ class Settings(BaseSettings):
         if v == "":
             return None
         return v
+    
+    # Disable SSL verification for Kubernetes API (for self-signed certificates)
+    # WARNING: Only use this in development/testing environments
+    # Set to True to disable SSL certificate verification (not recommended for production)
+    kubernetes_verify_ssl: bool = True
     
     # =========================================================================
     # Serving Configuration
@@ -148,6 +157,12 @@ class Settings(BaseSettings):
     # Example: http://localhost:8001 (port-forwarded serving service)
     serving_local_base_url: AnyHttpUrl | None = None
     
+    # Optional override for inference calls when cluster DNS hostnames are not
+    # reachable (e.g., external nodes reachable only via IP). If set, the API
+    # will call this base URL directly for model inference.
+    # Example: http://10.0.0.5:8000 or http://203.0.113.10:8000
+    serving_inference_host_override: AnyHttpUrl | None = None
+    
     # =========================================================================
     # Training Resource Limits (CPU-only)
     # =========================================================================
@@ -182,6 +197,31 @@ class Settings(BaseSettings):
     # Format: llm-ops-{environment} (e.g., llm-ops-dev, llm-ops-stg, llm-ops-prod)
     # Default: llm-ops-dev for local development
     training_namespace: str = "llm-ops-dev"
+    
+    # GPU type options (per-environment). Accepts comma-separated strings or lists.
+    training_gpu_types_dev: list[str] | str | None = None
+    training_gpu_types_stg: list[str] | str | None = None
+    training_gpu_types_prod: list[str] | str | None = None
+    
+    @field_validator(
+        "training_gpu_types_dev",
+        "training_gpu_types_stg",
+        "training_gpu_types_prod",
+        mode="before",
+    )
+    @classmethod
+    def _parse_gpu_types(cls, v):
+        """Normalize GPU type lists from env strings."""
+        if v is None:
+            return []
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return []
+            return [item.strip() for item in v.split(",") if item.strip()]
+        if isinstance(v, (list, tuple)):
+            return [str(item).strip() for item in v if str(item).strip()]
+        return []
     
     # GPU node selector (optional, for targeting specific GPU nodes)
     # Example: {"accelerator": "nvidia-tesla-v100"} or {"node-type": "gpu"}

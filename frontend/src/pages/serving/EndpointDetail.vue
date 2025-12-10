@@ -590,7 +590,8 @@ async function fetchEndpoint() {
   try {
     const response = await servingClient.getEndpoint(endpointId);
     if (response.status === "success" && response.data) {
-      endpoint.value = response.data;
+      // Force Vue reactivity by creating a new object
+      endpoint.value = { ...response.data };
       
       // Load model information to get metadata
       let modelData: { name: string; version: string; metadata?: Record<string, any> } | null = null;
@@ -692,7 +693,8 @@ async function fetchEndpoint() {
     try {
       const deploymentResponse = await servingClient.getDeployment(endpointId);
       if (deploymentResponse.status === "success" && deploymentResponse.data) {
-        deployment.value = deploymentResponse.data;
+        // Force Vue reactivity by creating a new object
+        deployment.value = { ...deploymentResponse.data };
         
         // Load serving framework from deployment if available
         if (deployment.value.serving_framework) {
@@ -928,7 +930,8 @@ async function handleDelete() {
     const response = await servingClient.deleteEndpoint(endpoint.value.id);
     if (response.status === "success") {
       alert('Endpoint deleted successfully');
-      router.push('/serving/endpoints');
+      // Force refresh by adding timestamp query parameter
+      router.push(`/serving/endpoints?refresh=${Date.now()}`);
     } else {
       alert(`Delete failed: ${response.message}`);
     }
@@ -939,8 +942,36 @@ async function handleDelete() {
   }
 }
 
-function refreshEndpoint() {
-  fetchEndpoint();
+async function refreshEndpoint() {
+  if (!endpoint.value) return;
+  
+  loading.value = true;
+  try {
+    // Use refresh-status API to force status update from Kubernetes
+    const response = await servingClient.refreshEndpointStatus(endpoint.value.id);
+    if (response.status === "success" && response.data) {
+      // Force Vue reactivity by creating a new object
+      endpoint.value = { ...response.data };
+      // Also reload deployment info
+      try {
+        const deploymentResponse = await servingClient.getDeployment(endpoint.value.id);
+        if (deploymentResponse.status === "success" && deploymentResponse.data) {
+          deployment.value = { ...deploymentResponse.data };
+        }
+      } catch (e) {
+        console.warn("Failed to reload deployment info:", e);
+      }
+    } else {
+      // Fallback to regular fetch if refresh-status fails
+      await fetchEndpoint();
+    }
+  } catch (e) {
+    console.error("Failed to refresh endpoint status:", e);
+    // Fallback to regular fetch
+    await fetchEndpoint();
+  } finally {
+    loading.value = false;
+  }
 }
 
 function formatDate(dateString: string): string {

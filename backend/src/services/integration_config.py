@@ -120,6 +120,46 @@ class IntegrationConfigService:
         
         return config
     
+    def get_gpu_types(
+        self,
+        environment: Optional[str] = None,
+        enabled_only: bool = True,
+    ) -> list[Dict[str, Any]]:
+        """
+        Return GPU type options sourced from settings (placeholder until DB-backed config).
+        
+        Args:
+            environment: Environment name (dev/stg/prod). Defaults to settings.environment.
+            enabled_only: Keep flag for future compatibility; currently all returned items are enabled.
+        
+        Returns:
+            List of GPU type dicts: {"id": str, "label": str, "enabled": bool, "priority": int}
+        """
+        env = (environment or self.settings.environment or "").lower()
+        env_map = {
+            "dev": self.settings.training_gpu_types_dev,
+            "stg": self.settings.training_gpu_types_stg,
+            "prod": self.settings.training_gpu_types_prod,
+        }
+        values = env_map.get(env, [])
+        gpu_types: list[Dict[str, Any]] = []
+        for idx, gpu_id in enumerate(values):
+            if not gpu_id:
+                continue
+            label = gpu_id.replace("-", " ").upper()
+            gpu_types.append(
+                {
+                    "id": gpu_id,
+                    "label": label,
+                    "enabled": True,
+                    "priority": (idx + 1) * 10,
+                }
+            )
+        
+        if not gpu_types:
+            logger.warning(f"No GPU types configured for env={env}; returning empty list")
+        return gpu_types
+    
     def update_config(
         self,
         integration_type: str,

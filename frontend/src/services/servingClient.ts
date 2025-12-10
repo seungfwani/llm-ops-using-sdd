@@ -187,6 +187,13 @@ export const servingClient = {
     return response.data;
   },
 
+  async refreshEndpointStatus(endpointId: string): Promise<EnvelopeServingEndpoint> {
+    const response = await apiClient.post<EnvelopeServingEndpoint>(
+      `/serving/endpoints/${endpointId}/refresh-status`
+    );
+    return response.data;
+  },
+
   async rollbackEndpoint(endpointId: string): Promise<EnvelopeServingEndpoint> {
     const response = await apiClient.post<EnvelopeServingEndpoint>(
       `/serving/endpoints/${endpointId}/rollback`

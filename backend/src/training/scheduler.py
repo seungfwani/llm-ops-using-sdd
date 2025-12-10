@@ -22,19 +22,43 @@ class KubernetesScheduler:
         """Initialize Kubernetes client from kubeconfig or in-cluster config."""
         try:
             if settings.kubeconfig_path:
+                logger.info(f"KubernetesScheduler: Loading Kubernetes config from: {settings.kubeconfig_path}")
                 config.load_kube_config(config_file=settings.kubeconfig_path)
             else:
+                logger.info("KubernetesScheduler: Loading in-cluster Kubernetes config")
                 config.load_incluster_config()
         except Exception as e:
-            logger.warning(f"Failed to load kubeconfig: {e}, using default")
+            logger.warning(f"KubernetesScheduler: Failed to load kubeconfig: {e}, using default")
             try:
+                logger.info("KubernetesScheduler: Trying default kubeconfig location")
                 config.load_kube_config()
             except Exception:
-                logger.error("Could not initialize Kubernetes client")
+                logger.error("KubernetesScheduler: Could not initialize Kubernetes client")
                 raise
+
+        # Configure SSL verification based on settings
+        configuration = client.Configuration.get_default_copy()
+        if not settings.kubernetes_verify_ssl:
+            logger.warning("KubernetesScheduler: SSL verification is disabled for Kubernetes API client")
+            configuration.verify_ssl = False
+            # Also disable SSL warnings
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            # Update all API clients to use this configuration
+            client.Configuration.set_default(configuration)
 
         self.batch_api = client.BatchV1Api()
         self.core_api = client.CoreV1Api()
+        
+        # Test Kubernetes connection
+        try:
+            logger.info("KubernetesScheduler: Testing Kubernetes API connection...")
+            # Test connection by listing namespaces (simple API call)
+            namespaces = self.core_api.list_namespace(limit=1)
+            logger.info(f"KubernetesScheduler: Kubernetes API connection successful. Cluster accessible (tested via namespace list)")
+        except Exception as e:
+            logger.error(f"KubernetesScheduler: Failed to connect to Kubernetes API: {e}", exc_info=True)
+            raise
 
     def submit_job(
         self,

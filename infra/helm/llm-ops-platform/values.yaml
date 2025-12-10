@@ -1,0 +1,97 @@
+kserve:
+  enabled: true
+  namespaceOverride: ""
+  version: v0.16.0
+  setDefaultDeploymentMode: true
+  selfSignedCert:
+    enabled: true
+    serviceName: kserve-webhook-server-service
+    secretName: kserve-webhook-server-cert
+    image: bitnami/kubectl:1.29
+
+gpuPlugin:
+  enabled: true
+
+nvidia-device-plugin:
+  namespaceOverride: kube-system
+  args:
+    - --fail-on-init-error=false
+    - --config-file=/config/config.yaml
+  config:
+    map:
+      name: nvidia-device-plugin-config
+      data:
+        config.yaml: |
+          version: v1
+          sharing:
+            timeSlicing:
+              resources:
+                - name: nvidia.com/gpu
+                  replicas: 10
+
+dependencies:
+  postgresql:
+    enabled: true
+    storage: 5Gi
+    image: postgres:16-alpine
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi
+    service:
+      type: NodePort
+      port: 5432
+      nodePort: 30001
+    secret:
+      user: llmops
+      password: password
+      db: llmops
+  redis:
+    enabled: true
+    image: redis:7-alpine
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+    service:
+      type: ClusterIP
+      port: 6379
+  minio:
+    enabled: true
+    storage: 50Gi
+    image: minio/minio:latest
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 250m
+        memory: 512Mi
+    service:
+      type: NodePort
+      ports:
+        api: 9000
+        console: 9001
+      nodePorts:
+        api: 30002
+        console: 30003
+    secret:
+      accessKey: llmops
+      secretKey: llmops-secret
+
+objectStore:
+  bucket: models
+  endpoint: http://minio:9000
+  createBucket: true
+  jobImage: quay.io/minio/mc:latest
+
+minioBucketJob:
+  enabled: true
+
+

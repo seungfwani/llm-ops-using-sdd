@@ -186,6 +186,12 @@ app = create_app()
 
 if __name__ == "__main__":
     import uvicorn
+    from core.settings import get_settings
+    
+    settings = get_settings()
+    # Map log level string to uvicorn log level
+    uvicorn_log_level = settings.log_level.lower()
+    
     # Use import string for reload to work properly
     uvicorn.run(
         "api.app:app",
@@ -193,4 +199,5 @@ if __name__ == "__main__":
         port=8000,
         reload=True,
         reload_dirs=["src"],
+        log_level=uvicorn_log_level,
     )

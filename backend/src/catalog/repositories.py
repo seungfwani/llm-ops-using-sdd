@@ -13,8 +13,14 @@ class ModelCatalogRepository:
     def __init__(self, session: Session):
         self.session = session
 
-    def list(self) -> Sequence[models.ModelCatalogEntry]:
-        return self.session.execute(select(models.ModelCatalogEntry)).scalars().all()
+    def list(self, status: str | None = None) -> Sequence[models.ModelCatalogEntry]:
+        stmt = select(models.ModelCatalogEntry).order_by(
+            models.ModelCatalogEntry.created_at.desc(),
+            models.ModelCatalogEntry.updated_at.desc(),
+        )
+        if status:
+            stmt = stmt.where(models.ModelCatalogEntry.status == status)
+        return self.session.execute(stmt).scalars().all()
 
     def get(self, entry_id: str | UUID) -> models.ModelCatalogEntry | None:
         try:
@@ -114,8 +120,11 @@ class DatasetRepository:
     def __init__(self, session: Session):
         self.session = session
 
-    def list(self) -> Sequence[models.DatasetRecord]:
-        return self.session.execute(select(models.DatasetRecord)).scalars().all()
+    def list(self, approved_only: bool = False) -> Sequence[models.DatasetRecord]:
+        stmt = select(models.DatasetRecord)
+        if approved_only:
+            stmt = stmt.where(models.DatasetRecord.approved_at.isnot(None))
+        return self.session.execute(stmt).scalars().all()
 
     def get(self, dataset_id: str | UUID) -> models.DatasetRecord | None:
         try:

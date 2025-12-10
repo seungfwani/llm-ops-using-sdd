@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime
@@ -91,6 +92,8 @@ class HuggingFaceAdapter(RegistryAdapter):
         version: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Import a model from Hugging Face Hub."""
+        process_start = time.time()
+        
         if not self.is_enabled():
             raise ToolUnavailableError(
                 message="Hugging Face Hub integration is disabled",
@@ -109,7 +112,10 @@ class HuggingFaceAdapter(RegistryAdapter):
             
             # Get model info
             logger.info(f"Fetching model info from Hugging Face: {registry_model_id}, revision={version or 'default'}")
+            info_start = time.time()
             info = model_info(registry_model_id, token=self.token, revision=version)
+            info_time = time.time() - info_start
+            logger.info(f"Model info fetched in {info_time:.2f}s")
             
             # Build repository URL
             repo_url = f"https://huggingface.co/{registry_model_id}"
@@ -128,6 +134,7 @@ class HuggingFaceAdapter(RegistryAdapter):
                 download_dir = Path(temp_dir) / "model"
                 
                 logger.info(f"Downloading model from Hugging Face: {registry_model_id}")
+                download_start = time.time()
                 snapshot_download(
                     repo_id=registry_model_id,
                     local_dir=str(download_dir),
@@ -136,15 +143,26 @@ class HuggingFaceAdapter(RegistryAdapter):
                     local_dir_use_symlinks=False,
                     cache_dir=self.cache_dir,
                 )
+                download_time = time.time() - download_start
                 
                 # Verify downloaded size
+                size_check_start = time.time()
                 downloaded_size_gb = self._calculate_downloaded_size(download_dir)
+                size_check_time = time.time() - size_check_start
+                
+                logger.info(
+                    f"Download completed: {downloaded_size_gb:.2f} GB in {download_time:.2f}s "
+                    f"(avg speed: {downloaded_size_gb / download_time:.2f} GB/s, "
+                    f"size check: {size_check_time:.2f}s)"
+                )
+                
                 if max_size_gb > 0 and downloaded_size_gb > max_size_gb:
                     raise ValueError(
                         f"Downloaded model size ({downloaded_size_gb:.2f} GB) exceeds maximum allowed size ({max_size_gb:.2f} GB)"
                     )
                 
                 # Upload to object storage
+                logger.info("Starting upload to object storage...")
                 storage_uri = self._upload_to_storage(
                     model_id=str(model_catalog_id),
                     version=version or "latest",
@@ -152,8 +170,17 @@ class HuggingFaceAdapter(RegistryAdapter):
                 )
             
             # Extract metadata
+            metadata_start = time.time()
             metadata = self._extract_metadata(registry_model_id, info)
             metadata["model_size_gb"] = round(downloaded_size_gb, 2)
+            metadata_time = time.time() - metadata_start
+            logger.info(f"Metadata extraction completed in {metadata_time:.2f}s")
+            
+            total_time = time.time() - process_start
+            logger.info(
+                f"Model import completed successfully in {total_time:.2f}s "
+                f"({total_time / 60:.2f} minutes)"
+            )
             
             return {
                 "registry_model_id": registry_model_id,
@@ -521,21 +548,40 @@ class HuggingFaceAdapter(RegistryAdapter):
         local_dir: Path,
     ) -> str:
         """Upload model files to object storage."""
+        start_time = time.time()
+        
         s3_client = get_object_store_client()
         bucket_name = self.settings.object_store_bucket or self.settings.training_namespace
         
         storage_path = f"models/{model_id}/{version}/"
         
+        # Step 1: 파일 목록 수집
+        list_start = time.time()
         files_to_upload = []
+        total_size_bytes = 0
         for file_path in local_dir.rglob("*"):
             if file_path.is_file():
                 files_to_upload.append(file_path)
+                total_size_bytes += file_path.stat().st_size
+        list_time = time.time() - list_start
         
-        logger.info(f"Uploading {len(files_to_upload)} files to object storage...")
+        total_size_mb = total_size_bytes / (1024 ** 2)
+        logger.info(
+            f"Found {len(files_to_upload)} files ({total_size_mb:.2f} MB) "
+            f"to upload to {storage_path} in {bucket_name} "
+            f"(file listing took {list_time:.2f}s)"
+        )
         
-        for file_path in files_to_upload:
+        # Step 2: 파일 업로드
+        upload_start = time.time()
+        uploaded_count = 0
+        uploaded_size_bytes = 0
+        
+        for idx, file_path in enumerate(files_to_upload, 1):
+            file_start = time.time()
             relative_path = file_path.relative_to(local_dir)
             object_key = f"{storage_path}{relative_path}".replace("\\", "/")
+            file_size = file_path.stat().st_size
             
             with open(file_path, "rb") as f:
                 s3_client.put_object(
@@ -543,6 +589,30 @@ class HuggingFaceAdapter(RegistryAdapter):
                     Key=object_key,
                     Body=f,
                 )
+            
+            uploaded_count += 1
+            uploaded_size_bytes += file_size
+            file_time = time.time() - file_start
+            
+            # 매 5개 파일마다 또는 큰 파일(>10MB)마다 진행 상황 로깅
+            if idx % 5 == 0 or file_size > 10 * 1024 * 1024:
+                progress_pct = (uploaded_count / len(files_to_upload)) * 100
+                avg_speed_mbps = (uploaded_size_bytes / (1024 ** 2)) / (time.time() - upload_start) if (time.time() - upload_start) > 0 else 0
+                logger.info(
+                    f"Upload progress: {uploaded_count}/{len(files_to_upload)} files "
+                    f"({progress_pct:.1f}%, {uploaded_size_bytes / (1024 ** 2):.2f} MB uploaded, "
+                    f"avg speed: {avg_speed_mbps:.2f} MB/s) - "
+                    f"Last file: {relative_path} ({file_size / (1024 ** 2):.2f} MB, {file_time:.2f}s)"
+                )
+        
+        upload_time = time.time() - upload_start
+        total_time = time.time() - start_time
+        
+        logger.info(
+            f"Upload completed: {uploaded_count} files ({total_size_mb:.2f} MB) "
+            f"in {total_time:.2f}s (upload: {upload_time:.2f}s, "
+            f"avg speed: {total_size_mb / upload_time:.2f} MB/s)"
+        )
         
         return f"s3://{bucket_name}/{storage_path}"
     

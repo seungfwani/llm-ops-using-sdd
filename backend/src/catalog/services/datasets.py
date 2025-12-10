@@ -64,8 +64,8 @@ class DatasetService:
                 logger.error(f"Error checking bucket '{bucket_name}': {e}")
                 raise
 
-    def list_datasets(self) -> Sequence[orm_models.DatasetRecord]:
-        return self.repo.list()
+    def list_datasets(self, approved_only: bool = False) -> Sequence[orm_models.DatasetRecord]:
+        return self.repo.list(approved_only=approved_only)
 
     def get_dataset(self, dataset_id: str) -> Optional[orm_models.DatasetRecord]:
         return self.repo.get(dataset_id)

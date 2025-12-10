@@ -24,8 +24,8 @@ class CatalogService:
         self.models = ModelCatalogRepository(session)
         self.datasets = DatasetRepository(session)
 
-    def list_entries(self) -> Sequence[orm_models.ModelCatalogEntry]:
-        return self.models.list()
+    def list_entries(self, status: str | None = None) -> Sequence[orm_models.ModelCatalogEntry]:
+        return self.models.list(status=status)
 
     def get_entry(self, entry_id: str) -> orm_models.ModelCatalogEntry | None:
         return self.models.get(entry_id)
@@ -137,10 +137,11 @@ class CatalogService:
 
         self.session.commit()
 
-        # Optionally clean up storage files
+        # Clean up storage files
         # Note: This is a best-effort cleanup. If it fails, we still consider the deletion successful
         # since the database record is already deleted.
         storage_cleaned = False
+        deleted_files_count = 0
         if storage_uri:
             try:
                 s3_client = get_object_store_client()
@@ -150,21 +151,85 @@ class CatalogService:
                     if len(parts) == 2:
                         bucket_name = parts[0]
                         prefix = parts[1]
-                        # List and delete all objects with this prefix
+                        
+                        logger.info(
+                            f"Deleting storage files for model {model_id}: "
+                            f"bucket={bucket_name}, prefix={prefix}"
+                        )
+                        
+                        # List and delete all objects with this prefix using pagination
                         try:
-                            response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
-                            if "Contents" in response:
-                                for obj in response["Contents"]:
-                                    s3_client.delete_object(Bucket=bucket_name, Key=obj["Key"])
+                            paginator = s3_client.get_paginator("list_objects_v2")
+                            pages = paginator.paginate(Bucket=bucket_name, Prefix=prefix)
+                            
+                            objects_to_delete = []
+                            for page in pages:
+                                if "Contents" in page:
+                                    for obj in page["Contents"]:
+                                        objects_to_delete.append({"Key": obj["Key"]})
+                            
+                            if objects_to_delete:
+                                # Delete objects in batches (S3 allows up to 1000 objects per batch)
+                                batch_size = 1000
+                                for i in range(0, len(objects_to_delete), batch_size):
+                                    batch = objects_to_delete[i:i + batch_size]
+                                    try:
+                                        response = s3_client.delete_objects(
+                                            Bucket=bucket_name,
+                                            Delete={"Objects": batch, "Quiet": True}
+                                        )
+                                        deleted_count = len(batch)
+                                        if "Errors" in response and response["Errors"]:
+                                            # Log errors but continue
+                                            for error in response["Errors"]:
+                                                logger.warning(
+                                                    f"Failed to delete object {error['Key']}: "
+                                                    f"{error.get('Message', 'Unknown error')}"
+                                                )
+                                            deleted_count -= len(response["Errors"])
+                                        deleted_files_count += deleted_count
+                                        logger.info(
+                                            f"Deleted {deleted_count} files from storage "
+                                            f"(batch {i // batch_size + 1})"
+                                        )
+                                    except Exception as batch_error:
+                                        logger.error(
+                                            f"Error deleting batch of files: {batch_error}",
+                                            exc_info=True
+                                        )
+                                
                                 storage_cleaned = True
-                        except Exception:
-                            pass  # Ignore storage cleanup errors
-            except Exception:
-                pass  # Ignore storage cleanup errors
+                                logger.info(
+                                    f"Storage cleanup completed: {deleted_files_count} files deleted "
+                                    f"from {storage_uri}"
+                                )
+                            else:
+                                logger.info(f"No files found to delete at {storage_uri}")
+                        except Exception as list_error:
+                            logger.error(
+                                f"Error listing objects for deletion: {list_error}",
+                                exc_info=True
+                            )
+                    else:
+                        logger.warning(
+                            f"Invalid storage URI format: {storage_uri}. "
+                            f"Expected format: s3://bucket/prefix/"
+                        )
+                else:
+                    logger.warning(
+                        f"Storage URI does not start with 's3://': {storage_uri}. "
+                        f"Skipping storage cleanup."
+                    )
+            except Exception as cleanup_error:
+                logger.error(
+                    f"Error during storage cleanup for model {model_id}: {cleanup_error}",
+                    exc_info=True
+                )
 
         return {
             "model_id": model_id,
             "storage_cleaned": storage_cleaned,
+            "deleted_files_count": deleted_files_count,
         }
 
     async def upload_model_files(
@@ -286,6 +351,7 @@ class CatalogService:
             ".ckpt",  # TensorFlow checkpoint
             ".tflite",  # TensorFlow Lite
             ".md",  # Documentation files bundled with models (e.g., README.md)
+            ".jinja",  # Prompt/template files (e.g., chat_template.jinja)
         }
 
         filenames = [f.filename for f in files]

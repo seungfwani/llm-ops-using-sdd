@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 from typing import Optional
 from uuid import uuid4
@@ -13,13 +14,16 @@ from catalog.services.catalog import CatalogService
 from core.image_config import get_image_config
 from core.settings import get_settings
 from services.experiment_tracking_service import ExperimentTrackingService
+from services.integration_config import IntegrationConfigService
 from training.converters.mlflow_converter import MLflowConverter
 from training.repositories import ExperimentMetricRepository, TrainingJobRepository
+from catalog.repositories import ModelCatalogRepository
 from training.scheduler import KubernetesScheduler
 from training.schemas import TrainJobSpec
 from training.validators.train_job_spec_validator import TrainJobSpecValidator
 
 logger = logging.getLogger(__name__)
+
 settings = get_settings()
 
 
@@ -32,7 +36,49 @@ class TrainingJobService:
         self.scheduler = KubernetesScheduler()
         self.session = session
         self.experiment_tracking = ExperimentTrackingService(session)
+        self.integration_config = IntegrationConfigService(session)
     
+    @staticmethod
+    def _extract_gpu_type(resource_profile: dict) -> Optional[str]:
+        """Extract gpuType/gpu_type from resource profile."""
+        if not isinstance(resource_profile, dict):
+            return None
+        gpu_type = resource_profile.get("gpuType", resource_profile.get("gpu_type"))
+        if gpu_type:
+            return str(gpu_type).strip()
+        return None
+
+    def _validate_gpu_type(
+        self,
+        resource_profile: dict,
+        use_gpu: bool,
+        environment: str,
+    ) -> Optional[str]:
+        """
+        Validate gpu_type when GPU is requested.
+        
+        Returns canonical gpu_type or None for CPU-only.
+        """
+        if not use_gpu:
+            return None
+        
+        gpu_type = self._extract_gpu_type(resource_profile)
+        if not gpu_type:
+            raise ValueError("gpu_type is required when useGpu=true")
+        
+        allowed_types = {
+            item["id"].lower()
+            for item in self.integration_config.get_gpu_types(environment=environment)
+            if item.get("enabled", True) and item.get("id")
+        }
+        if allowed_types and gpu_type.lower() not in allowed_types:
+            raise ValueError(f"gpu_type '{gpu_type}' is not allowed in environment '{environment}'")
+        
+        # Normalize keys for downstream components
+        resource_profile["gpuType"] = gpu_type
+        resource_profile["gpu_type"] = gpu_type
+        return gpu_type
+
     @staticmethod
     def _detect_local_api_url() -> str:
         """
@@ -126,6 +172,10 @@ class TrainingJobService:
             raise ValueError(f"Dataset {dataset_id} not found")
         if not dataset.approved_at:
             raise ValueError(f"Dataset {dataset_id} is not approved")
+
+        # Validate GPU type against configured options per environment
+        environment = settings.environment
+        self._validate_gpu_type(resource_profile, use_gpu, environment)
 
         # If TrainJobSpec is provided, validate it
         image_config = get_image_config()
@@ -422,48 +472,34 @@ class TrainingJobService:
                     
                     updated = True
                     
-                    # Auto-register output model if enabled
+                    # Link existing output model if already registered by training pod
                     try:
                         output_model_config = job.resource_profile.get("outputModelConfig", {})
-                        auto_register = output_model_config.get("autoRegisterOutputModel", True)
-                        
-                        if auto_register and not job.output_model_entry_id:
-                            # Get output model name and version from config or generate defaults
-                            output_model_name = output_model_config.get("outputModelName")
-                            output_model_version = output_model_config.get("outputModelVersion")
-                            
-                            if not output_model_name:
-                                output_model_name = self._generate_model_name(job)
-                            if not output_model_version:
-                                output_model_version = self._generate_model_version(job)
-                            
-                            logger.info(
-                                f"Auto-registering output model for job {job.id}: "
-                                f"name={output_model_name}, version={output_model_version}"
+                        if not job.output_model_entry_id:
+                            output_model_name = output_model_config.get("outputModelName") or self._generate_model_name(job)
+                            output_model_version = output_model_config.get("outputModelVersion") or self._generate_model_version(job)
+                            model_type = "fine-tuned" if job.job_type == "finetune" else "base"
+
+                            model_repo = ModelCatalogRepository(self.session)
+                            existing = model_repo.get_by_name_type_version(
+                                output_model_name, model_type, output_model_version
                             )
-                            
-                            try:
-                                # Use storage URI from job if available (to match training pod upload path)
-                                storage_uri_for_registration = job.output_model_storage_uri if job.output_model_storage_uri else None
-                                self.register_output_model(
-                                    job_id=str(job.id),
-                                    model_name=output_model_name,
-                                    model_version=output_model_version,
-                                    storage_uri=storage_uri_for_registration,  # Use same URI as training pod
-                                    owner_team=job.submitted_by,
-                                    metadata=None,
+                            if existing:
+                                job.output_model_entry_id = existing.id
+                                self.job_repo.update(job)
+                                logger.info(
+                                    f"Linked existing model {existing.id} to training job {job.id} "
+                                    f"(name={output_model_name}, version={output_model_version})"
                                 )
-                                logger.info(f"Successfully auto-registered output model for job {job.id}")
-                            except Exception as e:
-                                # Log error but don't fail the status update
-                                logger.error(
-                                    f"Failed to auto-register output model for job {job.id}: {e}",
-                                    exc_info=True
+                            else:
+                                logger.warning(
+                                    f"No existing model found for job {job.id} "
+                                    f"(name={output_model_name}, version={output_model_version}); "
+                                    f"skipping backend auto-registration to avoid duplicates"
                                 )
                     except Exception as e:
-                        # Log error but don't fail the status update
                         logger.warning(
-                            f"Error during auto-registration check for job {job.id}: {e}",
+                            f"Error while linking output model for job {job.id}: {e}",
                             exc_info=True
                         )
             elif k8s_status_str == "failed" or k8s_failed > 0:
@@ -923,6 +959,10 @@ class TrainingJobService:
             # Infer from resource_profile - if it has gpuCount/gpu_count, assume GPU
             use_gpu = "gpuCount" in resource_profile or "gpu_count" in resource_profile
         
+        # Validate GPU type if GPU is requested
+        environment = settings.environment
+        self._validate_gpu_type(resource_profile, use_gpu, environment)
+        
         # Extract hyperparameters from original job's resource_profile if stored there
         # Otherwise, we'll need to get it from the original submission context
         # For now, try to get from resource_profile dict
@@ -940,6 +980,9 @@ class TrainingJobService:
             retry_policy=original_job.retry_policy,
             submitted_by=submitted_by,
             use_gpu=use_gpu,
+            train_job_spec=TrainJobSpec(**original_job.train_job_spec)
+            if hasattr(original_job, "train_job_spec") and original_job.train_job_spec
+            else None,
         )
 
     @staticmethod
@@ -1133,6 +1176,35 @@ if AUTO_UPLOAD_MODEL:
                     logger.error(f"Failed to prepare Hugging Face model artifacts: {{type(e).__name__}} - {{str(e)}}")
                     logger.warning("Skipping model upload because model artifacts could not be prepared")
                     model_path = None
+
+            # ------------------------------------------------------------
+            # Inject chat_template into tokenizer_config.json from chat_template.jinja
+            # ------------------------------------------------------------
+            target_model_path = model_path or "/tmp/model_output"
+            os.makedirs(target_model_path, exist_ok=True)
+            template_path = os.path.join(target_model_path, "chat_template.jinja")
+            chat_template = ""
+            try:
+                if os.path.exists(template_path):
+                    with open(template_path, "r", encoding="utf-8") as f:
+                        chat_template = f.read().strip()
+            except Exception as e:
+                logger.warning(f"Failed to read chat_template.jinja: {{e}}")
+            
+            if chat_template:
+                tokenizer_config_path = os.path.join(target_model_path, "tokenizer_config.json")
+                try:
+                    if os.path.exists(tokenizer_config_path):
+                        with open(tokenizer_config_path, "r", encoding="utf-8") as f:
+                            tokenizer_config = json.load(f)
+                    else:
+                        tokenizer_config = {{}}
+                    tokenizer_config["chat_template"] = chat_template
+                    with open(tokenizer_config_path, "w", encoding="utf-8") as f:
+                        json.dump(tokenizer_config, f, ensure_ascii=False, indent=2)
+                    logger.info(f"Injected chat_template into tokenizer_config.json at {{tokenizer_config_path}}")
+                except Exception as e:
+                    logger.warning(f"Failed to write chat_template to tokenizer_config.json: {{e}}")
             
             # Collect all model files (only if model_path is valid)
             model_files = []

@@ -97,7 +97,7 @@
 - 그 외 → kubernetes 모드
 
 **환경 변수 (선택사항):**
-- `KSERVE_VERSION`: KServe 버전 (기본값: v0.11.0)
+- `KSERVE_VERSION`: KServe 버전 (기본값: v0.16.0)
 - `OBJECT_STORE_ACCESS_KEY`: MinIO access key (기본값: llmops)
 - `OBJECT_STORE_SECRET_KEY`: MinIO secret key (기본값: llmops-secret)
 - `OBJECT_STORE_ENDPOINT`: Object store endpoint URL
@@ -160,7 +160,26 @@ Object Storage Secret/ConfigMap 생성 및 MinIO 버킷 생성을 모두 지원�
 
 > **참고:** `deploy-all.sh`가 자동으로 `setup-all` 기능을 호출합니다.
 
-### 6. `check-resources.sh` - 리소스 사용량 확인 ⭐ **최소 사양 모니터링**
+### 6. `setup-nvidia-device-plugin.sh` - NVIDIA GPU time-slicing 설정
+NVIDIA Device Plugin을 Helm으로 설치/업데이트하고 time-slicing ConfigMap을 자동 생성합니다.
+
+```bash
+# 기본: 1개 GPU를 4-way time-slicing
+./setup-nvidia-device-plugin.sh
+
+# slice 수를 8개로 변경
+./setup-nvidia-device-plugin.sh 8
+
+# 환경 변수로 네임스페이스/차트 버전 지정
+NAMESPACE=kube-system REPLICAS=6 CHART_VERSION=0.15.0 ./setup-nvidia-device-plugin.sh
+```
+
+**기능:**
+- time-slicing ConfigMap 생성 (`nvidia.com/gpu` replicas 설정)
+- Helm upgrade --install 로 NVIDIA Device Plugin 배포/업데이트
+- DaemonSet 롤아웃 상태 체크 및 allocatable GPU 노출 확인
+
+### 7. `check-resources.sh` - 리소스 사용량 확인 ⭐ **최소 사양 모니터링**
 리소스 사용량을 확인하는 스크립트입니다.
 
 ```bash
@@ -185,10 +204,10 @@ Object Storage Secret/ConfigMap 생성 및 MinIO 버킷 생성을 모두 지원�
 minikube addons enable metrics-server
 ```
 
-### 7. `detect-cluster.sh` - 클러스터 타입 감지 (유틸리티)
+### 8. `detect-cluster.sh` - 클러스터 타입 감지 (유틸리티)
 클러스터 타입을 자동으로 감지하는 유틸리티 함수입니다. 다른 스크립트에서 사용됩니다.
 
-### 8. `test-connections.sh` - 연결 테스트
+### 9. `test-connections.sh` - 연결 테스트
 의존성 서비스들의 연결 상태를 테스트합니다.
 
 ```bash
@@ -206,7 +225,7 @@ minikube addons enable metrics-server
 ./test-connections.sh dev
 ```
 
-### 9. `port-forward-all.sh` - Port-forward 시작
+### 10. `port-forward-all.sh` - Port-forward 시작
 로컬 개발을 위해 모든 의존성 서비스를 port-forward합니다.
 
 ```bash
@@ -228,7 +247,7 @@ minikube addons enable metrics-server
 ./port-forward-all.sh dev
 ```
 
-### 10. `serving_rollback.sh` - 서빙 엔드포인트 롤백
+### 11. `serving_rollback.sh` - 서빙 엔드포인트 롤백
 배포된 서빙 엔드포인트를 롤백합니다. KServe와 raw Deployment 모두 지원합니다.
 
 ```bash
@@ -418,7 +437,7 @@ cd ../../scripts
 KServe 설치 시 다음과 같은 에러가 발생할 수 있습니다:
 ```
 resource mapping not found for name: "serving-cert" namespace: "kserve" 
-from "https://github.com/kserve/kserve/releases/download/v0.11.0/kserve.yaml": 
+from "https://github.com/kserve/kserve/releases/download/v0.16.0/kserve.yaml": 
 no matches for kind "Certificate" in version "cert-manager.io/v1"
 ```
 

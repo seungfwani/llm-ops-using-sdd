@@ -1,0 +1,109 @@
+{{- if .Values.dependencies.minio.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-pvc
+  labels:
+    {{- include "llmops.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.dependencies.minio.storage }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-secret
+  labels:
+    {{- include "llmops.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  MINIO_ROOT_USER: {{ .Values.dependencies.minio.secret.accessKey | quote }}
+  MINIO_ROOT_PASSWORD: {{ .Values.dependencies.minio.secret.secretKey | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  labels:
+    app: minio
+    {{- include "llmops.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+        - name: minio
+          image: {{ .Values.dependencies.minio.image }}
+          ports:
+            - containerPort: {{ .Values.dependencies.minio.service.ports.api }}
+              name: api
+            - containerPort: {{ .Values.dependencies.minio.service.ports.console }}
+              name: console
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: minio-secret
+                  key: MINIO_ROOT_USER
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minio-secret
+                  key: MINIO_ROOT_PASSWORD
+          command:
+            - /bin/sh
+            - -c
+            - minio server /data --console-address ":{{ .Values.dependencies.minio.service.ports.console }}"
+          volumeMounts:
+            - name: minio-storage
+              mountPath: /data
+          resources:
+            requests:
+              cpu: {{ .Values.dependencies.minio.resources.requests.cpu | quote }}
+              memory: {{ .Values.dependencies.minio.resources.requests.memory | quote }}
+            limits:
+              cpu: {{ .Values.dependencies.minio.resources.limits.cpu | quote }}
+              memory: {{ .Values.dependencies.minio.resources.limits.memory | quote }}
+      volumes:
+        - name: minio-storage
+          persistentVolumeClaim:
+            claimName: minio-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  labels:
+    app: minio
+    {{- include "llmops.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.dependencies.minio.service.type }}
+  ports:
+    - port: {{ .Values.dependencies.minio.service.ports.api }}
+      targetPort: {{ .Values.dependencies.minio.service.ports.api }}
+      protocol: TCP
+      name: api
+      {{- if eq .Values.dependencies.minio.service.type "NodePort" }}
+      nodePort: {{ .Values.dependencies.minio.service.nodePorts.api }}
+      {{- end }}
+    - port: {{ .Values.dependencies.minio.service.ports.console }}
+      targetPort: {{ .Values.dependencies.minio.service.ports.console }}
+      protocol: TCP
+      name: console
+      {{- if eq .Values.dependencies.minio.service.type "NodePort" }}
+      nodePort: {{ .Values.dependencies.minio.service.nodePorts.console }}
+      {{- end }}
+  selector:
+    app: minio
+{{- end }}
+

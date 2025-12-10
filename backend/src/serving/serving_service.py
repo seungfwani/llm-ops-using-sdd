@@ -24,6 +24,25 @@ from serving.prompt_router import PromptRouter
 logger = logging.getLogger(__name__)
 
 
+def _get_endpoint_k8s_name(endpoint_id: str | UUID) -> str:
+    """
+    Generate short Kubernetes resource name from endpoint ID.
+    
+    KServe creates hostname: {name}-predictor-{namespace}
+    Kubernetes DNS label limit: 63 characters
+    Example: svc-2d4abaa49c00-predictor-llm-ops-dev = 43 chars (fits in 63)
+    
+    Args:
+        endpoint_id: Endpoint UUID
+        
+    Returns:
+        Short name like "svc-{first12chars}" (max 16 chars)
+    """
+    endpoint_id_str = str(endpoint_id).replace("-", "")
+    short_id = endpoint_id_str[:12]  # Use first 12 chars of UUID (without hyphens)
+    return f"svc-{short_id}"
+
+
 class ServingService:
     """Service for managing serving endpoints and prompt operations."""
 
@@ -42,6 +61,7 @@ class ServingService:
         max_replicas: int = 3,
         autoscale_policy: Optional[dict] = None,
         prompt_policy_id: Optional[str] = None,
+        rollback_plan: Optional[str] = None,
         use_gpu: Optional[bool] = None,
         serving_runtime_image: Optional[str] = None,
         cpu_request: Optional[str] = None,
@@ -86,6 +106,8 @@ class ServingService:
             raise ValueError(f"Model entry {model_entry_id} not found")
         if model_entry.status != "approved":
             raise ValueError(f"Model entry {model_entry_id} is not approved")
+        # Always use the catalog entry's version as the effective model version.
+        effective_model_version = model_entry.version
 
         # Check if route already exists in this environment
         existing = self.endpoint_repo.get_by_route(environment, route)
@@ -169,6 +191,9 @@ class ServingService:
             memory_request=memory_request,
             memory_limit=memory_limit,
         )
+        # Store initial rollback plan if provided; will be updated after deployment
+        if rollback_plan:
+            endpoint.rollback_plan = rollback_plan
 
         # Store DeploymentSpec if provided
         if deployment_spec:
@@ -200,7 +225,7 @@ class ServingService:
                 )
             
             try:
-                endpoint_name = f"serving-{endpoint.id}"
+                endpoint_name = _get_endpoint_k8s_name(endpoint.id)
                 # Use llm-ops-{environment} as Kubernetes namespace (llm-ops-dev/llm-ops-stg/llm-ops-prod)
                 namespace = f"llm-ops-{environment}"
                 # Deploy using model storage_uri from catalog (object storage)
@@ -223,7 +248,7 @@ class ServingService:
                     deployment_spec=deployment_spec,
                 )
                 # Store rollback plan (previous deployment state)
-                endpoint.rollback_plan = f"Previous deployment UID: {k8s_uid}"
+                endpoint.rollback_plan = rollback_plan or f"Previous deployment UID: {k8s_uid}"
                 # Status will be updated based on actual Kubernetes pod status
                 # For now, set to deploying since pods may still be starting
                 endpoint.status = "deploying"
@@ -264,7 +289,7 @@ class ServingService:
             model_entry = self.session.get(catalog_models.ModelCatalogEntry, endpoint.model_entry_id)
             if model_entry and model_entry.type != "external":
                 try:
-                    endpoint_name = f"serving-{endpoint.id}"
+                    endpoint_name = _get_endpoint_k8s_name(endpoint.id)
                     namespace = f"llm-ops-{endpoint.environment}"
                     k8s_status = self.deployer.get_endpoint_status(endpoint_name, namespace=namespace)
                     
@@ -277,9 +302,13 @@ class ServingService:
                             adapter_status = endpoint.status
                         # Only update if status changed to avoid unnecessary DB writes
                         if adapter_status != endpoint.status:
+                            old_status = endpoint.status
                             endpoint.status = adapter_status
                             endpoint = self.endpoint_repo.update(endpoint)
-                            logger.debug(f"Synced endpoint {endpoint_id} status from {endpoint.status} to {adapter_status}")
+                            logger.info(
+                                f"Synced endpoint {endpoint_id} status from '{old_status}' to '{adapter_status}' "
+                                f"(K8s: {k8s_status.get('ready_replicas', 0)}/{k8s_status.get('replicas', 0)} ready)"
+                            )
                     else:
                         # Kubernetes resource not found, mark as failed
                         if endpoint.status != "failed":
@@ -298,8 +327,107 @@ class ServingService:
         model_entry_id: Optional[str] = None,
         status: Optional[str] = None,
     ) -> list[catalog_models.ServingEndpoint]:
-        """List serving endpoints with optional filters."""
-        return list(self.endpoint_repo.list(environment=environment, model_entry_id=model_entry_id, status=status))
+        """List serving endpoints with optional filters and sync status from Kubernetes."""
+        endpoints = list(self.endpoint_repo.list(environment=environment, model_entry_id=model_entry_id, status=status))
+        
+        # Sync status from Kubernetes for all internal model endpoints
+        for endpoint in endpoints:
+            if endpoint.model_entry_id:
+                model_entry = self.session.get(catalog_models.ModelCatalogEntry, endpoint.model_entry_id)
+                if model_entry and model_entry.type != "external":
+                    try:
+                        endpoint_name = _get_endpoint_k8s_name(endpoint.id)
+                        namespace = f"llm-ops-{endpoint.environment}"
+                        k8s_status = self.deployer.get_endpoint_status(endpoint_name, namespace=namespace)
+                        
+                        if k8s_status:
+                            # Map adapter status to valid DB status values
+                            adapter_status = k8s_status.get("status", endpoint.status)
+                            # Ensure status is one of: deploying, healthy, degraded, failed
+                            if adapter_status not in ("deploying", "healthy", "degraded", "failed"):
+                                logger.warning(f"Invalid adapter status '{adapter_status}' for endpoint {endpoint.id}, keeping current status")
+                                continue
+                            # Only update if status changed to avoid unnecessary DB writes
+                            if adapter_status != endpoint.status:
+                                old_status = endpoint.status
+                                endpoint.status = adapter_status
+                                endpoint = self.endpoint_repo.update(endpoint)
+                                logger.info(
+                                    f"Synced endpoint {endpoint.id} status from '{old_status}' to '{adapter_status}' "
+                                    f"in list_endpoints (K8s: {k8s_status.get('ready_replicas', 0)}/{k8s_status.get('replicas', 0)} ready)"
+                                )
+                        else:
+                            # Kubernetes resource not found, mark as failed
+                            if endpoint.status != "failed":
+                                endpoint.status = "failed"
+                                endpoint = self.endpoint_repo.update(endpoint)
+                                logger.warning(f"Endpoint {endpoint.id} Kubernetes resource not found, marked as failed")
+                    except Exception as e:
+                        logger.warning(f"Failed to sync Kubernetes status for endpoint {endpoint.id} in list_endpoints: {e}")
+                        # Don't fail the request, just continue with current status
+        
+        return endpoints
+
+    def refresh_endpoint_status(self, endpoint_id: str) -> Optional[catalog_models.ServingEndpoint]:
+        """Force refresh endpoint status from Kubernetes."""
+        endpoint = self.endpoint_repo.get(endpoint_id)
+        if not endpoint:
+            return None
+        
+        # For internal models, sync status from Kubernetes
+        if endpoint.model_entry_id:
+            model_entry = self.session.get(catalog_models.ModelCatalogEntry, endpoint.model_entry_id)
+            if model_entry and model_entry.type != "external":
+                try:
+                    endpoint_name = _get_endpoint_k8s_name(endpoint.id)
+                    namespace = f"llm-ops-{endpoint.environment}"
+                    k8s_status = self.deployer.get_endpoint_status(endpoint_name, namespace=namespace)
+                    
+                    if k8s_status:
+                        # Map adapter status to valid DB status values
+                        adapter_status = k8s_status.get("status", endpoint.status)
+                        # Ensure status is one of: deploying, healthy, degraded, failed
+                        if adapter_status not in ("deploying", "healthy", "degraded", "failed"):
+                            logger.warning(f"Invalid adapter status '{adapter_status}' for endpoint {endpoint_id}, keeping current status")
+                            return endpoint
+                        # Always update status (force refresh)
+                        endpoint.status = adapter_status
+                        endpoint = self.endpoint_repo.update(endpoint)
+                        logger.info(f"Refreshed endpoint {endpoint_id} status to {adapter_status}")
+                    else:
+                        # Kubernetes resource not found, mark as failed
+                        endpoint.status = "failed"
+                        endpoint = self.endpoint_repo.update(endpoint)
+                        logger.warning(f"Endpoint {endpoint_id} Kubernetes resource not found, marked as failed")
+                except Exception as e:
+                    logger.error(f"Failed to refresh Kubernetes status for endpoint {endpoint_id}: {e}", exc_info=True)
+                    # Don't fail, just return current endpoint
+        
+        return endpoint
+
+    def patch_endpoint(
+        self,
+        endpoint_id: str,
+        autoscale_policy: Optional[dict] = None,
+        prompt_policy_id: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> Optional[catalog_models.ServingEndpoint]:
+        """Apply partial updates to a serving endpoint (autoscaling/prompt/status)."""
+        endpoint = self.endpoint_repo.get(endpoint_id)
+        if not endpoint:
+            return None
+
+        if autoscale_policy is not None:
+            endpoint.autoscale_policy = autoscale_policy
+        if prompt_policy_id is not None:
+            endpoint.prompt_policy_id = prompt_policy_id
+        if status is not None:
+            if status not in ("deploying", "healthy", "degraded", "failed"):
+                raise ValueError(f"Invalid status {status}")
+            endpoint.status = status
+
+        endpoint.last_health_check = datetime.utcnow()
+        return self.endpoint_repo.update(endpoint)
 
     def rollback_endpoint(self, endpoint_id: str) -> bool:
         """Rollback a serving endpoint to the previous version."""
@@ -311,7 +439,7 @@ class ServingService:
             raise ValueError(f"Endpoint {endpoint_id} has no rollback plan")
 
         try:
-            endpoint_name = f"serving-{endpoint.id}"
+            endpoint_name = _get_endpoint_k8s_name(endpoint.id)
             # Use llm-ops-{environment} as Kubernetes namespace
             namespace = f"llm-ops-{endpoint.environment}"
             success = self.deployer.rollback_endpoint(endpoint_name, namespace=namespace)
@@ -351,11 +479,87 @@ class ServingService:
             raise ValueError(f"Endpoint {endpoint_id} not found")
 
         # Check if endpoint is already being redeployed or deleted
+        # But allow redeployment if Kubernetes resources don't exist (stuck in deploying state)
         if endpoint.status == "deploying":
-            raise ValueError(
-                f"Endpoint {endpoint_id} is already being deployed. "
-                "Please wait for the current deployment to complete."
-            )
+            # Check if Kubernetes resources actually exist
+            endpoint_name = _get_endpoint_k8s_name(endpoint.id)
+            namespace = f"llm-ops-{endpoint.environment}"
+            settings = get_settings()
+            
+            try:
+                # Check if KServe InferenceService or Deployment exists
+                resource_exists = False
+                if settings.use_kserve:
+                    try:
+                        from kubernetes import client
+                        custom_api = client.CustomObjectsApi()
+                        custom_api.get_namespaced_custom_object(
+                            group="serving.kserve.io",
+                            version="v1beta1",
+                            namespace=namespace,
+                            plural="inferenceservices",
+                            name=endpoint_name,
+                        )
+                        resource_exists = True
+                        logger.info(f"InferenceService {endpoint_name} exists, deployment is in progress")
+                    except Exception:
+                        # InferenceService doesn't exist, check Deployment
+                        try:
+                            apps_api = client.AppsV1Api()
+                            apps_api.read_namespaced_deployment(
+                                name=endpoint_name,
+                                namespace=namespace,
+                            )
+                            resource_exists = True
+                            logger.info(f"Deployment {endpoint_name} exists, deployment is in progress")
+                        except Exception:
+                            # Neither exists, deployment likely failed
+                            logger.warning(
+                                f"Endpoint {endpoint_id} is in 'deploying' state but no Kubernetes resources found. "
+                                "This indicates a failed deployment. Allowing redeployment."
+                            )
+                            resource_exists = False
+                else:
+                    # Check Deployment for raw deployment mode
+                    try:
+                        from kubernetes import client
+                        apps_api = client.AppsV1Api()
+                        apps_api.read_namespaced_deployment(
+                            name=endpoint_name,
+                            namespace=namespace,
+                        )
+                        resource_exists = True
+                        logger.info(f"Deployment {endpoint_name} exists, deployment is in progress")
+                    except Exception:
+                        # Deployment doesn't exist, deployment likely failed
+                        logger.warning(
+                            f"Endpoint {endpoint_id} is in 'deploying' state but no Kubernetes resources found. "
+                            "This indicates a failed deployment. Allowing redeployment."
+                        )
+                        resource_exists = False
+                
+                # If resources exist, deployment is actually in progress
+                if resource_exists:
+                    raise ValueError(
+                        f"Endpoint {endpoint_id} is already being deployed. "
+                        "Please wait for the current deployment to complete."
+                    )
+                else:
+                    # Resources don't exist, mark as failed and allow redeployment
+                    logger.info(
+                        f"Endpoint {endpoint_id} was stuck in 'deploying' state. "
+                        "Marking as 'failed' and allowing redeployment."
+                    )
+                    endpoint.status = "failed"
+                    endpoint = self.endpoint_repo.update(endpoint)
+            except Exception as e:
+                # If we can't check Kubernetes resources, log warning but allow redeployment
+                logger.warning(
+                    f"Could not verify Kubernetes resources for endpoint {endpoint_id}: {e}. "
+                    "Allowing redeployment to proceed."
+                )
+                endpoint.status = "failed"
+                endpoint = self.endpoint_repo.update(endpoint)
 
         # Get model entry
         model_entry = self.session.get(catalog_models.ModelCatalogEntry, endpoint.model_entry_id)
@@ -373,7 +577,7 @@ class ServingService:
             return endpoint
 
         # For internal models, delete existing Kubernetes resources and redeploy
-        endpoint_name = f"serving-{endpoint.id}"
+        endpoint_name = _get_endpoint_k8s_name(endpoint.id)
         namespace = f"llm-ops-{endpoint.environment}"
         settings = get_settings()
         image_config = get_image_config()
@@ -402,110 +606,27 @@ class ServingService:
             logger.info(f"Deleting existing Kubernetes resources for endpoint {endpoint_id}...")
             delete_success = self.deployer.delete_endpoint(endpoint_name, namespace=namespace)
             logger.info(f"delete_endpoint() returned {delete_success} for endpoint {endpoint_id}")
-            
-            # Always verify that the resource is completely deleted before proceeding
-            # Even if delete_endpoint() returns True, the resource might still be terminating
+
+            # Use deployer-side unified deletion wait logic so redeploy == delete -> deploy
             resource_type = "KServe InferenceService" if settings.use_kserve else "Deployment"
-            max_wait_time = 90  # Increased wait time for complete deletion
-            wait_interval = 2
-            waited = 0
-            resource_deleted = False
-            
-            logger.info(f"Verifying that {resource_type} {endpoint_name} is completely deleted...")
-            
-            while waited < max_wait_time:
-                resource_exists = False
-                is_terminating = False
-                try:
-                    if settings.use_kserve:
-                        # Check if KServe InferenceService still exists
-                        inference_service = self.deployer.custom_api.get_namespaced_custom_object(
-                            group="serving.kserve.io",
-                            version="v1beta1",
-                            namespace=namespace,
-                            plural="inferenceservices",
-                            name=endpoint_name
-                        )
-                        resource_exists = True
-                        # Check if it's terminating
-                        deletion_timestamp = inference_service.get("metadata", {}).get("deletionTimestamp")
-                        if deletion_timestamp:
-                            is_terminating = True
-                    else:
-                        # Check if Deployment still exists
-                        deployment = self.deployer.apps_api.read_namespaced_deployment(
-                            name=endpoint_name,
-                            namespace=namespace
-                        )
-                        resource_exists = True
-                        # Check if it's terminating
-                        if deployment.metadata.deletion_timestamp:
-                            is_terminating = True
-                except ApiException as e:
-                    if e.status == 404:
-                        # Resource not found, deletion successful
-                        resource_deleted = True
-                        logger.info(f"{resource_type} {endpoint_name} successfully deleted after {waited}s")
-                        break
-                    else:
-                        # Other error, log and continue waiting
-                        logger.warning(f"Error checking {resource_type} {endpoint_name} status: {e}")
-                        time.sleep(wait_interval)
-                        waited += wait_interval
-                        continue
-                except Exception as e:
-                    logger.warning(f"Unexpected error checking {resource_type} {endpoint_name} status: {e}")
-                    time.sleep(wait_interval)
-                    waited += wait_interval
-                    continue
-                
-                if resource_exists:
-                    if is_terminating:
-                        logger.info(
-                            f"{resource_type} {endpoint_name} is terminating, waiting for complete deletion... ({waited}s)"
-                        )
-                        time.sleep(wait_interval)
-                        waited += wait_interval
-                    else:
-                        # Resource exists but is not terminating - deletion may have failed
-                        # Try to delete again if we haven't waited too long
-                        if waited < 10:  # Only retry in the first 10 seconds
-                            logger.warning(
-                                f"{resource_type} {endpoint_name} exists but is not terminating. "
-                                f"Attempting to delete again... ({waited}s)"
-                            )
-                            try:
-                                self.deployer.delete_endpoint(endpoint_name, namespace=namespace)
-                            except Exception as retry_error:
-                                logger.warning(f"Retry deletion failed: {retry_error}")
-                        else:
-                            logger.error(
-                                f"{resource_type} {endpoint_name} still exists and is not terminating after {waited}s. "
-                                f"This indicates a deletion failure."
-                            )
-                        time.sleep(wait_interval)
-                        waited += wait_interval
-                else:
-                    resource_deleted = True
-                    break
-            
-            if not resource_deleted:
-                # Resource still exists after waiting
-                error_msg = (
-                    f"Timeout waiting for {resource_type} {endpoint_name} to be deleted after {max_wait_time}s. "
-                    f"The resource may still be terminating. Please wait and try again, or manually delete "
-                    f"the resource '{endpoint_name}' in namespace '{namespace}'."
+            try:
+                # Wait for full cleanup (includes handling terminating/finalizers)
+                self.deployer._ensure_resource_deleted(
+                    endpoint_name=endpoint_name,
+                    namespace=namespace,
+                    resource_type=resource_type,
+                    max_wait=120,
+                    check_interval=2,
                 )
-                logger.error(error_msg)
-                raise ValueError(error_msg)
-            
-            if not delete_success:
-                logger.warning(
-                    f"delete_endpoint() returned False for {endpoint_id}, "
-                    f"but resource was successfully deleted after verification"
+                logger.info(f"Verified deletion of {resource_type} {endpoint_name} for endpoint {endpoint_id}")
+            except Exception as wait_error:
+                logger.error(
+                    f"Failed to verify deletion of {resource_type} {endpoint_name}: {wait_error}"
                 )
-            
-            logger.info(f"Verified deletion of {resource_type} {endpoint_name} for endpoint {endpoint_id}")
+                raise ValueError(
+                    f"Timeout or error while waiting for {resource_type} {endpoint_name} deletion. "
+                    f"Please try again after ensuring the resource is removed."
+                ) from wait_error
 
             # Validate that model has storage_uri
             if not model_entry.storage_uri:
@@ -766,7 +887,7 @@ class ServingService:
 
         # Always try to delete Kubernetes resources, regardless of model type
         # The endpoint may have Kubernetes resources even if model_entry_id is None or external
-        endpoint_name = f"serving-{endpoint.id}"
+        endpoint_name = _get_endpoint_k8s_name(endpoint.id)
         namespace = f"llm-ops-{endpoint.environment}"
         
         try:
@@ -775,13 +896,15 @@ class ServingService:
             if success:
                 logger.info(f"Successfully deleted Kubernetes resources for endpoint {endpoint_id}")
             else:
-                logger.warning(f"Failed to delete Kubernetes resources for {endpoint_id}, but continuing with database deletion")
+                logger.warning(f"Failed to delete Kubernetes resources for {endpoint_id}; skipping database deletion")
+                return False
         except Exception as k8s_error:
-            # Log the error but continue with database deletion
+            # Log the error and do NOT delete from DB if k8s cleanup failed
             logger.error(f"Exception while deleting Kubernetes resources for {endpoint_id}: {k8s_error}", exc_info=True)
-            logger.warning(f"Continuing with database deletion despite Kubernetes deletion failure")
+            logger.warning("Skipping database deletion because Kubernetes resources were not cleaned up")
+            return False
 
-        # Delete from database (always, even if Kubernetes deletion failed)
+        # Delete from database only after Kubernetes resources are confirmed deleted
         try:
             self.endpoint_repo.delete(endpoint)
             logger.info(f"Deleted serving endpoint {endpoint_id} from database")

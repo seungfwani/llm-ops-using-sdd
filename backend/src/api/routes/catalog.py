@@ -40,9 +40,15 @@ logger = logging.getLogger(__name__)
 
 
 @router.get("/models", response_model=EnvelopeModelCatalogList)
-def list_models(session=Depends(get_session)) -> EnvelopeModelCatalogList:
+def list_models(
+    status: str | None = Query(
+        None,
+        description="Optional status filter (e.g., approved, draft, pending_review)",
+    ),
+    session=Depends(get_session),
+) -> EnvelopeModelCatalogList:
     service = CatalogService(session)
-    entries = service.list_entries()
+    entries = service.list_entries(status=status)
     return EnvelopeModelCatalogList(
         status="success",
         message="",
@@ -151,9 +157,15 @@ def update_model_status(
 
 
 @router.get("/datasets", response_model=EnvelopeDatasetList)
-def list_datasets(session=Depends(get_session)) -> EnvelopeDatasetList:
+def list_datasets(
+    approved_only: bool = Query(
+        False,
+        description="If true, return only approved datasets",
+    ),
+    session=Depends(get_session),
+) -> EnvelopeDatasetList:
     service = DatasetService(session)
-    datasets = service.list_datasets()
+    datasets = service.list_datasets(approved_only=approved_only)
     return EnvelopeDatasetList(
         status="success",
         message="",

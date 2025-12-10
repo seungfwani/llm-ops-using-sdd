@@ -71,8 +71,10 @@ export interface Envelope<T> {
 }
 
 export const catalogClient = {
-  async listModels(): Promise<Envelope<CatalogModel>> {
-    const response = await apiClient.get<Envelope<CatalogModel>>("/catalog/models");
+  async listModels(status?: string): Promise<Envelope<CatalogModel>> {
+    const response = await apiClient.get<Envelope<CatalogModel>>("/catalog/models", {
+      params: status ? { status } : undefined,
+    });
     return response.data;
   },
 
@@ -199,8 +201,10 @@ export const catalogClient = {
   },
 
   // Dataset methods
-  async listDatasets(): Promise<Envelope<CatalogDataset>> {
-    const response = await apiClient.get<Envelope<CatalogDataset>>("/catalog/datasets");
+  async listDatasets(approvedOnly: boolean = false): Promise<Envelope<CatalogDataset>> {
+    const response = await apiClient.get<Envelope<CatalogDataset>>("/catalog/datasets", {
+      params: approvedOnly ? { approved_only: true } : undefined,
+    });
     return response.data;
   },
 

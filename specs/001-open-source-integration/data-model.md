@@ -1,3 +1,23 @@
+# Data Model - 001-open-source-integration
+
+## Entities
+
+- **GpuTypeOption**
+  - Fields: `id` (string, stable key), `label` (string, display), `enabled` (bool), `env` (enum: dev/stg/prod), `priority` (int, optional for ordering), `updated_at` (timestamp).
+  - Rules: `id` must be lowercase kebab/pascal-safe; `label` non-empty; uniqueness per `env`.
+  - Lifecycle: defined via config/DB; read-only to clients; toggled by admins via config changes.
+
+- **TrainingJobRequest (delta)**
+  - Fields (relevant): `resources.gpus`, `resources.gpu_type` (string, optional when CPU), `use_gpu` (bool).
+  - Rules: if `use_gpu=true` then `resources.gpu_type` is required and must exist in `GpuTypeOption.enabled` for the target `env`; if `use_gpu=false`, `gpu_type` must be null/absent.
+
+## Relationships
+- `GpuTypeOption (env)` 1..n → `TrainingJobRequest.env` validation scope.
+
+## Validation Logic
+- Lookup by `env`: reject submission if requested `gpu_type` not in enabled list for that environment.
+- Enforce case-insensitive match on `id`; store canonical `id`.
+- Return ordered list to UI by `priority` then `label`.
 # Data Model: Open Source Integration
 
 **Branch**: `001-open-source-integration`  
