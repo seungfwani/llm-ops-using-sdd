@@ -111,7 +111,12 @@ class CatalogService:
                 raise
 
     def delete_entry(self, entry_id: str) -> dict:
-        """Delete a model catalog entry and optionally clean up storage files."""
+        """Delete a model catalog entry and clean up storage files.
+        
+        IMPORTANT: Storage files are deleted FIRST, and only if successful,
+        the database entry is deleted. This ensures data consistency between
+        MinIO/S3 and the database.
+        """
         entry = self.get_entry(entry_id)
         if not entry:
             raise ValueError("Entry not found")
@@ -130,16 +135,8 @@ class CatalogService:
         storage_uri = entry.storage_uri
         model_id = str(entry.id)
 
-        # Delete from database
-        deleted = self.models.delete(entry_id)
-        if not deleted:
-            raise ValueError("Failed to delete entry")
-
-        self.session.commit()
-
-        # Clean up storage files
-        # Note: This is a best-effort cleanup. If it fails, we still consider the deletion successful
-        # since the database record is already deleted.
+        # Delete storage files FIRST before deleting from database
+        # If storage deletion fails, do not delete from database to maintain consistency
         storage_cleaned = False
         deleted_files_count = 0
         if storage_uri:
@@ -153,24 +150,54 @@ class CatalogService:
                         prefix = parts[1]
                         
                         logger.info(
-                            f"Deleting storage files for model {model_id}: "
+                            f"Deleting storage files from MinIO/S3 for model {model_id}: "
                             f"bucket={bucket_name}, prefix={prefix}"
                         )
                         
-                        # List and delete all objects with this prefix using pagination
+                        # First, verify bucket exists
                         try:
-                            paginator = s3_client.get_paginator("list_objects_v2")
-                            pages = paginator.paginate(Bucket=bucket_name, Prefix=prefix)
-                            
-                            objects_to_delete = []
-                            for page in pages:
-                                if "Contents" in page:
-                                    for obj in page["Contents"]:
-                                        objects_to_delete.append({"Key": obj["Key"]})
+                            s3_client.head_bucket(Bucket=bucket_name)
+                            logger.info(f"Bucket '{bucket_name}' exists and is accessible")
+                        except s3_client.exceptions.ClientError as e:
+                            error_code = e.response.get("Error", {}).get("Code", "")
+                            if error_code == "404":
+                                logger.warning(f"Bucket '{bucket_name}' does not exist in MinIO/S3")
+                                # If bucket doesn't exist, consider it cleaned
+                                storage_cleaned = True
+                            else:
+                                raise ValueError(
+                                    f"Cannot access bucket '{bucket_name}' in MinIO/S3: {error_code}. "
+                                    f"Database entry will not be deleted."
+                                )
+                        
+                        if not storage_cleaned:
+                            # List and delete all objects with this prefix using pagination
+                            try:
+                                paginator = s3_client.get_paginator("list_objects_v2")
+                                pages = paginator.paginate(Bucket=bucket_name, Prefix=prefix)
+                                
+                                objects_to_delete = []
+                                for page in pages:
+                                    if "Contents" in page:
+                                        for obj in page["Contents"]:
+                                            objects_to_delete.append({"Key": obj["Key"]})
+                            except Exception as list_error:
+                                logger.error(
+                                    f"Failed to list objects in MinIO/S3 for deletion: {list_error}",
+                                    exc_info=True
+                                )
+                                raise ValueError(
+                                    f"Failed to list objects from MinIO/S3 for model {model_id}: {str(list_error)}. "
+                                    f"Database entry will not be deleted to maintain consistency."
+                                )
                             
                             if objects_to_delete:
+                                logger.info(
+                                    f"Found {len(objects_to_delete)} files to delete from MinIO/S3"
+                                )
                                 # Delete objects in batches (S3 allows up to 1000 objects per batch)
                                 batch_size = 1000
+                                failed_deletions = []
                                 for i in range(0, len(objects_to_delete), batch_size):
                                     batch = objects_to_delete[i:i + batch_size]
                                     try:
@@ -180,51 +207,135 @@ class CatalogService:
                                         )
                                         deleted_count = len(batch)
                                         if "Errors" in response and response["Errors"]:
-                                            # Log errors but continue
+                                            # Collect errors - if any deletion fails, we should not delete from DB
                                             for error in response["Errors"]:
-                                                logger.warning(
-                                                    f"Failed to delete object {error['Key']}: "
-                                                    f"{error.get('Message', 'Unknown error')}"
+                                                failed_deletions.append({
+                                                    "key": error["Key"],
+                                                    "code": error.get("Code", "Unknown"),
+                                                    "message": error.get("Message", "Unknown error")
+                                                })
+                                                logger.error(
+                                                    f"Failed to delete object {error['Key']} from MinIO/S3: "
+                                                    f"{error.get('Code', 'Unknown')} - {error.get('Message', 'Unknown error')}"
                                                 )
                                             deleted_count -= len(response["Errors"])
                                         deleted_files_count += deleted_count
                                         logger.info(
-                                            f"Deleted {deleted_count} files from storage "
+                                            f"Deleted {deleted_count} files from MinIO/S3 "
                                             f"(batch {i // batch_size + 1})"
                                         )
                                     except Exception as batch_error:
                                         logger.error(
-                                            f"Error deleting batch of files: {batch_error}",
+                                            f"Error deleting batch of files from MinIO/S3: {batch_error}",
                                             exc_info=True
                                         )
+                                        raise ValueError(
+                                            f"Failed to delete files from MinIO/S3 storage: {str(batch_error)}"
+                                        )
+                                
+                                # If any deletions failed, raise exception to prevent DB deletion
+                                if failed_deletions:
+                                    error_summary = "; ".join([
+                                        f"{err['key']}: {err['code']}" for err in failed_deletions[:5]
+                                    ])
+                                    if len(failed_deletions) > 5:
+                                        error_summary += f" ... and {len(failed_deletions) - 5} more"
+                                    raise ValueError(
+                                        f"Failed to delete {len(failed_deletions)} files from MinIO/S3. "
+                                        f"Database entry will not be deleted to maintain consistency. "
+                                        f"Errors: {error_summary}"
+                                    )
+                                
+                                # Verify deletion by listing objects again
+                                logger.info("Verifying deletion by checking remaining files...")
+                                try:
+                                    remaining_objects = []
+                                    verify_pages = paginator.paginate(Bucket=bucket_name, Prefix=prefix)
+                                    for verify_page in verify_pages:
+                                        if "Contents" in verify_page:
+                                            for obj in verify_page["Contents"]:
+                                                remaining_objects.append(obj["Key"])
+                                    
+                                    if remaining_objects:
+                                        logger.error(
+                                            f"Verification failed: {len(remaining_objects)} files still exist in MinIO/S3 "
+                                            f"after deletion attempt. Files: {remaining_objects[:10]}"
+                                        )
+                                        raise ValueError(
+                                            f"MinIO/S3 deletion verification failed: {len(remaining_objects)} files still exist. "
+                                            f"Database entry will not be deleted to maintain consistency."
+                                        )
+                                except ValueError:
+                                    # Re-raise ValueError from verification
+                                    raise
+                                except Exception as verify_error:
+                                    logger.error(
+                                        f"Failed to verify deletion in MinIO/S3: {verify_error}",
+                                        exc_info=True
+                                    )
+                                    raise ValueError(
+                                        f"Failed to verify MinIO/S3 deletion for model {model_id}: {str(verify_error)}. "
+                                        f"Database entry will not be deleted to maintain consistency."
+                                    )
                                 
                                 storage_cleaned = True
                                 logger.info(
-                                    f"Storage cleanup completed: {deleted_files_count} files deleted "
-                                    f"from {storage_uri}"
+                                    f"MinIO/S3 storage cleanup completed successfully: "
+                                    f"{deleted_files_count} files deleted from {storage_uri}. "
+                                    f"Verification confirmed all files are removed."
                                 )
                             else:
-                                logger.info(f"No files found to delete at {storage_uri}")
-                        except Exception as list_error:
-                            logger.error(
-                                f"Error listing objects for deletion: {list_error}",
-                                exc_info=True
-                            )
+                                logger.info(
+                                    f"No files found to delete at {storage_uri} in MinIO/S3. "
+                                    f"Storage may already be empty or URI is invalid."
+                                )
+                                # If no files found, consider it cleaned (may have been manually deleted)
+                                storage_cleaned = True
                     else:
-                        logger.warning(
+                        raise ValueError(
                             f"Invalid storage URI format: {storage_uri}. "
-                            f"Expected format: s3://bucket/prefix/"
+                            f"Expected format: s3://bucket/prefix/. "
+                            f"Cannot delete model from database without cleaning storage."
                         )
                 else:
-                    logger.warning(
+                    raise ValueError(
                         f"Storage URI does not start with 's3://': {storage_uri}. "
-                        f"Skipping storage cleanup."
+                        f"Cannot delete model from database without cleaning storage."
                     )
+            except ValueError:
+                # Re-raise ValueError to prevent DB deletion
+                raise
             except Exception as cleanup_error:
                 logger.error(
-                    f"Error during storage cleanup for model {model_id}: {cleanup_error}",
+                    f"Error during MinIO/S3 storage cleanup for model {model_id}: {cleanup_error}",
                     exc_info=True
                 )
+                raise ValueError(
+                    f"Failed to delete storage files from MinIO/S3 for model {model_id}: {str(cleanup_error)}. "
+                    f"Database entry will not be deleted to maintain consistency between storage and database."
+                )
+        else:
+            # No storage_uri means no files to clean, so we can proceed with DB deletion
+            logger.info(
+                f"Model {model_id} has no storage_uri, skipping MinIO/S3 cleanup"
+            )
+            storage_cleaned = True
+
+        # Only delete from database AFTER successful storage cleanup
+        # This ensures data consistency: if storage deletion fails, DB entry remains
+        if not storage_cleaned:
+            raise ValueError(
+                f"MinIO/S3 storage cleanup was not completed for model {model_id}. "
+                f"Database entry will not be deleted to maintain consistency."
+            )
+        
+        logger.info(f"MinIO/S3 cleanup successful (verified), proceeding with database deletion for model {model_id}")
+        deleted = self.models.delete(entry_id)
+        if not deleted:
+            raise ValueError("Failed to delete entry from database")
+        
+        self.session.commit()
+        logger.info(f"Model {model_id} successfully deleted from both MinIO/S3 and database")
 
         return {
             "model_id": model_id,

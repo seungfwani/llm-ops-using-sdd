@@ -133,15 +133,31 @@ class ServingDeployer:
         self.networking_api = client.NetworkingV1Api()
         self.custom_api = client.CustomObjectsApi()  # For KServe InferenceService CRD
         
-        # Test Kubernetes connection
+        # Test Kubernetes connection (non-blocking - warn only)
+        # Connection will be verified when actually needed for deployment operations
         try:
             logger.info("Testing Kubernetes API connection...")
             # Test connection by listing namespaces (simple API call)
             namespaces = self.core_api.list_namespace(limit=1)
             logger.info(f"Kubernetes API connection successful. Cluster accessible (tested via namespace list)")
+        except ApiException as e:
+            if e.status == 401:
+                logger.warning(
+                    f"Kubernetes API authentication failed (401 Unauthorized). "
+                    f"This may be due to expired credentials or insufficient permissions. "
+                    f"Serving operations may fail until authentication is resolved. "
+                    f"Error: {e.reason}"
+                )
+            else:
+                logger.warning(
+                    f"Failed to connect to Kubernetes API (status {e.status}): {e.reason}. "
+                    f"Serving operations may fail until connection is resolved."
+                )
         except Exception as e:
-            logger.error(f"Failed to connect to Kubernetes API: {e}", exc_info=True)
-            raise
+            logger.warning(
+                f"Failed to test Kubernetes API connection: {e}. "
+                f"Serving operations may fail until connection is resolved."
+            )
 
     def _normalize_route(self, route: str) -> str:
         """
@@ -203,6 +219,12 @@ class ServingDeployer:
         except ApiException as e:
             if e.status == 404:
                 return False, False
+            if e.status == 401:
+                logger.error(
+                    f"Kubernetes API authentication failed (401 Unauthorized) while checking "
+                    f"{'KServe InferenceService' if is_kserve else 'Deployment'} {endpoint_name} "
+                    f"in namespace {namespace}. Please verify Kubernetes credentials."
+                )
             raise
 
     def _ensure_resource_deleted(
@@ -411,8 +433,29 @@ class ServingDeployer:
                 
                 # Wait for complete deletion
                     self._ensure_resource_deleted(endpoint_name, namespace, resource_type, max_wait=180)
+        except ApiException as e:
+            if e.status == 401:
+                error_msg = (
+                    f"Kubernetes API authentication failed (401 Unauthorized) while checking/deleting "
+                    f"{resource_type} {endpoint_name} in namespace {namespace}. "
+                    f"This indicates that the Kubernetes credentials are expired, invalid, or insufficient. "
+                    f"Please verify:\n"
+                    f"1. Kubernetes kubeconfig is valid and not expired\n"
+                    f"2. Service account has proper RBAC permissions\n"
+                    f"3. If using in-cluster config, ensure the pod has a valid service account token\n"
+                    f"Original error: {e.reason}"
+                )
+                logger.error(error_msg)
+                raise ValueError(error_msg) from e
+            else:
+                logger.error(f"Kubernetes API error ({e.status}) checking/deleting existing resource: {e}")
+                raise ValueError(
+                    f"Failed to check/delete existing {resource_type} {endpoint_name} in namespace {namespace}. "
+                    f"Kubernetes API returned status {e.status}: {e.reason}. "
+                    f"Cannot proceed with deployment."
+                ) from e
         except Exception as e:
-            logger.error(f"Error checking/deleting existing resource: {e}")
+            logger.error(f"Error checking/deleting existing resource: {e}", exc_info=True)
             raise ValueError(
                 f"Failed to check/delete existing {resource_type} {endpoint_name} in namespace {namespace}. "
                 f"Cannot proceed with deployment. Error: {e}"

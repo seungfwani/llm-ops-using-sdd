@@ -1,5 +1,6 @@
 {{- if and .Values.minioBucketJob.enabled .Values.objectStore.createBucket }}
 {{- if .Values.dependencies.minio.enabled }}
+{{- $bucket := default .Release.Namespace .Values.objectStore.bucket }}
 ---
 apiVersion: batch/v1
 kind: Job
@@ -22,8 +23,6 @@ spec:
         - name: mc
           image: {{ .Values.objectStore.jobImage }}
           env:
-            - name: MC_HOST_local
-              value: http://$(MINIO_ROOT_USER):$(MINIO_ROOT_PASSWORD)@{{ .Values.objectStore.endpoint | trimPrefix "http://" | trimPrefix "https://" }}
             - name: MINIO_ROOT_USER
               valueFrom:
                 secretKeyRef:
@@ -32,14 +31,29 @@ spec:
             - name: MINIO_ROOT_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: MINIO_ROOT_PASSWORD
+                  name: minio-secret
+                  key: MINIO_ROOT_PASSWORD
+            - name: MINIO_ENDPOINT
+              value: {{ .Values.objectStore.endpoint | trimPrefix "http://" | trimPrefix "https://" }}
           command:
             - /bin/sh
             - -c
             - >
-              mc ls local || exit 1;
-              mc mb --ignore-existing local/{{ .Values.objectStore.bucket }};
-              mc anonymous set none local/{{ .Values.objectStore.bucket }};
+              set -e;
+              echo "Setting up MinIO alias...";
+              mc alias set local http://${MINIO_ENDPOINT} ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD};
+              echo "Waiting for MinIO to be ready...";
+              for i in $(seq 1 30); do
+                if mc ls local >/dev/null 2>&1; then
+                  echo "MinIO ready"; break;
+                fi;
+                echo "Retry $i/30: MinIO not ready yet"; sleep 2;
+              done;
+              mc ls local >/dev/null 2>&1 || { echo "ERROR: Cannot connect to MinIO"; exit 1; };
+              echo "Creating bucket: {{ $bucket }}";
+              mc mb --ignore-existing local/{{ $bucket }};
+              mc anonymous set none local/{{ $bucket }};
+              echo "Bucket {{ $bucket }} created successfully";
 {{- end }}
 {{- end }}
 

@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 from uuid import UUID
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 
 from integrations.registry.interface import RegistryAdapter
 from integrations.error_handler import (
@@ -162,11 +164,20 @@ class HuggingFaceAdapter(RegistryAdapter):
                     )
                 
                 # Upload to object storage
-                logger.info("Starting upload to object storage...")
+                upload_start_time = time.time()
+                logger.info(
+                    f"Starting upload to MinIO/S3 object storage for model {registry_model_id} "
+                    f"(catalog_id: {model_catalog_id})"
+                )
                 storage_uri = self._upload_to_storage(
                     model_id=str(model_catalog_id),
                     version=version or "latest",
                     local_dir=download_dir,
+                )
+                upload_total_time = time.time() - upload_start_time
+                logger.info(
+                    f"MinIO/S3 upload completed successfully in {upload_total_time:.2f}s "
+                    f"({upload_total_time / 60:.2f} minutes). Storage URI: {storage_uri}"
                 )
             
             # Extract metadata
@@ -554,6 +565,12 @@ class HuggingFaceAdapter(RegistryAdapter):
         bucket_name = self.settings.object_store_bucket or self.settings.training_namespace
         
         storage_path = f"models/{model_id}/{version}/"
+        storage_uri = f"s3://{bucket_name}/{storage_path}"
+        
+        logger.info(
+            f"Preparing to upload model files to MinIO/S3: "
+            f"bucket={bucket_name}, path={storage_path}, storage_uri={storage_uri}"
+        )
         
         # Step 1: 파일 목록 수집
         list_start = time.time()
@@ -566,55 +583,141 @@ class HuggingFaceAdapter(RegistryAdapter):
         list_time = time.time() - list_start
         
         total_size_mb = total_size_bytes / (1024 ** 2)
+        total_size_gb = total_size_bytes / (1024 ** 3)
         logger.info(
-            f"Found {len(files_to_upload)} files ({total_size_mb:.2f} MB) "
-            f"to upload to {storage_path} in {bucket_name} "
+            f"Found {len(files_to_upload)} files ({total_size_mb:.2f} MB / {total_size_gb:.2f} GB) "
+            f"to upload to MinIO/S3 bucket '{bucket_name}' at path '{storage_path}' "
             f"(file listing took {list_time:.2f}s)"
         )
         
-        # Step 2: 파일 업로드
+        # Step 2: 파일 업로드 (동시 업로드)
+        concurrent_uploads = self.settings.huggingface_concurrent_uploads
+        logger.info(
+            f"Starting MinIO/S3 upload of {len(files_to_upload)} files "
+            f"with {concurrent_uploads} concurrent uploads..."
+        )
         upload_start = time.time()
+        
+        # Thread-safe 카운터 및 진행 상황 추적
+        upload_lock = Lock()
         uploaded_count = 0
         uploaded_size_bytes = 0
         
-        for idx, file_path in enumerate(files_to_upload, 1):
+        def upload_file(file_info: tuple[int, Path]) -> tuple[Path, float, float, bool]:
+            """단일 파일 업로드 함수 (동시 실행용)"""
+            idx, file_path = file_info
             file_start = time.time()
             relative_path = file_path.relative_to(local_dir)
             object_key = f"{storage_path}{relative_path}".replace("\\", "/")
             file_size = file_path.stat().st_size
+            file_size_mb = file_size / (1024 ** 2)
+            is_large_file = file_size > 10 * 1024 * 1024
             
-            with open(file_path, "rb") as f:
-                s3_client.put_object(
-                    Bucket=bucket_name,
-                    Key=object_key,
-                    Body=f,
-                )
+            try:
+                if is_large_file:
+                    logger.info(
+                        f"Uploading large file [{idx}/{len(files_to_upload)}]: {relative_path} "
+                        f"({file_size_mb:.2f} MB) to MinIO/S3..."
+                    )
+                
+                with open(file_path, "rb") as f:
+                    s3_client.put_object(
+                        Bucket=bucket_name,
+                        Key=object_key,
+                        Body=f,
+                    )
+                
+                file_time = time.time() - file_start
+                upload_speed = file_size_mb / file_time if file_time > 0 else 0
+                
+                if is_large_file:
+                    logger.info(
+                        f"Large file uploaded successfully: {relative_path} "
+                        f"({file_size_mb:.2f} MB) in {file_time:.2f}s "
+                        f"(speed: {upload_speed:.2f} MB/s)"
+                    )
+                
+                return (relative_path, file_size, file_time, True)
+            except Exception as e:
+                logger.error(f"Failed to upload file {relative_path}: {e}")
+                return (relative_path, file_size, time.time() - file_start, False)
+        
+        # 동시 업로드 실행
+        file_infos = [(idx, file_path) for idx, file_path in enumerate(files_to_upload, 1)]
+        failed_uploads = []
+        
+        with ThreadPoolExecutor(max_workers=concurrent_uploads) as executor:
+            # 모든 업로드 작업 제출
+            future_to_file = {
+                executor.submit(upload_file, file_info): file_info 
+                for file_info in file_infos
+            }
             
-            uploaded_count += 1
-            uploaded_size_bytes += file_size
-            file_time = time.time() - file_start
-            
-            # 매 5개 파일마다 또는 큰 파일(>10MB)마다 진행 상황 로깅
-            if idx % 5 == 0 or file_size > 10 * 1024 * 1024:
-                progress_pct = (uploaded_count / len(files_to_upload)) * 100
-                avg_speed_mbps = (uploaded_size_bytes / (1024 ** 2)) / (time.time() - upload_start) if (time.time() - upload_start) > 0 else 0
-                logger.info(
-                    f"Upload progress: {uploaded_count}/{len(files_to_upload)} files "
-                    f"({progress_pct:.1f}%, {uploaded_size_bytes / (1024 ** 2):.2f} MB uploaded, "
-                    f"avg speed: {avg_speed_mbps:.2f} MB/s) - "
-                    f"Last file: {relative_path} ({file_size / (1024 ** 2):.2f} MB, {file_time:.2f}s)"
-                )
+            # 완료된 작업 처리
+            for future in as_completed(future_to_file):
+                relative_path, file_size, file_time, success = future.result()
+                
+                with upload_lock:
+                    if success:
+                        uploaded_count += 1
+                        uploaded_size_bytes += file_size
+                    else:
+                        failed_uploads.append(relative_path)
+                    
+                    # 진행 상황 로깅 (매 5개 파일마다 또는 큰 파일마다)
+                    if uploaded_count % 5 == 0 or file_size > 10 * 1024 * 1024:
+                        progress_pct = (uploaded_count / len(files_to_upload)) * 100
+                        elapsed_time = time.time() - upload_start
+                        uploaded_size_mb_progress = uploaded_size_bytes / (1024 ** 2)
+                        uploaded_size_gb_progress = uploaded_size_bytes / (1024 ** 3)
+                        avg_speed_mbps = uploaded_size_mb_progress / elapsed_time if elapsed_time > 0 else 0
+                        logger.info(
+                            f"MinIO/S3 upload progress: {uploaded_count}/{len(files_to_upload)} files "
+                            f"({progress_pct:.1f}%, {uploaded_size_mb_progress:.2f} MB / {uploaded_size_gb_progress:.2f} GB uploaded, "
+                            f"avg speed: {avg_speed_mbps:.2f} MB/s) - "
+                            f"Last file: {relative_path} ({file_size / (1024 ** 2):.2f} MB, {file_time:.2f}s)"
+                        )
+        
+        # 실패한 업로드 확인
+        if failed_uploads:
+            raise RuntimeError(
+                f"Failed to upload {len(failed_uploads)} file(s): {', '.join(failed_uploads[:5])}"
+                + (f" and {len(failed_uploads) - 5} more" if len(failed_uploads) > 5 else "")
+            )
         
         upload_time = time.time() - upload_start
         total_time = time.time() - start_time
+        uploaded_size_mb = uploaded_size_bytes / (1024 ** 2)
+        uploaded_size_gb = uploaded_size_bytes / (1024 ** 3)
+        
+        # Verify uploaded size matches expected size
+        size_diff_bytes = abs(uploaded_size_bytes - total_size_bytes)
+        size_diff_pct = (size_diff_bytes / total_size_bytes * 100) if total_size_bytes > 0 else 0
+        
+        if size_diff_bytes > 0:
+            logger.warning(
+                f"Size mismatch detected: expected {total_size_bytes} bytes ({total_size_mb:.2f} MB), "
+                f"actually uploaded {uploaded_size_bytes} bytes ({uploaded_size_mb:.2f} MB). "
+                f"Difference: {size_diff_bytes} bytes ({size_diff_pct:.2f}%)"
+            )
+        
+        # Calculate average speed using actual uploaded size
+        avg_speed_mbps = uploaded_size_mb / upload_time if upload_time > 0 else 0
         
         logger.info(
-            f"Upload completed: {uploaded_count} files ({total_size_mb:.2f} MB) "
-            f"in {total_time:.2f}s (upload: {upload_time:.2f}s, "
-            f"avg speed: {total_size_mb / upload_time:.2f} MB/s)"
+            f"MinIO/S3 upload completed successfully: {uploaded_count}/{len(files_to_upload)} files "
+            f"({uploaded_size_mb:.2f} MB / {uploaded_size_gb:.2f} GB) "
+            f"uploaded to bucket '{bucket_name}' in {total_time:.2f}s "
+            f"(upload time: {upload_time:.2f}s, avg speed: {avg_speed_mbps:.2f} MB/s)"
         )
+        if size_diff_bytes > 0:
+            logger.info(
+                f"Note: Expected size was {total_size_mb:.2f} MB / {total_size_gb:.2f} GB, "
+                f"but actual uploaded size is {uploaded_size_mb:.2f} MB / {uploaded_size_gb:.2f} GB"
+            )
+        logger.info(f"Model files are now available at: {storage_uri}")
         
-        return f"s3://{bucket_name}/{storage_path}"
+        return storage_uri
     
     def _download_from_storage(
         self,

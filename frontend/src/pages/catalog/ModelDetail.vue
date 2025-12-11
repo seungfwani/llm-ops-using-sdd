@@ -7,6 +7,21 @@
     <div v-if="loading" class="loading">Loading model details...</div>
     <div v-else-if="error" class="error">{{ error }}</div>
     <div v-else-if="model" class="detail-content">
+      <!-- Import Status Alert -->
+      <div v-if="model.metadata?.import_status === 'failed'" class="import-error-alert">
+        <h3>⚠️ Import Failed</h3>
+        <p class="error-message">{{ model.metadata.import_error || 'Model import failed. Please check the error details.' }}</p>
+        <p class="error-hint">You can try importing again or delete this model entry.</p>
+      </div>
+      
+      <div v-else-if="model.metadata?.import_status === 'completed'" class="import-success-alert">
+        <p>✅ Model import completed successfully.</p>
+      </div>
+      
+      <div v-else-if="isHuggingFaceModel && !model.storage_uri" class="import-progress-alert">
+        <p>⏳ Model import is in progress. Please wait or refresh the page to check the status.</p>
+      </div>
+
       <div class="detail-section">
         <h2>Basic Information</h2>
         <dl class="detail-list">
@@ -39,7 +54,8 @@
           <dt>Storage URI</dt>
           <dd v-if="model.storage_uri" class="monospace storage-uri-value">{{ model.storage_uri }}</dd>
           <dd v-else class="text-muted">
-            <span v-if="isHuggingFaceModel">Files are being uploaded from Hugging Face...</span>
+            <span v-if="isHuggingFaceModel && model.metadata?.import_status !== 'failed'">Files are being uploaded from Hugging Face...</span>
+            <span v-else-if="model.metadata?.import_status === 'failed'">Import failed - no files available</span>
             <span v-else>No files uploaded</span>
           </dd>
         </dl>
@@ -473,6 +489,52 @@ header {
   display: flex;
   flex-direction: column;
   gap: 2rem;
+}
+
+.import-error-alert {
+  background: #f8d7da;
+  border: 1px solid #f5c6cb;
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin-bottom: 2rem;
+  color: #721c24;
+}
+
+.import-error-alert h3 {
+  margin-top: 0;
+  margin-bottom: 0.75rem;
+  color: #721c24;
+}
+
+.import-error-alert .error-message {
+  margin: 0.5rem 0;
+  font-weight: 500;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.import-error-alert .error-hint {
+  margin: 0.75rem 0 0 0;
+  font-size: 0.9rem;
+  color: #856404;
+}
+
+.import-success-alert {
+  background: #d4edda;
+  border: 1px solid #c3e6cb;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 2rem;
+  color: #155724;
+}
+
+.import-progress-alert {
+  background: #e7f3ff;
+  border: 1px solid #b3d9ff;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 2rem;
+  color: #004085;
 }
 
 .detail-section {

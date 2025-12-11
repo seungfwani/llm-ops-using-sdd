@@ -69,7 +69,10 @@
             <span :class="`status-badge status-${model.status}`">
               {{ model.status }}
             </span>
-            <span v-if="!model.storage_uri && model.metadata?.source === 'huggingface'" class="importing-badge">
+            <span v-if="model.metadata?.import_status === 'failed'" class="import-failed-badge" :title="model.metadata?.import_error">
+              ⚠️ 임포트 실패
+            </span>
+            <span v-else-if="!model.storage_uri && model.metadata?.source === 'huggingface' && model.metadata?.import_status !== 'failed'" class="importing-badge">
               (다운로드 중...)
             </span>
           </td>
@@ -356,6 +359,17 @@ header {
   font-size: 0.75rem;
   font-weight: 500;
   animation: pulse 2s ease-in-out infinite;
+}
+
+.import-failed-badge {
+  margin-left: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  background: #f8d7da;
+  color: #721c24;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: help;
 }
 
 @keyframes pulse {

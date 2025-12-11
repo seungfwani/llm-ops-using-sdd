@@ -144,6 +144,22 @@ def wrap_tool_error(
             details=details
         )
     
+    # Handle gated repository access errors
+    if "gated repo" in error_str or "cannot access gated" in error_str or "gated repository" in error_str:
+        return ToolConfigurationError(
+            message=(
+                "Cannot access gated repository. This model requires special access permissions. "
+                "Please ensure you have:\n"
+                "1. A valid Hugging Face API token with access to this model\n"
+                "2. Accepted the model's terms of use on Hugging Face\n"
+                "3. Requested access to the model if it requires approval\n\n"
+                f"Original error: {str(error)}"
+            ),
+            tool_name=tool_name,
+            original_error=error,
+            details=details
+        )
+    
     # Check for common error patterns
     if "connection" in error_str or "timeout" in error_str or "unreachable" in error_str:
         return ToolUnavailableError(

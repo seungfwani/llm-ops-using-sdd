@@ -232,8 +232,29 @@ helm upgrade --install llm-ops-prod ./llm-ops-platform \
   ```
 - KServe CRD 미설치 문제: 메인 차트에서 서브차트 CRD가 자동 설치되지 않는다. 배포 전에 CRD를 사전 설치한다.
   ```bash
-  cd infra/scripts
+  cd infra/helm/llm-ops-platform
   ./install-kserve-crds.sh
   # 필요 시 버전 지정: KSERVE_VERSION=0.16.0 ./install-kserve-crds.sh
   ```
+
+## 헬름 배포 절차(한눈에)
+1) KServe CRD 사전 설치 (필수)
+   ```bash
+   cd infra/helm/llm-ops-platform
+   KSERVE_VERSION=0.16.0 ./install-kserve-crds.sh
+   ```
+2) 의존성 업데이트
+   ```bash
+   cd ../helm/llm-ops-platform
+   helm dependency update
+   ```
+3) values 준비 후 배포
+   ```bash
+   # 예: 기본 values 사용
+   helm upgrade --install llm-ops-dev ./llm-ops-platform \
+     -n llm-ops-dev --create-namespace \
+     -f values.yaml
+   # KServe를 비활성화하고 GPU 플러그인도 끌 때
+   # --set kserve.enabled=false --set gpuPlugin.enabled=false
+   ```
 

@@ -262,6 +262,12 @@ class Settings(BaseSettings):
     # Default: 5 GB
     huggingface_max_download_size_gb: float = 5.0
     
+    # Number of concurrent uploads to MinIO/S3 when importing models
+    # Higher values increase upload speed but may consume more resources
+    # Recommended: 5-10 for most cases, adjust based on network bandwidth and server resources
+    # Default: 5 concurrent uploads
+    huggingface_concurrent_uploads: int = 5
+    
     # =========================================================================
     # Open Source Integration Configuration
     # =========================================================================

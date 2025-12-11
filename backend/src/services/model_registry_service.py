@@ -130,7 +130,8 @@ class ModelRegistryService:
         model_id = uuid4()
         logger.info(f"Creating catalog entry for model: {name}")
         
-        # Get model metadata first (without downloading) to determine model_family
+        # Get model metadata first (without downloading) to validate model exists
+        # If model is not found in Hugging Face, raise exception to prevent DB registration
         try:
             metadata_info = adapter.get_model_metadata(
                 registry_model_id=registry_model_id,
@@ -143,11 +144,11 @@ class ModelRegistryService:
                 "registry_version": metadata_info.get("version"),
             }
         except Exception as e:
-            logger.warning(f"Failed to get model metadata, using minimal metadata: {e}")
-            initial_metadata = {
-                "source": "huggingface",
-                "huggingface_model_id": registry_model_id,
-            }
+            # If model is not found in Hugging Face, do not register in DB
+            logger.error(f"Failed to get model metadata from Hugging Face for {registry_model_id}: {e}")
+            raise ValueError(
+                f"Model '{registry_model_id}' not found in Hugging Face Hub or cannot be accessed: {str(e)}"
+            )
         
         # Determine model_family: use provided value, or infer from model_id, or default
         if model_family:
@@ -266,19 +267,25 @@ class ModelRegistryService:
             logger.info(f"Model download completed: {model_id}, storage_uri: {entry.storage_uri}")
             logger.info(f"Successfully imported model {model_id} from {registry_type}: {registry_model_id}")
         except Exception as e:
-            # If download fails, update metadata to indicate error
+            # If download fails, mark the model with failed status instead of deleting
             logger.error(f"Model download failed for {model_id}: {e}", exc_info=True)
             try:
-                from sqlalchemy.orm.attributes import flag_modified
                 catalog_repo = ModelCatalogRepository(session)
                 entry = catalog_repo.get(model_id)
                 if entry:
-                    entry.model_metadata["import_error"] = str(e)
+                    from sqlalchemy.orm.attributes import flag_modified
+                    
+                    # Update import status to failed and store error message
+                    if not entry.model_metadata:
+                        entry.model_metadata = {}
                     entry.model_metadata["import_status"] = "failed"
+                    entry.model_metadata["import_error"] = str(e)
                     flag_modified(entry, "model_metadata")
+                    
                     session.commit()
+                    logger.info(f"Model entry {model_id} marked as failed with error message")
             except Exception as update_error:
-                logger.error(f"Failed to update error status for {model_id}: {update_error}")
+                logger.error(f"Failed to update model entry {model_id} with failure status: {update_error}", exc_info=True)
         finally:
             session.close()
     

@@ -102,12 +102,46 @@ def sync_training_job_statuses():
     
     session = SessionLocal()
     try:
-        service = TrainingJobService(session)
-        updated_count = service.sync_all_active_jobs()
-        if updated_count > 0:
-            logger.debug(f"Synced {updated_count} training job(s) with Kubernetes")
+        # Try to create service - Kubernetes connection may fail in some environments
+        try:
+            service = TrainingJobService(session)
+        except Exception as init_error:
+            # Kubernetes API connection/auth failure - skip sync this time
+            # This can happen if kubeconfig is invalid or cluster is unavailable
+            error_msg = str(init_error)
+            if "401" in error_msg or "Unauthorized" in error_msg:
+                logger.debug(
+                    f"Skipping training job status sync: Kubernetes API authentication failed. "
+                    f"This is normal if running outside Kubernetes cluster or with invalid kubeconfig."
+                )
+            else:
+                logger.warning(
+                    f"Skipping training job status sync: Failed to initialize Kubernetes client: {init_error}"
+                )
+            return
+        
+        # Sync job statuses
+        try:
+            updated_count = service.sync_all_active_jobs()
+            if updated_count > 0:
+                logger.debug(f"Synced {updated_count} training job(s) with Kubernetes")
+        except Exception as sync_error:
+            # Handle API errors during sync (e.g., 401, 403, network issues)
+            error_msg = str(sync_error)
+            if "401" in error_msg or "Unauthorized" in error_msg:
+                logger.debug(
+                    f"Skipping training job status sync: Kubernetes API authentication failed. "
+                    f"Error: {sync_error}"
+                )
+            elif "403" in error_msg or "Forbidden" in error_msg:
+                logger.warning(
+                    f"Skipping training job status sync: Kubernetes API permission denied. "
+                    f"Error: {sync_error}"
+                )
+            else:
+                logger.error(f"Error syncing training job statuses: {sync_error}", exc_info=True)
     except Exception as e:
-        logger.error(f"Error syncing training job statuses: {e}", exc_info=True)
+        logger.error(f"Unexpected error in sync_training_job_statuses: {e}", exc_info=True)
     finally:
         session.close()
 
@@ -136,10 +170,23 @@ async def lifespan(app: FastAPI):
     
     yield
     
-    # Shutdown scheduler
+    # Shutdown scheduler gracefully with timeout
     if scheduler:
-        scheduler.shutdown()
-        logger.info("Stopped training job status sync scheduler")
+        try:
+            logger.info("Shutting down training job status sync scheduler...")
+            # Shutdown with timeout to prevent hanging
+            # wait=True: wait for running jobs to complete
+            # timeout=5: maximum 5 seconds to wait
+            scheduler.shutdown(wait=True, timeout=5)
+            logger.info("Stopped training job status sync scheduler")
+        except Exception as e:
+            logger.warning(f"Error during scheduler shutdown: {e}, forcing shutdown")
+            # Force shutdown if graceful shutdown fails
+            try:
+                scheduler.shutdown(wait=False)
+            except Exception:
+                pass
+            logger.info("Forced scheduler shutdown completed")
 
 
 def create_app() -> FastAPI:

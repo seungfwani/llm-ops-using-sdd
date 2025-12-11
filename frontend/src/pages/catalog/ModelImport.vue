@@ -150,10 +150,14 @@ async function handleImport() {
     if (response.status === 'success' && response.data) {
       const model = Array.isArray(response.data) ? response.data[0] : response.data;
       progressMessage.value = '';
-      successMessage.value = '모델이 등록되었습니다. 다운로드는 백그라운드에서 진행 중입니다. 모델 리스트 페이지에서 진행 상황을 확인할 수 있습니다.';
-      // 모델 리스트 페이지로 즉시 이동
+      successMessage.value = '모델이 등록되었습니다. 다운로드는 백그라운드에서 진행 중입니다. 모델 상세 페이지에서 진행 상황을 확인할 수 있습니다.';
+      // 모델 상세 페이지로 이동하여 상태 확인 가능하도록
       setTimeout(() => {
-        router.push('/catalog/models');
+        if (model?.id) {
+          router.push(`/catalog/models/${model.id}`);
+        } else {
+          router.push('/catalog/models');
+        }
       }, 1500);
     } else {
       progressMessage.value = '';

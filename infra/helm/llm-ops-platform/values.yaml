@@ -7,7 +7,7 @@ kserve:
     enabled: true
     serviceName: kserve-webhook-server-service
     secretName: kserve-webhook-server-cert
-    image: bitnami/kubectl:1.29
+    image: bitnami/kubectl:latest
 
 gpuPlugin:
   enabled: true
@@ -90,10 +90,23 @@ dependencies:
       secretKey: llmops-secret
 
 objectStore:
-  bucket: models
+  # bucket이 비어있으면 자동으로 네임스페이스 이름을 사용합니다
+  bucket: ""
   endpoint: http://minio:9000
   createBucket: true
   jobImage: quay.io/minio/mc:latest
 
 minioBucketJob:
   enabled: true
+
+# ServiceAccount and RBAC for backend API server
+# Required for Kubernetes API access (deploying InferenceServices, Deployments, etc.)
+serviceAccount:
+  create: true
+  # If not set, uses the default service account name from _helpers.tpl
+  # name: ""
+
+rbac:
+  create: true
+  # ClusterRole and ClusterRoleBinding will be created with permissions
+  # to manage Deployments, Services, Ingresses, HPA, and KServe InferenceServices
