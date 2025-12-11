@@ -95,6 +95,11 @@ objectStore:
   endpoint: http://minio:9000
   createBucket: true
   jobImage: quay.io/minio/mc:latest
+  credentials:
+    accessKey: llmops
+    secretKey: llmops-secret
+  config:
+    endpointUrl: http://minio:9000
 
 minioBucketJob:
   enabled: true

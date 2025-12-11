@@ -116,7 +116,7 @@ class ServingDeployer:
                 logger.error("Could not initialize Kubernetes client")
                 raise
 
-        # Configure SSL verification based on settings
+        # Configure SSL verification and timeout based on settings
         configuration = client.Configuration.get_default_copy()
         if not settings.kubernetes_verify_ssl:
             logger.warning("SSL verification is disabled for Kubernetes API client")
@@ -124,8 +124,15 @@ class ServingDeployer:
             # Also disable SSL warnings
             import urllib3
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-            # Update all API clients to use this configuration
-            client.Configuration.set_default(configuration)
+        
+        # Set timeout for API calls to prevent hanging (default: 10 seconds)
+        api_timeout = getattr(settings, 'kubernetes_api_timeout', 10)
+        configuration.api_key_prefix['authorization'] = 'Bearer'
+        # Note: kubernetes-python client doesn't directly support timeout in Configuration
+        # We'll handle timeout in individual API calls instead
+        
+        # Update all API clients to use this configuration
+        client.Configuration.set_default(configuration)
 
         self.apps_api = client.AppsV1Api()
         self.core_api = client.CoreV1Api()
@@ -138,7 +145,9 @@ class ServingDeployer:
         try:
             logger.info("Testing Kubernetes API connection...")
             # Test connection by listing namespaces (simple API call)
-            namespaces = self.core_api.list_namespace(limit=1)
+            # Set timeout to prevent hanging (10 seconds)
+            # Use _request_timeout parameter to set timeout for this specific API call
+            namespaces = self.core_api.list_namespace(limit=1, _request_timeout=10)
             logger.info(f"Kubernetes API connection successful. Cluster accessible (tested via namespace list)")
         except ApiException as e:
             if e.status == 401:
