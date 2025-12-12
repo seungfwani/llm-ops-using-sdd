@@ -22,7 +22,7 @@ spec:
       {{- if .Values.app.serviceAccountName }}
       serviceAccountName: {{ .Values.app.serviceAccountName }}
       {{- else if .Values.serviceAccount.create }}
-      serviceAccountName: {{ include "llmops.fullname" . }}
+      serviceAccountName: {{ include "llmops.fullname" . }}-api
       {{- end }}
       containers:
       - name: app

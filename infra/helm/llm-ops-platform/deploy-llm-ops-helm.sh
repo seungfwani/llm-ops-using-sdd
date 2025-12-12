@@ -96,11 +96,11 @@ EOF
 parse_args() {
   # 환경 변수에서 기본값 로드 (명령줄 인자가 없을 때 사용)
   ENVIRONMENT="${ENVIRONMENT:-dev}"
-  KSERVE_VERSION="${KSERVE_VERSION:-v0.16.0}"
-  KSERVE_DEPLOYMENT_MODE="${KSERVE_DEPLOYMENT_MODE:-RawDeployment}"
-  KSERVE_TLS_ENABLED="${KSERVE_TLS_ENABLED:-false}"
-  INSTALL_CERT_MANAGER="${INSTALL_CERT_MANAGER:-true}"
-  CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-v1.13.0}"
+KSERVE_VERSION="${KSERVE_VERSION:-v0.16.0}"
+KSERVE_DEPLOYMENT_MODE="${KSERVE_DEPLOYMENT_MODE:-RawDeployment}"
+KSERVE_TLS_ENABLED="${KSERVE_TLS_ENABLED:-false}"
+INSTALL_CERT_MANAGER="${INSTALL_CERT_MANAGER:-true}"
+CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-v1.13.0}"
   NAMESPACE="${NAMESPACE:-}"
   RELEASE_NAME="${RELEASE_NAME:-}"
   BUILD_IMAGE="${BUILD_IMAGE:-false}"
@@ -109,9 +109,9 @@ parse_args() {
   IMAGE_NAME="${IMAGE_NAME:-llm-ops-platform}"
   IMAGE_TAG="${IMAGE_TAG:-}"
   NVDP_REPLICAS="${NVDP_REPLICAS:-4}"
-  NVDP_NAMESPACE="${NVDP_NAMESPACE:-kube-system}"
-  NVDP_RELEASE_NAME="${NVDP_RELEASE_NAME:-nvidia-device-plugin}"
-  NVDP_CHART_VERSION="${NVDP_CHART_VERSION:-0.15.0}"
+NVDP_NAMESPACE="${NVDP_NAMESPACE:-kube-system}"
+NVDP_RELEASE_NAME="${NVDP_RELEASE_NAME:-nvidia-device-plugin}"
+NVDP_CHART_VERSION="${NVDP_CHART_VERSION:-0.15.0}"
 
   while [[ $# -gt 0 ]]; do
     case $1 in
@@ -434,21 +434,15 @@ build_docker_image() {
     docker push "${FULL_IMAGE_NAME}"
     echo "✅ Docker 이미지 푸시 완료: ${FULL_IMAGE_NAME}"
   fi
-  
+
   # 전역 변수로 설정 (다른 함수에서 사용)
   export FULL_IMAGE_NAME
 }
 
-# ===== llm-ops-platform (Helm) 설치 =====
-install_llm_ops_platform() {
-  echo ">>> Updating Helm dependencies..."
-  helm dependency update "${CHART_DIR}"
-
-  # Helm 설치 명령어 구성
-  local helm_args=(
-    "upgrade" "--install" "${RELEASE_NAME}" "${CHART_DIR}"
+# ===== Helm 인자 구성 함수 =====
+build_helm_args() {
+  local base_args=(
     "-n" "${NAMESPACE}"
-    "--create-namespace"
     "-f" "${CHART_DIR}/values.yaml"
     "--set" "kserve.enabled=true"
     "--set" "gpuPlugin.enabled=false"
@@ -457,38 +451,154 @@ install_llm_ops_platform() {
     "--set" "kserve.ingressGateway.certManager.enabled=${KSERVE_TLS_ENABLED}"
   )
 
-  # 이미지가 빌드된 경우 이미지 이름 설정
+  # 이미지 설정 추가
   if [[ "${BUILD_IMAGE}" == "true" ]]; then
-    # build_docker_image 함수에서 설정한 FULL_IMAGE_NAME 사용
     if [[ -z "${FULL_IMAGE_NAME:-}" ]]; then
       echo "❌ BUILD_IMAGE=true이지만 FULL_IMAGE_NAME이 설정되지 않았습니다."
       echo "   build_docker_image 함수가 실행되었는지 확인하세요."
       exit 1
     fi
-    
-    # 이미지 이름에서 repository와 tag 분리 (마지막 : 기준)
+    # build_docker_image 함수에서 설정한 FULL_IMAGE_NAME 사용
     local image_repo="${FULL_IMAGE_NAME%:*}"
     local image_tag="${FULL_IMAGE_NAME##*:}"
-    helm_args+=(
+    base_args+=(
       "--set" "app.enabled=true"
       "--set" "app.image.repository=${image_repo}"
       "--set" "app.image.tag=${image_tag}"
     )
+  else
+    base_args+=("--set" "app.enabled=true")
+  fi
+  
+  # 결과를 전역 변수에 저장
+  HELM_BASE_ARGS=("${base_args[@]}")
+}
+
+# ===== llm-ops-platform (Helm) 설치 =====
+install_llm_ops_platform() {
+  echo ">>> Updating Helm dependencies..."
+  helm dependency update "${CHART_DIR}"
+
+  # Helm 인자 구성
+  build_helm_args
+
+  # 이미지 정보 출력
+  if [[ "${BUILD_IMAGE}" == "true" ]] && [[ -n "${FULL_IMAGE_NAME:-}" ]]; then
+    local image_repo="${FULL_IMAGE_NAME%:*}"
+    local image_tag="${FULL_IMAGE_NAME##*:}"
     echo ">>> Using Docker image: ${FULL_IMAGE_NAME}"
     echo "   - Repository: ${image_repo}"
     echo "   - Tag: ${image_tag}"
   else
-    # 이미지 빌드가 요청되지 않은 경우에도 app 활성화 (values.yaml 기본값 사용)
-    helm_args+=(
-      "--set" "app.enabled=true"
-    )
     echo ">>> Using default image from values.yaml"
   fi
+
+  # Helm 설치 명령어 구성
+  local helm_args=(
+    "upgrade" "--install" "${RELEASE_NAME}" "${CHART_DIR}"
+    "${HELM_BASE_ARGS[@]}"
+    "--create-namespace"
+  )
 
   echo ">>> Installing llm-ops-platform..."
   echo ">>> Helm command: helm ${helm_args[*]}"
   echo
+  
+  # 디버깅: 실제로 전달되는 values 확인 (dry-run)
+  echo ">>> Verifying Helm values (dry-run)..."
+  echo ">>> Checking if app deployment will be created..."
+  
+  # helm template을 위한 인자 구성 (helm_args와 동일한 base args 사용)
+  local template_args=(
+    "${RELEASE_NAME}" "${CHART_DIR}"
+    "${HELM_BASE_ARGS[@]}"
+  )
+  
+  helm template "${template_args[@]}" 2>&1 | grep -E "kind: Deployment|name:.*-app|image:" | head -10 || echo "   ⚠️  No app deployment found in template output"
+  echo
+  
   helm "${helm_args[@]}"
+  
+  # 배포 후 확인
+  echo
+  echo ">>> Verifying deployment..."
+  sleep 3
+  
+  # Deployment 이름 찾기 (label selector 사용 - Chart 이름 기반이므로 더 안전)
+  local deployment_name=$(kubectl get deployment -n "${NAMESPACE}" -l app.kubernetes.io/component=app -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+  
+  if [[ -n "${deployment_name}" ]]; then
+    echo "✅ App deployment found: ${deployment_name}"
+    echo
+    
+    # Deployment 상태 확인
+    echo ">>> Deployment status:"
+    kubectl get deployment "${deployment_name}" -n "${NAMESPACE}" -o wide
+    echo
+    
+    # Deployment conditions 확인
+    echo ">>> Deployment conditions:"
+    kubectl get deployment "${deployment_name}" -n "${NAMESPACE}" -o jsonpath='{range .status.conditions[*]}{.type}: {.status} - {.reason}{"\n"}{end}' 2>/dev/null || true
+    echo
+    
+    # Pod 상태 확인
+    local pod_count=$(kubectl get pods -n "${NAMESPACE}" -l app.kubernetes.io/component=app --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "${pod_count}" -gt 0 ]]; then
+      echo ">>> Pod status:"
+      kubectl get pods -n "${NAMESPACE}" -l app.kubernetes.io/component=app
+    else
+      echo "   ⚠️  No pods found"
+    fi
+    
+    # Pod 생성 실패 시 상세 정보 출력
+    local failed_pods=$(kubectl get pods -n "${NAMESPACE}" -l app.kubernetes.io/component=app --field-selector=status.phase!=Running,status.phase!=Succeeded --no-headers 2>/dev/null | head -1)
+    if [[ -n "${failed_pods}" ]]; then
+      local pod_name=$(echo "${failed_pods}" | awk '{print $1}')
+      echo
+      echo ">>> Diagnosing pod creation failure for: ${pod_name}"
+      echo
+      
+      # Pod describe (이미지 pull 오류 등 확인)
+      echo ">>> Pod describe:"
+      kubectl describe pod "${pod_name}" -n "${NAMESPACE}" 2>/dev/null | tail -30 || true
+      echo
+      
+      # Pod 이벤트
+      echo ">>> Pod events:"
+      kubectl get events -n "${NAMESPACE}" --field-selector involvedObject.name="${pod_name}" --sort-by='.lastTimestamp' 2>/dev/null | tail -10 || true
+      echo
+      
+      # 최근 네임스페이스 이벤트
+      echo ">>> Recent namespace events:"
+      kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' 2>/dev/null | tail -15 || true
+      echo
+      
+      # ReplicaSet 상태 확인
+      echo ">>> ReplicaSet status:"
+      kubectl get replicaset -n "${NAMESPACE}" -l app.kubernetes.io/component=app 2>/dev/null | head -5 || true
+    fi
+    
+    # Deployment가 Available하지 않은 경우
+    local available=$(kubectl get deployment "${deployment_name}" -n "${NAMESPACE}" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+    if [[ "${available}" != "True" ]]; then
+      echo
+      echo "⚠️  Deployment is not available. Common issues:"
+      echo "   1. Image pull errors - check image name and registry access"
+      echo "   2. Resource constraints - check node resources"
+      echo "   3. ServiceAccount issues - check RBAC permissions"
+      echo "   4. ConfigMap/Secret missing - check dependencies"
+    fi
+  else
+    echo "❌ App deployment not found"
+    echo ">>> Checking Helm release values..."
+    helm get values "${RELEASE_NAME}" -n "${NAMESPACE}" 2>/dev/null || echo "   (Release not found)"
+    echo
+    echo ">>> Checking all deployments in namespace..."
+    kubectl get deployments -n "${NAMESPACE}" 2>/dev/null || true
+    echo
+    echo ">>> Searching for deployments with app component label..."
+    kubectl get deployments -n "${NAMESPACE}" -l app.kubernetes.io/component=app 2>/dev/null || echo "   (No deployments found with app component label)"
+  fi
 }
 
 # ===== 실행 순서 =====
