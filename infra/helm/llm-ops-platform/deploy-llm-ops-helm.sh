@@ -486,6 +486,8 @@ install_llm_ops_platform() {
   fi
 
   echo ">>> Installing llm-ops-platform..."
+  echo ">>> Helm command: helm ${helm_args[*]}"
+  echo
   helm "${helm_args[@]}"
 }
 
