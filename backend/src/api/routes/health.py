@@ -15,6 +15,19 @@ from integrations.status_monitor import refresh_integration_status
 router = APIRouter(prefix="/llm-ops/v1/health", tags=["health"])
 
 
+@router.get("")
+@router.get("/")
+def health_check():
+    """Basic health check endpoint for Kubernetes liveness/readiness probes.
+    
+    Returns a simple status response indicating the API is running.
+    """
+    return {
+        "status": "healthy",
+        "message": "API is running",
+    }
+
+
 def _build_adapters():
     """Construct adapters based on current settings.
 
