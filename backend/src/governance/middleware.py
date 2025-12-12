@@ -28,7 +28,7 @@ class RBACMiddleware(BaseHTTPMiddleware):
         self.policy_engine = policy_engine or PolicyEngine()
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        # Skip RBAC for docs, openapi, and health check endpoints
+        # Skip RBAC for docs, openapi, health check, and frontend static files
         skip_paths = [
             "/llm-ops/v1/docs",
             "/llm-ops/v1/openapi.json",
@@ -38,6 +38,13 @@ class RBACMiddleware(BaseHTTPMiddleware):
         ]
         # Also skip paths that start with health check prefix
         if request.url.path in skip_paths or request.url.path.startswith("/llm-ops/v1/health"):
+            return await call_next(request)
+        
+        # Skip RBAC for frontend static files and root path
+        # Frontend is served at root (/) and assets are at /assets
+        if (request.url.path == "/" or 
+            request.url.path.startswith("/assets") or
+            not request.url.path.startswith("/llm-ops/v1")):
             return await call_next(request)
         
         actor_id = request.headers.get("X-User-Id")
