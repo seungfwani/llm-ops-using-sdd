@@ -19,8 +19,8 @@ spec:
         {{- include "llmops.labels" . | nindent 8 }}
         app.kubernetes.io/component: app
     spec:
-      {{- with .Values.app.serviceAccountName }}
-      serviceAccountName: {{ . }}
+      {{- if .Values.app.serviceAccountName }}
+      serviceAccountName: {{ .Values.app.serviceAccountName }}
       {{- else if .Values.serviceAccount.create }}
       serviceAccountName: {{ include "llmops.fullname" . }}
       {{- end }}
@@ -72,7 +72,7 @@ spec:
           value: {{ .Values.app.objectStoreEndpoint | quote }}
           {{- else }}
           value: {{ printf "%s://%s:%d" 
-            (cond (eq (.Values.app.objectStoreService.secure | default false) true) "https" "http")
+            (ternary "https" "http" (.Values.app.objectStoreService.secure | default false))
             (.Values.app.objectStoreService.serviceName | default "minio")
             (.Values.app.objectStoreService.port | default 9000) | quote }}
           {{- end }}
