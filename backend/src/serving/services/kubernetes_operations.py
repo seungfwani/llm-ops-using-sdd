@@ -26,6 +26,21 @@ settings = get_settings()
 class KubernetesOperations:
     """Service for Kubernetes operational tasks on serving endpoints."""
     
+    def _refresh_kubernetes_token(self) -> bool:
+        """
+        Refresh Kubernetes authentication token for in-cluster operations.
+        Returns True if refresh was successful, False otherwise.
+        """
+        try:
+            logger.info("KubernetesOperations: Attempting to refresh Kubernetes authentication token...")
+            # Reload in-cluster config to refresh the token
+            k8s_config.load_incluster_config()
+            logger.info("KubernetesOperations: Successfully refreshed Kubernetes authentication token")
+            return True
+        except Exception as e:
+            logger.error(f"KubernetesOperations: Failed to refresh Kubernetes token: {e}")
+            return False
+    
     def __init__(self):
         """Initialize Kubernetes client."""
         try:
@@ -397,44 +412,72 @@ class KubernetesOperations:
                 plural="inferenceservices",
                 name=endpoint_name,
             )
-            
-            status = inference_service.get("status", {})
-            conditions = status.get("conditions", [])
-            
-            # Get actual pod status for accurate health check
-            pod_status = self.get_pod_status(endpoint_name, namespace, is_kserve=True)
-            
-            # Use pod status if available, otherwise use InferenceService conditions
-            if pod_status:
-                final_status = pod_status
-            else:
-                # Fall back to InferenceService Ready condition
-                ready_condition = next(
-                    (c for c in conditions if c.get("type") == "Ready"),
-                    None
-                )
-                ready_status = ready_condition.get("status", "Unknown") if ready_condition else "Unknown"
-                
-                if ready_status == "True":
-                    final_status = "healthy"
-                elif ready_status == "False":
-                    final_status = "degraded"
-                else:
-                    final_status = "deploying"
-            
-            return {
-                "uid": inference_service.get("metadata", {}).get("uid", ""),
-                "replicas": status.get("components", {}).get("predictor", {}).get("replicas", 0),
-                "ready_replicas": status.get("components", {}).get("predictor", {}).get("readyReplicas", 0),
-                "available_replicas": status.get("components", {}).get("predictor", {}).get("availableReplicas", 0),
-                "status": final_status,
-                "conditions": conditions,
-                "framework_status": status,
-            }
         except ApiException as e:
-            if e.status == 404:
+            if e.status == 401:
+                logger.warning(
+                    f"KubernetesOperations: Kubernetes API authentication failed (401 Unauthorized) while getting "
+                    f"KServe InferenceService {endpoint_name} status in namespace {namespace}. Attempting token refresh..."
+                )
+                # Try to refresh the token and retry once
+                if self._refresh_kubernetes_token():
+                    logger.info("KubernetesOperations: Token refreshed, retrying status check...")
+                    try:
+                        inference_service = self.custom_api.get_namespaced_custom_object(
+                            group="serving.kserve.io",
+                            version="v1beta1",
+                            namespace=namespace,
+                            plural="inferenceservices",
+                            name=endpoint_name,
+                        )
+                    except ApiException as retry_e:
+                        logger.error(f"KubernetesOperations: API call still failed after token refresh: {retry_e}")
+                        if retry_e.status == 404:
+                            logger.debug(f"KServe InferenceService {endpoint_name} not found in namespace {namespace}")
+                            return None
+                        raise
+                else:
+                    logger.error("KubernetesOperations: Token refresh failed, cannot retry")
+                    if e.status == 404:
+                        logger.debug(f"KServe InferenceService {endpoint_name} not found in namespace {namespace}")
+                        return None
+                    raise
+            elif e.status == 404:
                 logger.debug(f"KServe InferenceService {endpoint_name} not found in namespace {namespace}")
                 return None
             logger.error(f"Failed to get KServe InferenceService status for {endpoint_name}: {e}")
             raise
+        
+        status = inference_service.get("status", {})
+        conditions = status.get("conditions", [])
+        
+        # Get actual pod status for accurate health check
+        pod_status = self.get_pod_status(endpoint_name, namespace, is_kserve=True)
+        
+        # Use pod status if available, otherwise use InferenceService conditions
+        if pod_status:
+            final_status = pod_status
+        else:
+            # Fall back to InferenceService Ready condition
+            ready_condition = next(
+                (c for c in conditions if c.get("type") == "Ready"),
+                None
+            )
+            ready_status = ready_condition.get("status", "Unknown") if ready_condition else "Unknown"
+            
+            if ready_status == "True":
+                final_status = "healthy"
+            elif ready_status == "False":
+                final_status = "degraded"
+            else:
+                final_status = "deploying"
+        
+        return {
+            "uid": inference_service.get("metadata", {}).get("uid", ""),
+            "replicas": status.get("components", {}).get("predictor", {}).get("replicas", 0),
+            "ready_replicas": status.get("components", {}).get("predictor", {}).get("readyReplicas", 0),
+            "available_replicas": status.get("components", {}).get("predictor", {}).get("availableReplicas", 0),
+            "status": final_status,
+            "conditions": conditions,
+            "framework_status": status,
+        }
 
