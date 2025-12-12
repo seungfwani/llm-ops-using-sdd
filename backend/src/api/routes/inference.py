@@ -146,7 +146,7 @@ async def chat_completion(
     try:
         # Find endpoint by route name
         endpoint_id, full_route = get_endpoint_by_route_name(route_name, session)
-        logger.info(f"Found endpoint: {endpoint_id} for route_name: {route_name}, full_route: {full_route}")ㄹㄷㅁㅅ
+        logger.info(f"Found endpoint: {endpoint_id} for route_name: {route_name}, full_route: {full_route}")
         
         if not endpoint_id:
             # Debug: Log available endpoints for troubleshooting
