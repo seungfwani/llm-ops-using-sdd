@@ -13,6 +13,7 @@ if str(src_dir) not in sys.path:
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from fastapi.openapi.utils import get_openapi
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -222,6 +223,54 @@ def create_app() -> FastAPI:
     add_observability(app)
     register_routes(app)
     app.add_middleware(RBACMiddleware, policy_engine=PolicyEngine())
+    
+    # Mount static files for frontend (if static directory exists)
+    # static directory is at /app/static in Docker container
+    # In Docker: /app/static (from backend/src/api/app.py -> /app/backend/src/api/app.py -> /app/static)
+    # In local dev: backend/../static (project root/static)
+    static_dir = Path(__file__).parent.parent.parent.parent / "static"
+    if not static_dir.exists():
+        # Try alternative path for Docker container
+        static_dir = Path("/app/static")
+    
+    if static_dir.exists():
+        logger.info(f"Serving static files from: {static_dir}")
+        
+        # Mount static assets (JS, CSS, etc.) - must be before catch-all route
+        assets_dir = static_dir / "assets"
+        if assets_dir.exists():
+            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+            logger.info(f"Mounted /assets from: {assets_dir}")
+        
+        # Serve index.html and other static files for SPA routing
+        # This catch-all route must be registered last to not interfere with API routes
+        @app.get("/{full_path:path}")
+        async def serve_spa(full_path: str):
+            """Serve frontend SPA for all non-API routes."""
+            # Don't serve SPA for API routes or already handled paths
+            if (full_path.startswith("llm-ops/v1") or 
+                full_path.startswith("docs") or 
+                full_path.startswith("openapi.json") or 
+                full_path.startswith("redoc") or
+                full_path.startswith("assets")):
+                from fastapi import HTTPException
+                raise HTTPException(status_code=404, detail="Not found")
+            
+            # Try to serve the file if it exists (e.g., favicon.ico)
+            file_path = static_dir / full_path
+            if file_path.exists() and file_path.is_file():
+                from fastapi.responses import FileResponse
+                return FileResponse(str(file_path))
+            
+            # Otherwise serve index.html for SPA routing
+            index_path = static_dir / "index.html"
+            if index_path.exists():
+                from fastapi.responses import FileResponse
+                return FileResponse(str(index_path))
+            
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Not found")
+    
     return app
 
 

@@ -115,3 +115,77 @@ rbac:
   create: true
   # ClusterRole and ClusterRoleBinding will be created with permissions
   # to manage Deployments, Services, Ingresses, HPA, and KServe InferenceServices
+
+# Application (Frontend + Backend) Configuration
+app:
+  enabled: true
+  replicas: 1
+  
+  image:
+    repository: llm-ops-platform
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  
+  service:
+    type: ClusterIP
+    port: 8000
+    # nodePort: 30000  # Uncomment and set if type is NodePort
+  
+  # Database connection URL
+  # Format: postgresql+psycopg://user:password@host:port/dbname
+  databaseUrl: "postgresql+psycopg://llmops:password@postgresql:5432/llmops"
+  
+  # Redis connection URL
+  # Format: redis://host:port/db
+  redisUrl: "redis://redis:6379/0"
+  
+  # Object store endpoint
+  objectStoreEndpoint: "http://minio:9000"
+  
+  # Application settings
+  useKserve: true
+  useGpu: false
+  logLevel: "INFO"
+  
+  # Resource limits
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+  
+  # Health check probes
+  livenessProbe:
+    httpGet:
+      path: /llm-ops/v1/health
+      port: http
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  
+  readinessProbe:
+    httpGet:
+      path: /llm-ops/v1/health
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  
+  # Optional: Override service account name
+  # serviceAccountName: ""
+  
+  # Optional: Node selector for pod placement
+  # nodeSelector: {}
+  
+  # Optional: Tolerations for tainted nodes
+  # tolerations: []
+  
+  # Optional: Affinity rules
+  # affinity: {}
+  
+  # Optional: Additional environment variables
+  # extraEnv: []

@@ -1,0 +1,92 @@
+{{- if .Values.app.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "llmops.fullname" . }}-app
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "llmops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: app
+spec:
+  replicas: {{ .Values.app.replicas }}
+  selector:
+    matchLabels:
+      {{- include "llmops.labels" . | nindent 6 }}
+      app.kubernetes.io/component: app
+  template:
+    metadata:
+      labels:
+        {{- include "llmops.labels" . | nindent 8 }}
+        app.kubernetes.io/component: app
+    spec:
+      {{- with .Values.app.serviceAccountName }}
+      serviceAccountName: {{ . }}
+      {{- else if .Values.serviceAccount.create }}
+      serviceAccountName: {{ include "llmops.fullname" . }}
+      {{- end }}
+      containers:
+      - name: app
+        image: {{ .Values.app.image.repository }}:{{ .Values.app.image.tag | default .Chart.AppVersion }}
+        imagePullPolicy: {{ .Values.app.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: 8000
+          protocol: TCP
+        env:
+        - name: DATABASE_URL
+          value: {{ .Values.app.databaseUrl | quote }}
+        - name: REDIS_URL
+          value: {{ .Values.app.redisUrl | quote }}
+        - name: OBJECT_STORE_ENDPOINT
+          value: {{ .Values.app.objectStoreEndpoint | quote }}
+        - name: OBJECT_STORE_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.objectStore.credentials.secretName | default (printf "%s-object-store" (include "llmops.fullname" .)) }}
+              key: accessKey
+        - name: OBJECT_STORE_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.objectStore.credentials.secretName | default (printf "%s-object-store" (include "llmops.fullname" .)) }}
+              key: secretKey
+        - name: OBJECT_STORE_BUCKET
+          value: {{ .Values.objectStore.bucket | default .Release.Namespace | quote }}
+        - name: TRAINING_NAMESPACE
+          value: {{ .Release.Namespace | quote }}
+        - name: KUBECONFIG_PATH
+          value: ""
+        - name: USE_KSERVE
+          value: {{ .Values.app.useKserve | default "true" | quote }}
+        - name: KSERVE_NAMESPACE
+          value: {{ .Values.kserve.namespaceOverride | default "kserve" | quote }}
+        - name: USE_GPU
+          value: {{ .Values.app.useGpu | default "false" | quote }}
+        - name: LOG_LEVEL
+          value: {{ .Values.app.logLevel | default "INFO" | quote }}
+        {{- if .Values.app.extraEnv }}
+        {{- toYaml .Values.app.extraEnv | nindent 8 }}
+        {{- end }}
+        resources:
+          {{- toYaml .Values.app.resources | nindent 10 }}
+        {{- if .Values.app.livenessProbe }}
+        livenessProbe:
+          {{- toYaml .Values.app.livenessProbe | nindent 10 }}
+        {{- end }}
+        {{- if .Values.app.readinessProbe }}
+        readinessProbe:
+          {{- toYaml .Values.app.readinessProbe | nindent 10 }}
+        {{- end }}
+      {{- if .Values.app.nodeSelector }}
+      nodeSelector:
+        {{- toYaml .Values.app.nodeSelector | nindent 8 }}
+      {{- end }}
+      {{- if .Values.app.tolerations }}
+      tolerations:
+        {{- toYaml .Values.app.tolerations | nindent 8 }}
+      {{- end }}
+      {{- if .Values.app.affinity }}
+      affinity:
+        {{- toYaml .Values.app.affinity | nindent 8 }}
+      {{- end }}
+{{- end }}
+

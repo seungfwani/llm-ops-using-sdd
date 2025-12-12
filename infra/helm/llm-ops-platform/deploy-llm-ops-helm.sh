@@ -22,6 +22,15 @@ CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-v1.13.0}"
 NAMESPACE="${NAMESPACE:-llm-ops-${ENVIRONMENT}}"
 RELEASE_NAME="${RELEASE_NAME:-llm-ops-platform-${ENVIRONMENT}}"
 
+# Docker 이미지 빌드/푸시 설정
+BUILD_IMAGE="${BUILD_IMAGE:-false}"                    # 이미지 빌드 여부
+PUSH_IMAGE="${PUSH_IMAGE:-false}"                      # 이미지 푸시 여부
+IMAGE_REGISTRY="${IMAGE_REGISTRY:-}"                   # 이미지 레지스트리 (예: docker.io/username 또는 registry.example.com)
+IMAGE_NAME="${IMAGE_NAME:-llm-ops-platform}"           # 이미지 이름
+IMAGE_TAG="${IMAGE_TAG:-${ENVIRONMENT}-$(date +%Y%m%d-%H%M%S)}"  # 이미지 태그 (기본값: 환경-타임스탬프)
+DOCKERFILE_PATH="${DOCKERFILE_PATH:-${SCRIPT_DIR}/../../Dockerfile}"  # Dockerfile 경로
+PROJECT_ROOT="${PROJECT_ROOT:-${SCRIPT_DIR}/../..}"    # 프로젝트 루트 경로
+
 # NVIDIA Device Plugin 설정 (setup-nvidia-device-plugin.sh 로직 기반)
 NVDP_REPLICAS="${NVDP_REPLICAS:-4}"                     # 1 physical GPU -> 4 time-slices
 NVDP_NAMESPACE="${NVDP_NAMESPACE:-kube-system}"
@@ -52,6 +61,13 @@ echo ">>> INSTALL_CERT_MANAGER   : ${INSTALL_CERT_MANAGER}"
 echo ">>> NVDP_NAMESPACE         : ${NVDP_NAMESPACE}"
 echo ">>> NVDP_REPLICAS          : ${NVDP_REPLICAS}"
 echo ">>> NVDP_CHART_VERSION     : ${NVDP_CHART_VERSION}"
+echo ">>> BUILD_IMAGE            : ${BUILD_IMAGE}"
+echo ">>> PUSH_IMAGE             : ${PUSH_IMAGE}"
+if [[ "${BUILD_IMAGE}" == "true" ]]; then
+  echo ">>> IMAGE_REGISTRY         : ${IMAGE_REGISTRY}"
+  echo ">>> IMAGE_NAME             : ${IMAGE_NAME}"
+  echo ">>> IMAGE_TAG              : ${IMAGE_TAG}"
+fi
 echo
 
 # ===== 전제 조건 체크 =====
@@ -62,6 +78,11 @@ fi
 
 if ! command -v helm >/dev/null 2>&1; then
   echo "❌ helm 이 필요합니다."
+  exit 1
+fi
+
+if [[ "${BUILD_IMAGE}" == "true" ]] && ! command -v docker >/dev/null 2>&1; then
+  echo "❌ Docker 이미지를 빌드하려면 docker 가 필요합니다."
   exit 1
 fi
 
@@ -188,24 +209,90 @@ EOF
   fi
 }
 
+# ===== Docker 이미지 빌드 =====
+build_docker_image() {
+  if [[ "${BUILD_IMAGE}" != "true" ]]; then
+    echo ">>> Skipping Docker image build"
+    return 0
+  fi
+
+  echo ">>> Building Docker image..."
+  
+  # 이미지 이름 구성
+  if [[ -n "${IMAGE_REGISTRY}" ]]; then
+    FULL_IMAGE_NAME="${IMAGE_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+  else
+    FULL_IMAGE_NAME="${IMAGE_NAME}:${IMAGE_TAG}"
+  fi
+
+  echo "   - Image: ${FULL_IMAGE_NAME}"
+  echo "   - Dockerfile: ${DOCKERFILE_PATH}"
+  echo "   - Context: ${PROJECT_ROOT}"
+
+  # Dockerfile 존재 확인
+  if [[ ! -f "${DOCKERFILE_PATH}" ]]; then
+    echo "❌ Dockerfile을 찾을 수 없습니다: ${DOCKERFILE_PATH}"
+    exit 1
+  fi
+
+  # Docker 빌드
+  docker build \
+    -f "${DOCKERFILE_PATH}" \
+    -t "${FULL_IMAGE_NAME}" \
+    "${PROJECT_ROOT}"
+
+  echo "✅ Docker 이미지 빌드 완료: ${FULL_IMAGE_NAME}"
+
+  # 이미지 푸시
+  if [[ "${PUSH_IMAGE}" == "true" ]]; then
+    echo ">>> Pushing Docker image to registry..."
+    docker push "${FULL_IMAGE_NAME}"
+    echo "✅ Docker 이미지 푸시 완료: ${FULL_IMAGE_NAME}"
+  fi
+
+  # 환경 변수에 이미지 이름 저장 (Helm 설치 시 사용)
+  export DEPLOY_IMAGE_NAME="${FULL_IMAGE_NAME}"
+}
+
 # ===== llm-ops-platform (Helm) 설치 =====
 install_llm_ops_platform() {
   echo ">>> Updating Helm dependencies..."
   helm dependency update "${CHART_DIR}"
 
+  # Helm 설치 명령어 구성
+  local helm_args=(
+    "upgrade" "--install" "${RELEASE_NAME}" "${CHART_DIR}"
+    "-n" "${NAMESPACE}"
+    "--create-namespace"
+    "-f" "${CHART_DIR}/values.yaml"
+    "--set" "kserve.enabled=true"
+    "--set" "gpuPlugin.enabled=false"
+    "--set" "kserve.controller.deploymentMode=${KSERVE_DEPLOYMENT_MODE}"
+    "--set" "kserve.ingressGateway.tls.enabled=${KSERVE_TLS_ENABLED}"
+    "--set" "kserve.ingressGateway.certManager.enabled=${KSERVE_TLS_ENABLED}"
+  )
+
+  # 이미지가 빌드된 경우 이미지 이름 설정
+  if [[ -n "${DEPLOY_IMAGE_NAME:-}" ]]; then
+    # 이미지 이름에서 repository와 tag 분리 (마지막 : 기준)
+    local image_repo="${DEPLOY_IMAGE_NAME%:*}"
+    local image_tag="${DEPLOY_IMAGE_NAME##*:}"
+    helm_args+=(
+      "--set" "app.enabled=true"
+      "--set" "app.image.repository=${image_repo}"
+      "--set" "app.image.tag=${image_tag}"
+    )
+    echo ">>> Using Docker image: ${DEPLOY_IMAGE_NAME}"
+    echo "   - Repository: ${image_repo}"
+    echo "   - Tag: ${image_tag}"
+  fi
+
   echo ">>> Installing llm-ops-platform..."
-  helm upgrade --install "${RELEASE_NAME}" "${CHART_DIR}" \
-    -n "${NAMESPACE}" \
-    --create-namespace \
-    -f "${CHART_DIR}/values.yaml" \
-    --set kserve.enabled=true \
-    --set gpuPlugin.enabled=false \
-    --set "kserve.controller.deploymentMode=${KSERVE_DEPLOYMENT_MODE}" \
-    --set "kserve.ingressGateway.tls.enabled=${KSERVE_TLS_ENABLED}" \
-    --set "kserve.ingressGateway.certManager.enabled=${KSERVE_TLS_ENABLED}"
+  helm "${helm_args[@]}"
 }
 
 # ===== 실행 순서 =====
+build_docker_image
 ensure_cert_manager
 ensure_kserve_crds
 install_nvidia_device_plugin
@@ -216,3 +303,8 @@ echo "✅ llm-ops-platform + KServe + NVIDIA Device Plugin (time-slicing) 배포
 echo "   - NVIDIA DP Pod:    kubectl get pods -n ${NVDP_NAMESPACE} | grep nvidia"
 echo "   - GPU 노드 리소스:  kubectl describe node <NODE> | grep -A3 nvidia"
 echo "   - KServe 컨트롤러:  kubectl get pods -n ${NAMESPACE} | grep kserve"
+if [[ "${BUILD_IMAGE}" == "true" ]] && [[ -n "${DEPLOY_IMAGE_NAME:-}" ]]; then
+  echo "   - App Pod:         kubectl get pods -n ${NAMESPACE} | grep app"
+  echo "   - App Service:     kubectl get svc -n ${NAMESPACE} | grep app"
+  echo "   - 배포된 이미지:    ${DEPLOY_IMAGE_NAME}"
+fi
