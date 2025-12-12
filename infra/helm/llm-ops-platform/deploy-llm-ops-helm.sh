@@ -8,38 +8,204 @@ set -euo pipefail
 # ===== 스크립트 경로 설정 (먼저 설정해야 함) =====
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# ===== 환경 설정 =====
-ENVIRONMENT="${1:-dev}"                 # dev | stg | prod ...
-KSERVE_VERSION="${KSERVE_VERSION:-v0.16.0}"
+# ===== 기본값 설정 =====
+ENVIRONMENT="dev"
+KSERVE_VERSION="v0.16.0"
+KSERVE_DEPLOYMENT_MODE="RawDeployment"
+KSERVE_TLS_ENABLED="false"
+INSTALL_CERT_MANAGER="true"
+CERT_MANAGER_VERSION="v1.13.0"
+NAMESPACE=""
+RELEASE_NAME=""
+BUILD_IMAGE="false"
+PUSH_IMAGE="false"
+IMAGE_REGISTRY=""
+IMAGE_NAME="llm-ops-platform"
+IMAGE_TAG=""
+DOCKERFILE_PATH="${SCRIPT_DIR}/../../Dockerfile"
+PROJECT_ROOT="${SCRIPT_DIR}/../.."
+NVDP_REPLICAS="4"
+NVDP_NAMESPACE="kube-system"
+NVDP_RELEASE_NAME="nvidia-device-plugin"
+NVDP_CHART_VERSION="0.15.0"
+NVDP_CONFIGMAP_NAME="nvidia-device-plugin-config"
 
-# KServe deployment mode: RawDeployment | Serverless
-KSERVE_DEPLOYMENT_MODE="${KSERVE_DEPLOYMENT_MODE:-RawDeployment}"
-# KServe ingress TLS on/off (default: off to avoid HTTPS mismatch)
-KSERVE_TLS_ENABLED="${KSERVE_TLS_ENABLED:-false}"
+# ===== Help 함수 =====
+show_help() {
+  cat <<EOF
+사용법: $0 [옵션]
 
-# cert-manager 설치 여부
-INSTALL_CERT_MANAGER="${INSTALL_CERT_MANAGER:-true}"
-CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-v1.13.0}"
+llm-ops-platform + KServe + NVIDIA Device Plugin (time-slicing) 일괄 배포 스크립트
 
-# llm-ops-platform 네임스페이스 / 릴리스명
-NAMESPACE="${NAMESPACE:-llm-ops-${ENVIRONMENT}}"
-RELEASE_NAME="${RELEASE_NAME:-llm-ops-platform-${ENVIRONMENT}}"
+옵션:
+  -h, --help                          이 도움말 표시
 
-# Docker 이미지 빌드/푸시 설정
-BUILD_IMAGE="${BUILD_IMAGE:-false}"                    # 이미지 빌드 여부
-PUSH_IMAGE="${PUSH_IMAGE:-false}"                      # 이미지 푸시 여부
-IMAGE_REGISTRY="${IMAGE_REGISTRY:-}"                   # 이미지 레지스트리 (예: docker.io/username 또는 registry.example.com)
-IMAGE_NAME="${IMAGE_NAME:-llm-ops-platform}"           # 이미지 이름
-IMAGE_TAG="${IMAGE_TAG:-${ENVIRONMENT}-$(date +%Y%m%d-%H%M%S)}"  # 이미지 태그 (기본값: 환경-타임스탬프)
-DOCKERFILE_PATH="${DOCKERFILE_PATH:-${SCRIPT_DIR}/../../Dockerfile}"  # Dockerfile 경로
-PROJECT_ROOT="${PROJECT_ROOT:-${SCRIPT_DIR}/../..}"    # 프로젝트 루트 경로
+  환경 설정:
+  -e, --environment ENV              환경 이름 (dev, stg, prod 등) [기본값: dev]
+  -n, --namespace NAMESPACE           Kubernetes 네임스페이스 [기본값: llm-ops-\${ENVIRONMENT}]
+  -r, --release-name NAME             Helm 릴리스 이름 [기본값: llm-ops-platform-\${ENVIRONMENT}]
 
-# NVIDIA Device Plugin 설정 (setup-nvidia-device-plugin.sh 로직 기반)
-NVDP_REPLICAS="${NVDP_REPLICAS:-4}"                     # 1 physical GPU -> 4 time-slices
-NVDP_NAMESPACE="${NVDP_NAMESPACE:-kube-system}"
-NVDP_RELEASE_NAME="${NVDP_RELEASE_NAME:-nvidia-device-plugin}"
-NVDP_CHART_VERSION="${NVDP_CHART_VERSION:-0.15.0}"
-NVDP_CONFIGMAP_NAME="${NVDP_CONFIGMAP_NAME:-nvidia-device-plugin-config}"
+  KServe 설정:
+  --kserve-version VERSION           KServe 버전 [기본값: v0.16.0]
+  --kserve-deployment-mode MODE      KServe 배포 모드 (RawDeployment|Serverless) [기본값: RawDeployment]
+  --kserve-tls-enabled BOOL           KServe TLS 활성화 (true|false) [기본값: false]
+
+  cert-manager 설정:
+  --install-cert-manager BOOL         cert-manager 설치 여부 (true|false) [기본값: true]
+  --cert-manager-version VERSION      cert-manager 버전 [기본값: v1.13.0]
+
+  Docker 이미지 설정:
+  --build-image BOOL                  Docker 이미지 빌드 여부 (true|false) [기본값: false]
+  --push-image BOOL                   Docker 이미지 푸시 여부 (true|false) [기본값: false]
+  --image-registry REGISTRY           이미지 레지스트리 (예: docker.io/username)
+  --image-name NAME                   이미지 이름 [기본값: llm-ops-platform]
+  --image-tag TAG                     이미지 태그 [기본값: \${ENVIRONMENT}-\${TIMESTAMP}]
+
+  NVIDIA Device Plugin 설정:
+  --nvdp-replicas NUM                 GPU time-slicing replicas 수 [기본값: 4]
+  --nvdp-namespace NAMESPACE          NVIDIA Device Plugin 네임스페이스 [기본값: kube-system]
+  --nvdp-release-name NAME            NVIDIA Device Plugin Helm 릴리스 이름 [기본값: nvidia-device-plugin]
+  --nvdp-chart-version VERSION        NVIDIA Device Plugin 차트 버전 [기본값: 0.15.0]
+
+예제:
+  # 기본 설정으로 dev 환경 배포
+  $0 --environment dev
+
+  # 이미지 빌드 및 푸시 포함
+  $0 --environment prod --build-image true --push-image true --image-registry docker.io/username
+
+  # 커스텀 네임스페이스 및 릴리스 이름
+  $0 --environment stg --namespace my-namespace --release-name my-release
+
+  # GPU time-slicing replicas 변경
+  $0 --environment dev --nvdp-replicas 8
+
+환경 변수:
+  모든 옵션은 환경 변수로도 설정할 수 있습니다. 환경 변수는 명령줄 옵션보다 우선순위가 낮습니다.
+  예: ENVIRONMENT=prod KSERVE_VERSION=v0.17.0 $0
+
+EOF
+}
+
+# ===== 옵션 파싱 =====
+parse_args() {
+  # 환경 변수에서 기본값 로드 (명령줄 인자가 없을 때 사용)
+  ENVIRONMENT="${ENVIRONMENT:-dev}"
+  KSERVE_VERSION="${KSERVE_VERSION:-v0.16.0}"
+  KSERVE_DEPLOYMENT_MODE="${KSERVE_DEPLOYMENT_MODE:-RawDeployment}"
+  KSERVE_TLS_ENABLED="${KSERVE_TLS_ENABLED:-false}"
+  INSTALL_CERT_MANAGER="${INSTALL_CERT_MANAGER:-true}"
+  CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-v1.13.0}"
+  NAMESPACE="${NAMESPACE:-}"
+  RELEASE_NAME="${RELEASE_NAME:-}"
+  BUILD_IMAGE="${BUILD_IMAGE:-false}"
+  PUSH_IMAGE="${PUSH_IMAGE:-false}"
+  IMAGE_REGISTRY="${IMAGE_REGISTRY:-}"
+  IMAGE_NAME="${IMAGE_NAME:-llm-ops-platform}"
+  IMAGE_TAG="${IMAGE_TAG:-}"
+  NVDP_REPLICAS="${NVDP_REPLICAS:-4}"
+  NVDP_NAMESPACE="${NVDP_NAMESPACE:-kube-system}"
+  NVDP_RELEASE_NAME="${NVDP_RELEASE_NAME:-nvidia-device-plugin}"
+  NVDP_CHART_VERSION="${NVDP_CHART_VERSION:-0.15.0}"
+
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -h|--help)
+        show_help
+        exit 0
+        ;;
+      -e|--environment)
+        ENVIRONMENT="$2"
+        shift 2
+        ;;
+      -n|--namespace)
+        NAMESPACE="$2"
+        shift 2
+        ;;
+      -r|--release-name)
+        RELEASE_NAME="$2"
+        shift 2
+        ;;
+      --kserve-version)
+        KSERVE_VERSION="$2"
+        shift 2
+        ;;
+      --kserve-deployment-mode)
+        KSERVE_DEPLOYMENT_MODE="$2"
+        shift 2
+        ;;
+      --kserve-tls-enabled)
+        KSERVE_TLS_ENABLED="$2"
+        shift 2
+        ;;
+      --install-cert-manager)
+        INSTALL_CERT_MANAGER="$2"
+        shift 2
+        ;;
+      --cert-manager-version)
+        CERT_MANAGER_VERSION="$2"
+        shift 2
+        ;;
+      --build-image)
+        BUILD_IMAGE="$2"
+        shift 2
+        ;;
+      --push-image)
+        PUSH_IMAGE="$2"
+        shift 2
+        ;;
+      --image-registry)
+        IMAGE_REGISTRY="$2"
+        shift 2
+        ;;
+      --image-name)
+        IMAGE_NAME="$2"
+        shift 2
+        ;;
+      --image-tag)
+        IMAGE_TAG="$2"
+        shift 2
+        ;;
+      --nvdp-replicas)
+        NVDP_REPLICAS="$2"
+        shift 2
+        ;;
+      --nvdp-namespace)
+        NVDP_NAMESPACE="$2"
+        shift 2
+        ;;
+      --nvdp-release-name)
+        NVDP_RELEASE_NAME="$2"
+        shift 2
+        ;;
+      --nvdp-chart-version)
+        NVDP_CHART_VERSION="$2"
+        shift 2
+        ;;
+      *)
+        echo "❌ 알 수 없는 옵션: $1"
+        echo "   '$0 --help'를 실행하여 사용법을 확인하세요."
+        exit 1
+        ;;
+    esac
+  done
+
+  # 네임스페이스와 릴리스 이름 기본값 설정 (명시적으로 설정되지 않은 경우)
+  if [[ -z "${NAMESPACE}" ]]; then
+    NAMESPACE="llm-ops-${ENVIRONMENT}"
+  fi
+  if [[ -z "${RELEASE_NAME}" ]]; then
+    RELEASE_NAME="llm-ops-platform-${ENVIRONMENT}"
+  fi
+  
+  # 이미지 태그 기본값 설정 (명시적으로 설정되지 않은 경우)
+  if [[ -z "${IMAGE_TAG}" ]]; then
+    IMAGE_TAG="${ENVIRONMENT}-$(date +%Y%m%d-%H%M%S)"
+  fi
+}
+
+# ===== 인자 파싱 실행 =====
+parse_args "$@"
 
 # 스크립트 / 차트 경로
 
