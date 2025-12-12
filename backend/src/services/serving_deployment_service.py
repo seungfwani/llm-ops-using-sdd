@@ -6,6 +6,7 @@ import logging
 from typing import Any, Dict, Optional
 from uuid import UUID, uuid4
 
+from kubernetes.client.rest import ApiException
 from sqlalchemy.orm import Session
 
 from catalog import models as catalog_models
@@ -14,6 +15,7 @@ from integrations.serving.factory import ServingFrameworkFactory
 from integrations.serving.interface import ServingFrameworkAdapter
 from services.integration_config import IntegrationConfigService
 from core.settings import get_settings
+from core.clients.kubernetes_client import KubernetesClient
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,15 @@ class ServingDeploymentService:
         self.deployment_repo = ServingDeploymentRepository(session)
         self.integration_config = IntegrationConfigService(session)
         self.settings = get_settings()
+        # Kubernetes client will be initialized lazily when needed (post-deployment management)
+        self._k8s_client: Optional[KubernetesClient] = None
+    
+    @property
+    def k8s_client(self) -> KubernetesClient:
+        """Lazy initialization of Kubernetes client."""
+        if self._k8s_client is None:
+            self._k8s_client = KubernetesClient(logger_prefix="ServingDeploymentService")
+        return self._k8s_client
     
     def create_deployment(
         self,
@@ -128,7 +139,10 @@ class ServingDeploymentService:
         resource_requests: Optional[Dict[str, str]] = None,
         resource_limits: Optional[Dict[str, str]] = None,
     ) -> catalog_models.ServingDeployment:
-        """Update deployment configuration.
+        """Update deployment configuration using Kubernetes API directly.
+        
+        Note: KServe adapter is only used for deployment. Post-deployment management
+        (updates, scaling, etc.) uses Kubernetes API directly.
         
         Args:
             endpoint_id: Serving endpoint ID
@@ -144,29 +158,117 @@ class ServingDeploymentService:
         if not deployment:
             raise ValueError(f"Deployment not found for endpoint {endpoint_id}")
         
-        # Get adapter
-        config = self.integration_config.get_config("serving", deployment.serving_framework)
-        if not config or not config.get("enabled"):
-            raise ValueError(f"Framework {deployment.serving_framework} is not enabled")
+        namespace = deployment.framework_namespace
+        framework_resource_id = deployment.framework_resource_id
         
-        adapter_config = {
-            "namespace": deployment.framework_namespace,
-            "enabled": config["enabled"],
-            **config.get("config", {}),
-        }
-        adapter = ServingFrameworkFactory.create_adapter(deployment.serving_framework, adapter_config)
+        # Use Kubernetes API directly for post-deployment management
+        if deployment.serving_framework == "kserve":
+            # Update KServe InferenceService via Kubernetes CustomObjectsApi
+            try:
+                # Get current InferenceService
+                inference_service = self.k8s_client.call_with_401_retry(
+                    lambda: self.k8s_client.custom_api.get_namespaced_custom_object(
+                        group="serving.kserve.io",
+                        version="v1beta1",
+                        namespace=namespace,
+                        plural="inferenceservices",
+                        name=framework_resource_id,
+                    ),
+                    f"get InferenceService {framework_resource_id} for update"
+                )
+                
+                # Update spec
+                spec = inference_service.get("spec", {})
+                predictor = spec.get("predictor", {})
+                
+                if min_replicas is not None:
+                    predictor["minReplicas"] = min_replicas
+                if max_replicas is not None:
+                    predictor["maxReplicas"] = max_replicas
+                
+                # Update resources if provided
+                predictor_type = next(iter(predictor.keys() - {"minReplicas", "maxReplicas"}), None)
+                if predictor_type and predictor_type in predictor:
+                    if resource_requests or resource_limits:
+                        if "resources" not in predictor[predictor_type]:
+                            predictor[predictor_type]["resources"] = {}
+                        if resource_requests:
+                            predictor[predictor_type]["resources"]["requests"] = resource_requests
+                        if resource_limits:
+                            predictor[predictor_type]["resources"]["limits"] = resource_limits
+                
+                # Patch InferenceService
+                self.k8s_client.call_with_401_retry(
+                    lambda: self.k8s_client.custom_api.patch_namespaced_custom_object(
+                        group="serving.kserve.io",
+                        version="v1beta1",
+                        namespace=namespace,
+                        plural="inferenceservices",
+                        name=framework_resource_id,
+                        body=inference_service,
+                    ),
+                    f"patch InferenceService {framework_resource_id}"
+                )
+                logger.info(f"Updated KServe InferenceService {framework_resource_id} via Kubernetes API")
+                
+            except ApiException as e:
+                logger.error(f"Failed to update KServe InferenceService {framework_resource_id}: {e}")
+                raise ValueError(f"Failed to update KServe InferenceService: {e.reason}")
+        else:
+            # For non-KServe deployments, update Deployment directly
+            try:
+                # Get current Deployment
+                k8s_deployment = self.k8s_client.call_with_401_retry(
+                    lambda: self.k8s_client.apps_api.read_namespaced_deployment(
+                        name=framework_resource_id,
+                        namespace=namespace,
+                    ),
+                    f"get Deployment {framework_resource_id} for update"
+                )
+                
+                # Update replicas if provided
+                if min_replicas is not None or max_replicas is not None:
+                    # For Deployment, we typically update spec.replicas (which sets desired replicas)
+                    # min/max replicas are usually handled by HPA
+                    if min_replicas is not None and min_replicas > 0:
+                        k8s_deployment.spec.replicas = min_replicas
+                    elif max_replicas is not None and max_replicas > 0:
+                        k8s_deployment.spec.replicas = max_replicas
+                    elif min_replicas == 0 and max_replicas == 0:
+                        k8s_deployment.spec.replicas = 0
+                
+                # Update resources if provided
+                if resource_requests or resource_limits:
+                    if k8s_deployment.spec.template.spec.containers:
+                        container = k8s_deployment.spec.template.spec.containers[0]
+                        if not container.resources:
+                            from kubernetes import client
+                            container.resources = client.V1ResourceRequirements()
+                        if resource_requests:
+                            if not container.resources.requests:
+                                container.resources.requests = {}
+                            container.resources.requests.update(resource_requests)
+                        if resource_limits:
+                            if not container.resources.limits:
+                                container.resources.limits = {}
+                            container.resources.limits.update(resource_limits)
+                
+                # Patch Deployment
+                self.k8s_client.call_with_401_retry(
+                    lambda: self.k8s_client.apps_api.patch_namespaced_deployment(
+                        name=framework_resource_id,
+                        namespace=namespace,
+                        body=k8s_deployment,
+                    ),
+                    f"patch Deployment {framework_resource_id}"
+                )
+                logger.info(f"Updated Deployment {framework_resource_id} via Kubernetes API")
+                
+            except ApiException as e:
+                logger.error(f"Failed to update Deployment {framework_resource_id}: {e}")
+                raise ValueError(f"Failed to update Deployment: {e.reason}")
         
-        # Update using adapter
-        adapter.update_deployment(
-            framework_resource_id=deployment.framework_resource_id,
-            namespace=deployment.framework_namespace,
-            min_replicas=min_replicas,
-            max_replicas=max_replicas,
-            resource_requests=resource_requests,
-            resource_limits=resource_limits,
-        )
-        
-        # Update deployment record
+        # Update deployment record in database
         if min_replicas is not None:
             deployment.min_replicas = min_replicas
         if max_replicas is not None:

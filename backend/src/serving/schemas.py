@@ -191,7 +191,7 @@ class UpdateDeploymentRequest(BaseModel):
     """Request schema for updating a serving deployment."""
 
     min_replicas: Optional[int] = Field(None, ge=0)
-    max_replicas: Optional[int] = Field(None, ge=1)
+    max_replicas: Optional[int] = Field(None, ge=0)  # Allow 0 for stopping endpoints
     autoscaling_metrics: Optional[dict] = None
     resource_requests: Optional[dict] = None
     resource_limits: Optional[dict] = None

@@ -432,15 +432,15 @@
           </router-link>
           <button 
             @click="handleRedeploy" 
-            :disabled="redeploying || deleting || rollingBack" 
+            :disabled="redeploying || deleting || stopping" 
             class="btn-redeploy"
           >
             {{ redeploying ? 'Redeploying...' : 'Redeploy Endpoint' }}
           </button>
-          <button @click="handleRollback" :disabled="rollingBack || deleting || redeploying" class="btn-danger">
-            {{ rollingBack ? 'Rolling back...' : 'Rollback Endpoint' }}
+          <button @click="handleStop" :disabled="stopping || deleting || redeploying" class="btn-warning">
+            {{ stopping ? 'Stopping...' : 'Stop Endpoint' }}
           </button>
-          <button @click="handleDelete" :disabled="deleting || rollingBack || redeploying" class="btn-delete">
+          <button @click="handleDelete" :disabled="deleting || stopping || redeploying" class="btn-delete">
             {{ deleting ? 'Deleting...' : 'Delete Endpoint' }}
           </button>
           <button @click="refreshEndpoint" :disabled="loading" class="btn-secondary">
@@ -464,7 +464,7 @@ const endpoint = ref<ServingEndpoint | null>(null);
 const deployment = ref<ServingDeployment | null>(null);
 const loading = ref(false);
 const error = ref('');
-const rollingBack = ref(false);
+const stopping = ref(false);
 const deleting = ref(false);
 const redeploying = ref(false);
 const redeployCpuRequest = ref<string>('');
@@ -895,26 +895,43 @@ async function handleRedeploy() {
   }
 }
 
-async function handleRollback() {
+async function handleStop() {
   if (!endpoint.value) return;
   
-  if (!confirm('Are you sure you want to rollback this endpoint?')) {
+  if (!confirm(`Are you sure you want to stop endpoint "${endpoint.value.route}"? This will scale replicas to 0 (endpoint will not be deleted).`)) {
     return;
   }
 
-  rollingBack.value = true;
+  stopping.value = true;
   try {
-    const response = await servingClient.rollbackEndpoint(endpoint.value.id);
+    // Use updateDeployment to set replicas to 0
+    const response = await servingClient.updateDeployment(endpoint.value.id, {
+      min_replicas: 0,
+      max_replicas: 0,
+    });
     if (response.status === "success") {
-      alert('Endpoint rolled back successfully');
-      await fetchEndpoint();
+      alert('Endpoint stopped successfully (replicas scaled to 0)');
+      // Refresh endpoint status (deployment info may not be available, which is OK)
+      try {
+        await fetchEndpoint();
+      } catch (e) {
+        // If fetchEndpoint fails (e.g., deployment not found), that's OK - the stop was successful
+        console.warn("Failed to refresh endpoint after stop:", e);
+        // Still refresh the endpoint status to update the UI
+        try {
+          await servingClient.refreshEndpointStatus(endpoint.value.id);
+        } catch (refreshError) {
+          console.warn("Failed to refresh endpoint status:", refreshError);
+        }
+      }
     } else {
-      alert(`Rollback failed: ${response.message}`);
+      alert(`Stop failed: ${response.message}`);
     }
   } catch (e) {
-    alert(`Error: ${e}`);
+    const errorMessage = e instanceof Error ? e.message : String(e);
+    alert(`Error stopping endpoint: ${errorMessage}`);
   } finally {
-    rollingBack.value = false;
+    stopping.value = false;
   }
 }
 
@@ -1143,22 +1160,24 @@ header {
   background: #218838;
 }
 
-.btn-danger {
+.btn-warning {
   padding: 0.5rem 1rem;
-  background: #dc3545;
-  color: white;
+  background: #ffc107;
+  color: #212529;
   border: none;
   border-radius: 4px;
   cursor: pointer;
+  font-weight: 500;
 }
 
-.btn-danger:hover:not(:disabled) {
-  background: #c82333;
+.btn-warning:hover:not(:disabled) {
+  background: #e0a800;
 }
 
-.btn-danger:disabled {
+.btn-warning:disabled {
   background: #ccc;
   cursor: not-allowed;
+  color: #6c757d;
 }
 
 .btn-delete {
