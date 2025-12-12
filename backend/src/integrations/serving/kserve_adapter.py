@@ -63,28 +63,21 @@ class KServeAdapter(ServingFrameworkAdapter):
         """
         try:
             logger.info("KServeAdapter: Attempting to refresh Kubernetes authentication token...")
-            # Reload in-cluster config with explicit service account configuration
+            # Reload in-cluster config - let it handle authentication automatically
             import os
             token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
             ca_cert_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 
             if os.path.exists(token_path) and os.path.exists(ca_cert_path):
+                logger.info(f"KServeAdapter: Service account files available during refresh - token: {token_path}, ca_cert: {ca_cert_path}")
                 k8s_config.load_incluster_config()
-                # Reconfigure with explicit service account token and CA cert
-                configuration = client.Configuration.get_default_copy()
-                with open(token_path, 'r') as f:
-                    token = f.read().strip()
-                configuration.api_key['authorization'] = f"Bearer {token}"
-                configuration.api_key_prefix['authorization'] = 'Bearer'
-                configuration.ssl_ca_cert = ca_cert_path
-                configuration.verify_ssl = True
-                client.Configuration.set_default(configuration)
-                logger.info("KServeAdapter: Successfully refreshed Kubernetes authentication token with service account")
+                logger.info("KServeAdapter: Successfully refreshed Kubernetes authentication token (automatic)")
                 return True
             else:
-                logger.warning("KServeAdapter: Service account files not found, attempting default refresh")
+                logger.warning(f"KServeAdapter: Service account files not found during refresh - token: {os.path.exists(token_path)}, ca_cert: {os.path.exists(ca_cert_path)}")
+                # Still try to refresh as fallback
                 k8s_config.load_incluster_config()
-                logger.info("KServeAdapter: Successfully refreshed Kubernetes authentication token (default)")
+                logger.info("KServeAdapter: Attempted token refresh (fallback)")
                 return True
         except Exception as e:
             logger.error(f"KServeAdapter: Failed to refresh Kubernetes token: {e}")
@@ -109,32 +102,20 @@ class KServeAdapter(ServingFrameworkAdapter):
                 k8s_config.load_kube_config(config_file=self.settings.kubeconfig_path)
             else:
                 logger.info("KServeAdapter: Loading in-cluster Kubernetes config")
-                # Explicitly configure service account token and CA certificate for in-cluster authentication
+                # Check if service account files exist
                 import os
                 token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
                 ca_cert_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 
                 if os.path.exists(token_path) and os.path.exists(ca_cert_path):
                     logger.info(f"KServeAdapter: Service account files found - token: {token_path}, ca_cert: {ca_cert_path}")
+                    # Let load_incluster_config() handle the authentication automatically
                     k8s_config.load_incluster_config()
-                    # Ensure the configuration uses the service account token and CA cert
-                    configuration = client.Configuration.get_default_copy()
-                    try:
-                        with open(token_path, 'r') as f:
-                            token = f.read().strip()
-                        logger.info(f"KServeAdapter: Successfully read service account token (length: {len(token)})")
-                        configuration.api_key['authorization'] = f"Bearer {token}"
-                        configuration.api_key_prefix['authorization'] = 'Bearer'
-                        configuration.ssl_ca_cert = ca_cert_path
-                        # Force SSL verification for in-cluster auth
-                        configuration.verify_ssl = True
-                        client.Configuration.set_default(configuration)
-                        logger.info("KServeAdapter: Successfully configured service account authentication with explicit token and CA cert")
-                    except Exception as config_error:
-                        logger.error(f"KServeAdapter: Failed to configure service account authentication: {config_error}")
-                        raise
+                    logger.info("KServeAdapter: Successfully loaded in-cluster config (automatic service account authentication)")
                 else:
-                    logger.warning("KServeAdapter: Service account token or CA certificate not found, falling back to default in-cluster config")
+                    logger.warning(f"KServeAdapter: Service account files not found - token: {os.path.exists(token_path)}, ca_cert: {os.path.exists(ca_cert_path)}")
+                    logger.warning("KServeAdapter: This may cause authentication issues in Kubernetes cluster")
+                    # Still try to load in-cluster config as fallback
                     k8s_config.load_incluster_config()
         except Exception as e:
             logger.warning(f"KServeAdapter: Failed to load kubeconfig: {e}, using default")
@@ -163,8 +144,8 @@ class KServeAdapter(ServingFrameworkAdapter):
             logger.info("SSL verification enabled for in-cluster Kubernetes API client")
             configuration.verify_ssl = True
 
-        # Update all API clients to use this configuration
-        client.Configuration.set_default(configuration)
+            # Update all API clients to use this configuration
+            client.Configuration.set_default(configuration)
         
         self.custom_api = client.CustomObjectsApi()
         self.core_api = client.CoreV1Api()
@@ -421,7 +402,7 @@ class KServeAdapter(ServingFrameworkAdapter):
                 logger.info("KServeAdapter: Token refreshed during connectivity test, proceeding with InferenceService creation")
             else:
                 logger.warning(f"KServeAdapter: API connectivity test failed (non-401): {test_e}")
-
+        
         try:
             # Create InferenceService
             created = self.custom_api.create_namespaced_custom_object(
