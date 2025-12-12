@@ -128,9 +128,9 @@ class KServeConverter:
                 {
                     "name": "AWS_ENDPOINT_URL",
                     "valueFrom": {
-                        "configMapKeyRef": {
-                            "name": "llm-ops-object-store-config",
-                            "key": "endpoint-url",
+                        "secretKeyRef": {
+                            "name": "minio-secret",
+                            "key": "ENDPOINT_URL",
                         }
                     },
                 },

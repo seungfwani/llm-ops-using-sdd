@@ -397,7 +397,7 @@ async def _call_model_inference(
         service_name = str(endpoint_name_or_host)
 
     logger.info(f"Calling model inference at: {inference_url} (service: {service_name}, namespace: {namespace})")
-
+    
     # Prepare request payload (OpenAI-compatible chat completions schema)
     payload = {
         "model": model_entry.name,

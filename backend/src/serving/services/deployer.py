@@ -68,9 +68,9 @@ def _build_s3_sync_resources(
         client.V1EnvVar(
             name="AWS_ENDPOINT_URL",
             value_from=client.V1EnvVarSource(
-                config_map_key_ref=client.V1ConfigMapKeySelector(
-                    name="llm-ops-object-store-config",
-                    key="endpoint-url",
+                secret_key_ref=client.V1SecretKeySelector(
+                    name="minio-secret",
+                    key="ENDPOINT_URL",
                 )
             ),
         ),
@@ -788,9 +788,9 @@ class ServingDeployer:
                 client.V1EnvVar(
                     name="AWS_ENDPOINT_URL",
                     value_from=client.V1EnvVarSource(
-                        config_map_key_ref=client.V1ConfigMapKeySelector(
-                            name="llm-ops-object-store-config",
-                            key="endpoint-url",
+                        secret_key_ref=client.V1SecretKeySelector(
+                            name="minio-secret",
+                            key="ENDPOINT_URL",
                         )
                     ),
                 ),
@@ -1449,9 +1449,9 @@ class ServingDeployer:
                 {
                     "name": "AWS_ENDPOINT_URL",
                     "valueFrom": {
-                        "configMapKeyRef": {
-                            "name": "llm-ops-object-store-config",
-                            "key": "endpoint-url",
+                        "secretKeyRef": {
+                            "name": "minio-secret",
+                            "key": "ENDPOINT_URL",
                         }
                     },
                 },

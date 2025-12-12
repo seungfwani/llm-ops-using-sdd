@@ -23,6 +23,7 @@ type: Opaque
 stringData:
   MINIO_ROOT_USER: {{ .Values.dependencies.minio.secret.accessKey | quote }}
   MINIO_ROOT_PASSWORD: {{ .Values.dependencies.minio.secret.secretKey | quote }}
+  ENDPOINT_URL: {{ .Values.objectStore.config.endpointUrl | default "http://minio:9000" | quote }}
 ---
 apiVersion: v1
 kind: ConfigMap
