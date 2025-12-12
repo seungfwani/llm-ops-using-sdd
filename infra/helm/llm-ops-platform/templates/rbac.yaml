@@ -16,6 +16,11 @@ rules:
     resources: ["deployments", "replicasets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   
+  # Training job management (Kubernetes Batch Jobs)
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  
   # Service management
   - apiGroups: [""]
     resources: ["services"]
