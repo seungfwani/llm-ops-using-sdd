@@ -115,19 +115,24 @@ class KServeAdapter(ServingFrameworkAdapter):
                 ca_cert_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 
                 if os.path.exists(token_path) and os.path.exists(ca_cert_path):
-                    logger.info("KServeAdapter: Using service account token and CA certificate for in-cluster authentication")
+                    logger.info(f"KServeAdapter: Service account files found - token: {token_path}, ca_cert: {ca_cert_path}")
                     k8s_config.load_incluster_config()
                     # Ensure the configuration uses the service account token and CA cert
                     configuration = client.Configuration.get_default_copy()
-                    with open(token_path, 'r') as f:
-                        token = f.read().strip()
-                    configuration.api_key['authorization'] = f"Bearer {token}"
-                    configuration.api_key_prefix['authorization'] = 'Bearer'
-                    configuration.ssl_ca_cert = ca_cert_path
-                    # Force SSL verification for in-cluster auth
-                    configuration.verify_ssl = True
-                    client.Configuration.set_default(configuration)
-                    logger.info("KServeAdapter: Successfully configured service account authentication")
+                    try:
+                        with open(token_path, 'r') as f:
+                            token = f.read().strip()
+                        logger.info(f"KServeAdapter: Successfully read service account token (length: {len(token)})")
+                        configuration.api_key['authorization'] = f"Bearer {token}"
+                        configuration.api_key_prefix['authorization'] = 'Bearer'
+                        configuration.ssl_ca_cert = ca_cert_path
+                        # Force SSL verification for in-cluster auth
+                        configuration.verify_ssl = True
+                        client.Configuration.set_default(configuration)
+                        logger.info("KServeAdapter: Successfully configured service account authentication with explicit token and CA cert")
+                    except Exception as config_error:
+                        logger.error(f"KServeAdapter: Failed to configure service account authentication: {config_error}")
+                        raise
                 else:
                     logger.warning("KServeAdapter: Service account token or CA certificate not found, falling back to default in-cluster config")
                     k8s_config.load_incluster_config()
@@ -395,6 +400,28 @@ class KServeAdapter(ServingFrameworkAdapter):
             canary_traffic_percent=canary_traffic_percent,
         )
         
+        # Test API connectivity before creating InferenceService
+        try:
+            logger.info(f"KServeAdapter: Testing API connectivity before creating InferenceService {endpoint_name}")
+            # Quick test by listing namespaces (should be fast and require minimal permissions)
+            test_namespaces = self.core_api.list_namespace(limit=1, timeout_seconds=10)
+            logger.info(f"KServeAdapter: API connectivity test passed - found {len(test_namespaces.items)} namespaces")
+        except ApiException as test_e:
+            if test_e.status == 401:
+                logger.error(f"KServeAdapter: API connectivity test failed with 401 - authentication issue detected before InferenceService creation")
+                logger.error(f"KServeAdapter: Test error: {test_e.reason}")
+                # Try token refresh before proceeding
+                if not self._refresh_kubernetes_token():
+                    raise ToolOperationError(
+                        message="Kubernetes API authentication failed during connectivity test. Token refresh unsuccessful.",
+                        tool_name="kserve",
+                        operation="deploy",
+                        original_error=str(test_e),
+                    ) from test_e
+                logger.info("KServeAdapter: Token refreshed during connectivity test, proceeding with InferenceService creation")
+            else:
+                logger.warning(f"KServeAdapter: API connectivity test failed (non-401): {test_e}")
+
         try:
             # Create InferenceService
             created = self.custom_api.create_namespaced_custom_object(
@@ -451,8 +478,11 @@ class KServeAdapter(ServingFrameworkAdapter):
             if e.status == 401:
                 logger.warning(
                     f"KServeAdapter: Kubernetes API authentication failed (401 Unauthorized) while creating "
-                    f"InferenceService {endpoint_name} in namespace {namespace}. Attempting token refresh..."
+                    f"InferenceService {endpoint_name} in namespace {namespace}. "
+                    f"Error details: {e.reason}. Attempting token refresh..."
                 )
+                logger.warning(f"KServeAdapter: Request URL: {e.request.url if hasattr(e, 'request') else 'N/A'}")
+                logger.warning(f"KServeAdapter: Response body: {e.body if hasattr(e, 'body') else 'N/A'}")
                 # Try to refresh the token and retry once
                 if self._refresh_kubernetes_token():
                     logger.info("KServeAdapter: Token refreshed, retrying InferenceService creation...")
@@ -514,6 +544,28 @@ class KServeAdapter(ServingFrameworkAdapter):
                     f"This usually means the webhook certificate is not properly configured.\n"
                     f"To fix this, run: ./infra/scripts/setup-kserve.sh {namespace} fix-cert\n"
                     f"Or check webhook configuration: kubectl get validatingwebhookconfiguration | grep kserve"
+                )
+                logger.error(error_msg)
+                raise ToolOperationError(
+                    message=error_msg,
+                    tool_name="kserve",
+                    operation="deploy",
+                    original_error=str(e),
+                ) from e
+
+            # Handle 401 errors that might be from admission webhooks
+            if e.status == 401:
+                error_msg = (
+                    f"KServe authentication failed (401 Unauthorized): {e.reason}\n"
+                    f"This could be due to:\n"
+                    f"1. Service account token expired or invalid\n"
+                    f"2. Admission webhook authentication failure\n"
+                    f"3. RBAC permissions insufficient\n\n"
+                    f"Troubleshooting steps:\n"
+                    f"1. Check service account token: kubectl get secrets -n {namespace}\n"
+                    f"2. Verify RBAC: kubectl auth can-i create inferenceservices -n {namespace}\n"
+                    f"3. Check webhook config: kubectl get validatingwebhookconfiguration | grep kserve\n"
+                    f"4. Test API access: kubectl get inferenceservices -n {namespace}"
                 )
                 logger.error(error_msg)
                 raise ToolOperationError(
