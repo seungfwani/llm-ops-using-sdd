@@ -114,6 +114,7 @@ class KubernetesClient:
 
         # Initialize API clients
         self.apps_api = client.AppsV1Api()
+        self.batch_api = client.BatchV1Api()
         self.core_api = client.CoreV1Api()
         self.autoscaling_api = client.AutoscalingV1Api()
         self.networking_api = client.NetworkingV1Api()
@@ -141,43 +142,49 @@ class KubernetesClient:
             "can_access_kserve": False,
         }
         
-        token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-        ca_cert_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
-        namespace_path = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+        # If kubeconfig_path is set, we're using external kubeconfig (not in-cluster)
+        # Skip service account file validation in this case
+        if self.settings.kubeconfig_path:
+            logger.debug(f"{self.logger_prefix}: Using external kubeconfig, skipping in-cluster service account validation")
+        else:
+            # Only validate service account files when using in-cluster config
+            token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+            ca_cert_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+            namespace_path = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+            
+            # Check token file existence
+            results["token_exists"] = os.path.exists(token_path)
+            results["ca_cert_exists"] = os.path.exists(ca_cert_path)
+            
+            if results["token_exists"]:
+                # Try to read token
+                try:
+                    with open(token_path, 'r') as f:
+                        token_content = f.read().strip()
+                    if token_content:
+                        results["token_readable"] = True
+                        logger.debug(f"Service account token length: {len(token_content)}")
+                except Exception as e:
+                    log_msg = f"{self.logger_prefix}: Could not read service account token: {e}"
+                    logger.warning(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
+            
+            # Read current namespace
+            if os.path.exists(namespace_path):
+                try:
+                    with open(namespace_path, 'r') as f:
+                        results["namespace"] = f.read().strip()
+                except Exception as e:
+                    log_msg = f"{self.logger_prefix}: Could not read namespace: {e}"
+                    logger.warning(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
         
-        # Check token file existence
-        results["token_exists"] = os.path.exists(token_path)
-        results["ca_cert_exists"] = os.path.exists(ca_cert_path)
-        
-        if results["token_exists"]:
-            # Try to read token
-            try:
-                with open(token_path, 'r') as f:
-                    token_content = f.read().strip()
-                if token_content:
-                    results["token_readable"] = True
-                    logger.debug(f"Service account token length: {len(token_content)}")
-            except Exception as e:
-                log_msg = f"{self.logger_prefix}: Could not read service account token: {e}"
-                logger.warning(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
-        
-        # Read current namespace
-        if os.path.exists(namespace_path):
-            try:
-                with open(namespace_path, 'r') as f:
-                    results["namespace"] = f.read().strip()
-            except Exception as e:
-                log_msg = f"{self.logger_prefix}: Could not read namespace: {e}"
-                logger.warning(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
-        
-        # Test API permissions
+        # Test API permissions (always perform, regardless of kubeconfig_path)
         try:
             self.core_api.list_namespace(limit=1, _request_timeout=5)
             results["can_list_namespaces"] = True
         except Exception as e:
             logger.debug(f"Permission test (list_namespaces) failed: {e}")
         
-        # Test KServe access
+        # Test KServe access (always perform, regardless of kubeconfig_path)
         try:
             self.custom_api.list_cluster_custom_object(
                 group="serving.kserve.io",
@@ -201,32 +208,33 @@ class KubernetesClient:
             # Validate service account configuration
             validation_results = self._validate_service_account()
             
-            # Log service account status
-            if validation_results["token_exists"]:
-                log_msg = f"{self.logger_prefix}: Service account token found"
-                logger.info(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
-                if validation_results["token_readable"]:
-                    log_msg = f"{self.logger_prefix}: Service account token is readable"
+            # Log service account status (only for in-cluster config)
+            if not self.settings.kubeconfig_path:
+                if validation_results["token_exists"]:
+                    log_msg = f"{self.logger_prefix}: Service account token found"
+                    logger.info(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
+                    if validation_results["token_readable"]:
+                        log_msg = f"{self.logger_prefix}: Service account token is readable"
+                        logger.info(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
+                    else:
+                        log_msg = f"{self.logger_prefix}: Service account token exists but is not readable"
+                        logger.warning(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
+                else:
+                    log_msg = f"{self.logger_prefix}: Service account token NOT found - this will cause 401 errors in-cluster"
+                    logger.error(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
+                    log_msg = f"{self.logger_prefix}: Ensure Pod spec has 'automountServiceAccountToken: true' and serviceAccountName is set"
+                    logger.error(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
+                
+                if validation_results["ca_cert_exists"]:
+                    log_msg = f"{self.logger_prefix}: Service account CA certificate found"
                     logger.info(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
                 else:
-                    log_msg = f"{self.logger_prefix}: Service account token exists but is not readable"
+                    log_msg = f"{self.logger_prefix}: Service account CA certificate NOT found"
                     logger.warning(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
-            else:
-                log_msg = f"{self.logger_prefix}: Service account token NOT found - this will cause 401 errors in-cluster"
-                logger.error(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
-                log_msg = f"{self.logger_prefix}: Ensure Pod spec has 'automountServiceAccountToken: true' and serviceAccountName is set"
-                logger.error(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
-            
-            if validation_results["ca_cert_exists"]:
-                log_msg = f"{self.logger_prefix}: Service account CA certificate found"
-                logger.info(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
-            else:
-                log_msg = f"{self.logger_prefix}: Service account CA certificate NOT found"
-                logger.warning(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
-            
-            if validation_results["namespace"]:
-                log_msg = f"{self.logger_prefix}: Current namespace: {validation_results['namespace']}"
-                logger.info(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
+                
+                if validation_results["namespace"]:
+                    log_msg = f"{self.logger_prefix}: Current namespace: {validation_results['namespace']}"
+                    logger.info(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
             
             # Test connection by listing namespaces (simple API call)
             # Set timeout to prevent hanging (10 seconds)
@@ -261,31 +269,35 @@ class KubernetesClient:
                 logger.error(f"{self.logger_prefix}: DIAGNOSTIC INFORMATION FOR 401 ERROR")
                 logger.error("=" * 80)
                 
-                # ServiceAccount token status
-                if validation_results["token_exists"]:
-                    logger.error(f"✓ Service account token file exists")
-                    if validation_results["token_readable"]:
-                        logger.error(f"✓ Service account token is readable")
+                # ServiceAccount token status (only for in-cluster config)
+                if not self.settings.kubeconfig_path:
+                    if validation_results["token_exists"]:
+                        logger.error(f"✓ Service account token file exists")
+                        if validation_results["token_readable"]:
+                            logger.error(f"✓ Service account token is readable")
+                        else:
+                            logger.error(f"✗ Service account token exists but is NOT readable - check file permissions")
                     else:
-                        logger.error(f"✗ Service account token exists but is NOT readable - check file permissions")
+                        logger.error(f"✗ Service account token file NOT found at /var/run/secrets/kubernetes.io/serviceaccount/token")
+                        logger.error(f"  → This is the ROOT CAUSE of 401 errors in-cluster")
+                        logger.error(f"  → Solution: Ensure Pod spec has:")
+                        logger.error(f"     1. serviceAccountName: <service-account-name>")
+                        logger.error(f"     2. automountServiceAccountToken: true")
+                    
+                    # CA certificate status
+                    if validation_results["ca_cert_exists"]:
+                        logger.error(f"✓ Service account CA certificate exists")
+                    else:
+                        logger.error(f"✗ Service account CA certificate NOT found")
+                    
+                    # Namespace information
+                    if validation_results["namespace"]:
+                        logger.error(f"✓ Current namespace: {validation_results['namespace']}")
+                    else:
+                        logger.error(f"✗ Could not determine current namespace")
                 else:
-                    logger.error(f"✗ Service account token file NOT found at /var/run/secrets/kubernetes.io/serviceaccount/token")
-                    logger.error(f"  → This is the ROOT CAUSE of 401 errors in-cluster")
-                    logger.error(f"  → Solution: Ensure Pod spec has:")
-                    logger.error(f"     1. serviceAccountName: <service-account-name>")
-                    logger.error(f"     2. automountServiceAccountToken: true")
-                
-                # CA certificate status
-                if validation_results["ca_cert_exists"]:
-                    logger.error(f"✓ Service account CA certificate exists")
-                else:
-                    logger.error(f"✗ Service account CA certificate NOT found")
-                
-                # Namespace information
-                if validation_results["namespace"]:
-                    logger.error(f"✓ Current namespace: {validation_results['namespace']}")
-                else:
-                    logger.error(f"✗ Could not determine current namespace")
+                    logger.error(f"Using external kubeconfig: {self.settings.kubeconfig_path}")
+                    logger.error(f"  → Check kubeconfig file permissions and authentication credentials")
                 
                 # RBAC permission status
                 if validation_results["can_list_namespaces"]:

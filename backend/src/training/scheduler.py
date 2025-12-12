@@ -6,9 +6,10 @@ import time
 from typing import Optional
 from uuid import uuid4
 
-from kubernetes import client, config
+from kubernetes import client
 from kubernetes.client.rest import ApiException
 
+from core.clients.kubernetes_client import KubernetesClient
 from core.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -20,69 +21,10 @@ class KubernetesScheduler:
 
     def __init__(self):
         """Initialize Kubernetes client from kubeconfig or in-cluster config."""
-        try:
-            if settings.kubeconfig_path:
-                logger.info(f"KubernetesScheduler: Loading Kubernetes config from: {settings.kubeconfig_path}")
-                config.load_kube_config(config_file=settings.kubeconfig_path)
-            else:
-                logger.info("KubernetesScheduler: Loading in-cluster Kubernetes config")
-                config.load_incluster_config()
-        except Exception as e:
-            logger.warning(f"KubernetesScheduler: Failed to load kubeconfig: {e}, using default")
-            try:
-                logger.info("KubernetesScheduler: Trying default kubeconfig location")
-                config.load_kube_config()
-            except Exception:
-                logger.error("KubernetesScheduler: Could not initialize Kubernetes client")
-                raise
-
-        # Configure SSL verification based on settings
-        configuration = client.Configuration.get_default_copy()
-        if not settings.kubernetes_verify_ssl:
-            logger.warning("KubernetesScheduler: SSL verification is disabled for Kubernetes API client")
-            configuration.verify_ssl = False
-            # Also disable SSL warnings
-            import urllib3
-            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-            # Update all API clients to use this configuration
-            client.Configuration.set_default(configuration)
-
-        self.batch_api = client.BatchV1Api()
-        self.core_api = client.CoreV1Api()
-        
-        # Test Kubernetes connection (non-blocking - failure doesn't prevent initialization)
-        # This allows the scheduler to be created even if cluster is temporarily unavailable
-        self._connection_verified = False
-        try:
-            logger.info("KubernetesScheduler: Testing Kubernetes API connection...")
-            # Test connection by listing namespaces (simple API call)
-            namespaces = self.core_api.list_namespace(limit=1)
-            self._connection_verified = True
-            logger.info(f"KubernetesScheduler: Kubernetes API connection successful. Cluster accessible (tested via namespace list)")
-        except ApiException as e:
-            # Handle API errors (401, 403, etc.) gracefully
-            if e.status == 401:
-                logger.warning(
-                    f"KubernetesScheduler: Kubernetes API authentication failed (401 Unauthorized). "
-                    f"This is normal if running outside Kubernetes cluster or with invalid kubeconfig. "
-                    f"Scheduler will be available but operations may fail until authentication is configured."
-                )
-            elif e.status == 403:
-                logger.warning(
-                    f"KubernetesScheduler: Kubernetes API permission denied (403 Forbidden). "
-                    f"Scheduler will be available but operations may fail due to insufficient permissions."
-                )
-            else:
-                logger.warning(
-                    f"KubernetesScheduler: Failed to connect to Kubernetes API (status {e.status}): {e.reason}. "
-                    f"Scheduler will be available but operations may fail until connection is established."
-                )
-        except Exception as e:
-            # Handle other connection errors (network, config, etc.)
-            logger.warning(
-                f"KubernetesScheduler: Failed to verify Kubernetes API connection: {e}. "
-                f"Scheduler will be available but operations may fail until connection is established."
-            )
+        # Initialize Kubernetes client using shared utility
+        self.k8s_client = KubernetesClient(logger_prefix="KubernetesScheduler")
+        self.batch_api = self.k8s_client.batch_api
+        self.core_api = self.k8s_client.core_api
 
     def submit_job(
         self,

@@ -41,6 +41,24 @@ from core.clients.kubernetes_client import KubernetesClient
 logger = logging.getLogger(__name__)
 
 
+def _get_inferenceservice_name(framework_resource_id: str) -> str:
+    """
+    Get actual InferenceService name from framework_resource_id.
+    
+    framework_resource_id may include -predictor suffix (as stored in DB),
+    but InferenceService name doesn't include it.
+    
+    Args:
+        framework_resource_id: Framework resource ID (may include -predictor)
+        
+    Returns:
+        Actual InferenceService name (without -predictor suffix)
+    """
+    if framework_resource_id.endswith("-predictor"):
+        return framework_resource_id[:-10]  # Remove "-predictor"
+    return framework_resource_id
+
+
 class KServeAdapter(ServingFrameworkAdapter):
     """
     KServe adapter for model serving using RawDeployment mode.
@@ -344,7 +362,7 @@ class KServeAdapter(ServingFrameworkAdapter):
                 logger.debug(f"Could not check InferenceService status/events: {debug_error}")
             
             return {
-                "framework_resource_id": endpoint_name,
+                "framework_resource_id": f"{endpoint_name}-predictor",
                 "framework_namespace": namespace,
                 "status": "deploying",
             }
@@ -780,8 +798,10 @@ class KServeAdapter(ServingFrameworkAdapter):
         k8s_ops = KubernetesOperations()
         
         try:
+            # Remove -predictor suffix if present to get actual InferenceService name
+            inferenceservice_name = _get_inferenceservice_name(framework_resource_id)
             status_info = k8s_ops.get_kserve_inferenceservice_status(
-                endpoint_name=framework_resource_id,
+                endpoint_name=inferenceservice_name,
                 namespace=namespace,
             )
             
@@ -806,15 +826,17 @@ class KServeAdapter(ServingFrameworkAdapter):
             logger.warning(f"Failed to get deployment status via Kubernetes operations: {e}, falling back to direct check")
             # Fallback to direct InferenceService check (for compatibility)
         try:
+            # Remove -predictor suffix if present to get actual InferenceService name
+            inferenceservice_name = _get_inferenceservice_name(framework_resource_id)
             inference_service = self.k8s_client.call_with_401_retry(
                 lambda: self.custom_api.get_namespaced_custom_object(
                     group="serving.kserve.io",
                     version="v1beta1",
                     namespace=namespace,
                     plural="inferenceservices",
-                    name=framework_resource_id,
+                    name=inferenceservice_name,
                 ),
-                f"get InferenceService {framework_resource_id} status"
+                f"get InferenceService {inferenceservice_name} status"
             )
         except ApiException as e:
             # Re-raise for error handling
@@ -879,6 +901,8 @@ class KServeAdapter(ServingFrameworkAdapter):
             )
         
         try:
+            # Remove -predictor suffix if present to get actual InferenceService name
+            inferenceservice_name = _get_inferenceservice_name(framework_resource_id)
             # Get current InferenceService
             inference_service = self.k8s_client.call_with_401_retry(
                 lambda: self.custom_api.get_namespaced_custom_object(
@@ -886,9 +910,9 @@ class KServeAdapter(ServingFrameworkAdapter):
                     version="v1beta1",
                     namespace=namespace,
                     plural="inferenceservices",
-                    name=framework_resource_id,
+                    name=inferenceservice_name,
                 ),
-                f"get InferenceService {framework_resource_id} for update"
+                f"get InferenceService {inferenceservice_name} for update"
             )
         except ApiException as e:
             raise wrap_tool_error(e, "kserve", "update_deployment")
@@ -921,10 +945,10 @@ class KServeAdapter(ServingFrameworkAdapter):
                     version="v1beta1",
                     namespace=namespace,
                     plural="inferenceservices",
-                    name=framework_resource_id,
+                    name=inferenceservice_name,
                     body=inference_service,
                 ),
-                f"patch InferenceService {framework_resource_id}"
+                f"patch InferenceService {inferenceservice_name}"
             )
         except ApiException as e:
             raise wrap_tool_error(e, "kserve", "update_deployment")
@@ -946,20 +970,22 @@ class KServeAdapter(ServingFrameworkAdapter):
             return  # Graceful degradation
         
         try:
+            # Remove -predictor suffix if present to get actual InferenceService name
+            inferenceservice_name = _get_inferenceservice_name(framework_resource_id)
             self.k8s_client.call_with_401_retry(
                 lambda: self.custom_api.delete_namespaced_custom_object(
                     group="serving.kserve.io",
                     version="v1beta1",
                     namespace=namespace,
                     plural="inferenceservices",
-                    name=framework_resource_id,
+                    name=inferenceservice_name,
                 ),
-                f"delete InferenceService {framework_resource_id}"
+                f"delete InferenceService {inferenceservice_name}"
             )
-            logger.info(f"Deleted KServe InferenceService {framework_resource_id}")
+            logger.info(f"Deleted KServe InferenceService {inferenceservice_name}")
         except ApiException as e:
             if e.status == 404:
-                logger.warning(f"InferenceService {framework_resource_id} not found, may already be deleted")
+                logger.warning(f"InferenceService {inferenceservice_name} not found, may already be deleted")
                 return  # Graceful degradation
             raise wrap_tool_error(e, "kserve", "delete_deployment")
     
@@ -977,15 +1003,17 @@ class KServeAdapter(ServingFrameworkAdapter):
             )
         
         try:
+            # Remove -predictor suffix if present to get actual InferenceService name
+            inferenceservice_name = _get_inferenceservice_name(framework_resource_id)
             inference_service = self.k8s_client.call_with_401_retry(
                 lambda: self.custom_api.get_namespaced_custom_object(
                     group="serving.kserve.io",
                     version="v1beta1",
                     namespace=namespace,
                     plural="inferenceservices",
-                    name=framework_resource_id,
+                    name=inferenceservice_name,
                 ),
-                f"get InferenceService {framework_resource_id} URL"
+                f"get InferenceService {inferenceservice_name} URL"
             )
         except ApiException as e:
             raise wrap_tool_error(e, "kserve", "get_inference_url")
@@ -995,7 +1023,9 @@ class KServeAdapter(ServingFrameworkAdapter):
         
         if not url:
             # Fallback: construct URL from service name
-            url = f"http://{framework_resource_id}-predictor.{namespace}.svc.cluster.local:80"
+            # framework_resource_id already includes -predictor suffix, so use it directly
+            service_name = framework_resource_id if framework_resource_id.endswith("-predictor") else f"{framework_resource_id}-predictor"
+            url = f"http://{service_name}.{namespace}.svc.cluster.local:80"
         
         return url
 

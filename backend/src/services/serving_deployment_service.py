@@ -144,6 +144,12 @@ class ServingDeploymentService:
         Note: KServe adapter is only used for deployment. Post-deployment management
         (updates, scaling, etc.) uses Kubernetes API directly.
         
+        If ServingDeployment record doesn't exist, this method will:
+        1. Get ServingEndpoint information
+        2. Generate Kubernetes resource name from endpoint ID
+        3. Update Kubernetes resources directly
+        4. Optionally create ServingDeployment record for future use
+        
         Args:
             endpoint_id: Serving endpoint ID
             min_replicas: New minimum replicas
@@ -152,18 +158,53 @@ class ServingDeploymentService:
             resource_limits: New resource limits
         
         Returns:
-            Updated ServingDeployment entity
+            Updated ServingDeployment entity (may be newly created)
         """
         deployment = self.deployment_repo.get_by_endpoint_id(endpoint_id)
-        if not deployment:
-            raise ValueError(f"Deployment not found for endpoint {endpoint_id}")
         
-        namespace = deployment.framework_namespace
-        framework_resource_id = deployment.framework_resource_id
+        # If deployment record doesn't exist, get info from ServingEndpoint
+        if not deployment:
+            from serving.repositories import ServingEndpointRepository
+            endpoint_repo = ServingEndpointRepository(self.session)
+            endpoint = endpoint_repo.get(endpoint_id)
+            if not endpoint:
+                raise ValueError(f"Endpoint {endpoint_id} not found")
+            
+            # Generate Kubernetes resource name from endpoint ID
+            endpoint_id_str = str(endpoint_id).replace("-", "")
+            short_id = endpoint_id_str[:12]
+            base_name = f"svc-{short_id}"
+            namespace = f"llm-ops-{endpoint.environment}"
+            
+            # Determine serving framework from settings
+            serving_framework = "kserve" if self.settings.use_kserve else "deployment"
+            
+            # For KServe, framework_resource_id includes -predictor suffix
+            # For Deployment, use base name
+            if serving_framework == "kserve":
+                framework_resource_id = f"{base_name}-predictor"
+            else:
+                framework_resource_id = base_name
+            
+            logger.info(
+                f"ServingDeployment record not found for endpoint {endpoint_id}, "
+                f"using endpoint info: resource_id={framework_resource_id}, "
+                f"namespace={namespace}, framework={serving_framework}"
+            )
+        else:
+            namespace = deployment.framework_namespace
+            framework_resource_id = deployment.framework_resource_id
+            serving_framework = deployment.serving_framework
         
         # Use Kubernetes API directly for post-deployment management
-        if deployment.serving_framework == "kserve":
+        if serving_framework == "kserve":
             # Update KServe InferenceService via Kubernetes CustomObjectsApi
+            # framework_resource_id may include -predictor suffix, but InferenceService name doesn't
+            # Remove -predictor suffix if present to get actual InferenceService name
+            inferenceservice_name = framework_resource_id
+            if inferenceservice_name.endswith("-predictor"):
+                inferenceservice_name = inferenceservice_name[:-10]  # Remove "-predictor"
+            
             try:
                 # Get current InferenceService
                 inference_service = self.k8s_client.call_with_401_retry(
@@ -172,9 +213,9 @@ class ServingDeploymentService:
                         version="v1beta1",
                         namespace=namespace,
                         plural="inferenceservices",
-                        name=framework_resource_id,
+                        name=inferenceservice_name,
                     ),
-                    f"get InferenceService {framework_resource_id} for update"
+                    f"get InferenceService {inferenceservice_name} for update"
                 )
                 
                 # Update spec
@@ -204,15 +245,15 @@ class ServingDeploymentService:
                         version="v1beta1",
                         namespace=namespace,
                         plural="inferenceservices",
-                        name=framework_resource_id,
+                        name=inferenceservice_name,
                         body=inference_service,
                     ),
-                    f"patch InferenceService {framework_resource_id}"
+                    f"patch InferenceService {inferenceservice_name}"
                 )
-                logger.info(f"Updated KServe InferenceService {framework_resource_id} via Kubernetes API")
+                logger.info(f"Updated KServe InferenceService {inferenceservice_name} via Kubernetes API")
                 
             except ApiException as e:
-                logger.error(f"Failed to update KServe InferenceService {framework_resource_id}: {e}")
+                logger.error(f"Failed to update KServe InferenceService {inferenceservice_name}: {e}")
                 raise ValueError(f"Failed to update KServe InferenceService: {e.reason}")
         else:
             # For non-KServe deployments, update Deployment directly
@@ -268,17 +309,43 @@ class ServingDeploymentService:
                 logger.error(f"Failed to update Deployment {framework_resource_id}: {e}")
                 raise ValueError(f"Failed to update Deployment: {e.reason}")
         
-        # Update deployment record in database
-        if min_replicas is not None:
-            deployment.min_replicas = min_replicas
-        if max_replicas is not None:
-            deployment.max_replicas = max_replicas
-        if resource_requests is not None:
-            deployment.resource_requests = resource_requests
-        if resource_limits is not None:
-            deployment.resource_limits = resource_limits
+        # Update or create deployment record in database
+        if not deployment:
+            # Create new deployment record
+            # Use framework_resource_id with -predictor suffix for KServe (as stored in DB)
+            from catalog import models as catalog_models
+            stored_resource_id = framework_resource_id
+            if serving_framework == "kserve" and not stored_resource_id.endswith("-predictor"):
+                stored_resource_id = f"{framework_resource_id}-predictor"
+            
+            deployment = catalog_models.ServingDeployment(
+                id=uuid4(),
+                serving_endpoint_id=endpoint_id,
+                serving_framework=serving_framework,
+                framework_resource_id=stored_resource_id,
+                framework_namespace=namespace,
+                replica_count=min_replicas if min_replicas is not None else 0,
+                min_replicas=min_replicas if min_replicas is not None else 0,
+                max_replicas=max_replicas if max_replicas is not None else 0,
+                resource_requests=resource_requests,
+                resource_limits=resource_limits,
+            )
+            deployment = self.deployment_repo.create(deployment)
+            logger.info(f"Created new ServingDeployment record for endpoint {endpoint_id} with resource_id={stored_resource_id}")
+        else:
+            # Update existing deployment record
+            if min_replicas is not None:
+                deployment.min_replicas = min_replicas
+            if max_replicas is not None:
+                deployment.max_replicas = max_replicas
+            if resource_requests is not None:
+                deployment.resource_requests = resource_requests
+            if resource_limits is not None:
+                deployment.resource_limits = resource_limits
+            
+            deployment = self.deployment_repo.update(deployment)
         
-        return self.deployment_repo.update(deployment)
+        return deployment
     
     def refresh_deployment_status(
         self,

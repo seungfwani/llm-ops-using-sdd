@@ -235,19 +235,25 @@ class ServingDeployer:
         
         try:
             if is_kserve:
-                resource = self.custom_api.get_namespaced_custom_object(
-                    group="serving.kserve.io",
-                    version="v1beta1",
-                    namespace=namespace,
-                    plural="inferenceservices",
-                    name=endpoint_name
+                resource = self.k8s_client.call_with_401_retry(
+                    lambda: self.custom_api.get_namespaced_custom_object(
+                        group="serving.kserve.io",
+                        version="v1beta1",
+                        namespace=namespace,
+                        plural="inferenceservices",
+                        name=endpoint_name
+                    ),
+                    f"check KServe InferenceService {endpoint_name}",
                 )
                 deletion_timestamp = resource.get("metadata", {}).get("deletionTimestamp")
                 return True, deletion_timestamp is not None
             else:
-                resource = self.apps_api.read_namespaced_deployment(
-                    name=endpoint_name,
-                    namespace=namespace
+                resource = self.k8s_client.call_with_401_retry(
+                    lambda: self.apps_api.read_namespaced_deployment(
+                        name=endpoint_name,
+                        namespace=namespace
+                    ),
+                    f"check Deployment {endpoint_name}",
                 )
                 return True, resource.metadata.deletion_timestamp is not None
         except ApiException as e:
@@ -1069,8 +1075,11 @@ class ServingDeployer:
         )
 
         try:
-            created_deployment = self.apps_api.create_namespaced_deployment(
-                namespace=namespace, body=deployment
+            created_deployment = self.k8s_client.call_with_401_retry(
+                lambda: self.apps_api.create_namespaced_deployment(
+                    namespace=namespace, body=deployment
+                ),
+                f"create Deployment {endpoint_name}",
             )
             logger.info(f"Created deployment {endpoint_name} with UID {created_deployment.metadata.uid}")
         except ApiException as e:
@@ -1078,8 +1087,11 @@ class ServingDeployer:
                 created_deployment = self._handle_409_conflict(
                     endpoint_name,
                     namespace,
-                    lambda: self.apps_api.create_namespaced_deployment(
-                        namespace=namespace, body=deployment
+                    lambda: self.k8s_client.call_with_401_retry(
+                        lambda: self.apps_api.create_namespaced_deployment(
+                            namespace=namespace, body=deployment
+                        ),
+                        f"create Deployment {endpoint_name}",
                     ),
                     "Deployment",
                 )
@@ -1103,14 +1115,23 @@ class ServingDeployer:
                 ),
             )
             try:
-                self.core_api.create_namespaced_service(namespace=namespace, body=service)
+                self.k8s_client.call_with_401_retry(
+                    lambda: self.core_api.create_namespaced_service(namespace=namespace, body=service),
+                    f"create Service {endpoint_name}-svc",
+                )
             except ApiException as e:
                 if e.status == 409:
                     logger.warning(f"Service {endpoint_name}-svc already exists, deleting and recreating...")
                     try:
-                        self.core_api.delete_namespaced_service(name=f"{endpoint_name}-svc", namespace=namespace)
+                        self.k8s_client.call_with_401_retry(
+                            lambda: self.core_api.delete_namespaced_service(name=f"{endpoint_name}-svc", namespace=namespace),
+                            f"delete Service {endpoint_name}-svc",
+                        )
                         time.sleep(2)
-                        self.core_api.create_namespaced_service(namespace=namespace, body=service)
+                        self.k8s_client.call_with_401_retry(
+                            lambda: self.core_api.create_namespaced_service(namespace=namespace, body=service),
+                            f"create Service {endpoint_name}-svc",
+                        )
                     except Exception as retry_error:
                         logger.error(f"Failed to delete and recreate Service: {retry_error}")
                         raise
@@ -1138,20 +1159,29 @@ class ServingDeployer:
                     ),
                 )
                 try:
-                    self.autoscaling_api.create_namespaced_horizontal_pod_autoscaler(
-                        namespace=namespace, body=hpa
+                    self.k8s_client.call_with_401_retry(
+                        lambda: self.autoscaling_api.create_namespaced_horizontal_pod_autoscaler(
+                            namespace=namespace, body=hpa
+                        ),
+                        f"create HPA {endpoint_name}-hpa",
                     )
                     logger.info(f"Created HPA for {endpoint_name}")
                 except ApiException as e:
                     if e.status == 409:
                         logger.warning(f"HPA {endpoint_name}-hpa already exists, deleting and recreating...")
                         try:
-                            self.autoscaling_api.delete_namespaced_horizontal_pod_autoscaler(
-                                name=f"{endpoint_name}-hpa", namespace=namespace
+                            self.k8s_client.call_with_401_retry(
+                                lambda: self.autoscaling_api.delete_namespaced_horizontal_pod_autoscaler(
+                                    name=f"{endpoint_name}-hpa", namespace=namespace
+                                ),
+                                f"delete HPA {endpoint_name}-hpa",
                             )
                             time.sleep(2)
-                            self.autoscaling_api.create_namespaced_horizontal_pod_autoscaler(
-                                namespace=namespace, body=hpa
+                            self.k8s_client.call_with_401_retry(
+                                lambda: self.autoscaling_api.create_namespaced_horizontal_pod_autoscaler(
+                                    namespace=namespace, body=hpa
+                                ),
+                                f"create HPA {endpoint_name}-hpa",
                             )
                             logger.info(f"Created HPA for {endpoint_name} after retry")
                         except Exception as retry_error:
@@ -1194,17 +1224,26 @@ class ServingDeployer:
                 ),
             )
             try:
-                self.networking_api.create_namespaced_ingress(namespace=namespace, body=ingress)
+                self.k8s_client.call_with_401_retry(
+                    lambda: self.networking_api.create_namespaced_ingress(namespace=namespace, body=ingress),
+                    f"create Ingress {endpoint_name}-ingress",
+                )
                 logger.info(f"Created Ingress for {endpoint_name} at route {route}")
             except ApiException as e:
                 if e.status == 409:
                     logger.warning(f"Ingress {endpoint_name}-ingress already exists, deleting and recreating...")
                     try:
-                        self.networking_api.delete_namespaced_ingress(
-                            name=f"{endpoint_name}-ingress", namespace=namespace
+                        self.k8s_client.call_with_401_retry(
+                            lambda: self.networking_api.delete_namespaced_ingress(
+                                name=f"{endpoint_name}-ingress", namespace=namespace
+                            ),
+                            f"delete Ingress {endpoint_name}-ingress",
                         )
                         time.sleep(2)
-                        self.networking_api.create_namespaced_ingress(namespace=namespace, body=ingress)
+                        self.k8s_client.call_with_401_retry(
+                            lambda: self.networking_api.create_namespaced_ingress(namespace=namespace, body=ingress),
+                            f"create Ingress {endpoint_name}-ingress",
+                        )
                         logger.info(f"Created Ingress for {endpoint_name} at route {route} after retry")
                     except Exception as retry_error:
                         logger.error(f"Failed to delete and recreate Ingress: {retry_error}")
@@ -1745,12 +1784,15 @@ class ServingDeployer:
 
             # Create InferenceService using CustomObjectsApi
             try:
-                created = self.custom_api.create_namespaced_custom_object(
-                    group="serving.kserve.io",
-                    version="v1beta1",
-                    namespace=namespace,
-                    plural="inferenceservices",
-                    body=inference_service,
+                created = self.k8s_client.call_with_401_retry(
+                    lambda: self.custom_api.create_namespaced_custom_object(
+                        group="serving.kserve.io",
+                        version="v1beta1",
+                        namespace=namespace,
+                        plural="inferenceservices",
+                        body=inference_service,
+                    ),
+                    f"create InferenceService {endpoint_name}",
                 )
 
                 uid = created.get("metadata", {}).get("uid", "")
@@ -1761,12 +1803,15 @@ class ServingDeployer:
                     created = self._handle_409_conflict(
                         endpoint_name,
                         namespace,
-                        lambda: self.custom_api.create_namespaced_custom_object(
-                            group="serving.kserve.io",
-                            version="v1beta1",
-                            namespace=namespace,
-                            plural="inferenceservices",
-                            body=inference_service,
+                        lambda: self.k8s_client.call_with_401_retry(
+                            lambda: self.custom_api.create_namespaced_custom_object(
+                                group="serving.kserve.io",
+                                version="v1beta1",
+                                namespace=namespace,
+                                plural="inferenceservices",
+                                body=inference_service,
+                            ),
+                            f"create InferenceService {endpoint_name}",
                         ),
                         "KServe InferenceService",
                     )
@@ -1819,6 +1864,168 @@ class ServingDeployer:
         )
         return status_info
 
+    def _scale_deployment_to_zero(
+        self,
+        deployment_name: str,
+        namespace: str,
+        verify: bool = True,
+        max_retries: int = 2,
+    ) -> bool:
+        """
+        Scale a single Deployment to 0 replicas with retry and verification.
+        
+        Args:
+            deployment_name: Name of the Deployment
+            namespace: Kubernetes namespace
+            verify: Whether to verify that replicas were actually set to 0
+            max_retries: Maximum number of retry attempts
+            
+        Returns:
+            True if scaling was successful (and verified if verify=True), False otherwise
+        """
+        try:
+            scale_body = client.V1Scale(
+                spec=client.V1ScaleSpec(replicas=0)
+            )
+            
+            # Scale down with retry
+            for attempt in range(max_retries + 1):
+                try:
+                    self.k8s_client.call_with_401_retry(
+                        lambda: self.apps_api.patch_namespaced_deployment_scale(
+                            name=deployment_name,
+                            namespace=namespace,
+                            body=scale_body,
+                        ),
+                        f"scale Deployment {deployment_name} to 0 replicas",
+                    )
+                    logger.info(f"Scaled down Deployment {deployment_name} to 0 replicas")
+                    break
+                except ApiException as e:
+                    if attempt < max_retries:
+                        logger.warning(
+                            f"Failed to scale down Deployment {deployment_name} (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying..."
+                        )
+                        time.sleep(1)
+                        continue
+                    else:
+                        logger.error(f"Failed to scale down Deployment {deployment_name} after {max_retries + 1} attempts: {e}")
+                        return False
+            
+            # Verify if requested
+            if verify:
+                time.sleep(1)  # Wait for API to propagate
+                try:
+                    deployment = self.k8s_client.call_with_401_retry(
+                        lambda: self.apps_api.read_namespaced_deployment(
+                            name=deployment_name,
+                            namespace=namespace,
+                        ),
+                        f"read Deployment {deployment_name} for verification",
+                    )
+                    replicas = deployment.spec.replicas if deployment.spec.replicas is not None else 0
+                    if replicas == 0:
+                        logger.info(f"Verified: Deployment {deployment_name} replicas={replicas}")
+                        return True
+                    else:
+                        logger.warning(
+                            f"Deployment {deployment_name} replicas is {replicas}, not 0. "
+                            f"Scaling may not have taken effect yet."
+                        )
+                        return False
+                except ApiException as e:
+                    logger.warning(f"Failed to verify Deployment {deployment_name}: {e}")
+                    return False
+            
+            return True
+        except Exception as e:
+            logger.error(f"Unexpected error scaling down Deployment {deployment_name}: {e}", exc_info=True)
+            return False
+
+    def _scale_kserve_backing_deployments(
+        self,
+        endpoint_name: str,
+        namespace: str,
+        verify: bool = True,
+    ) -> bool:
+        """
+        Scale down all backing deployments for a KServe InferenceService to 0 replicas.
+        
+        Args:
+            endpoint_name: Name of the InferenceService
+            namespace: Kubernetes namespace
+            verify: Whether to verify that all deployments were scaled to 0
+            
+        Returns:
+            True if all deployments were successfully scaled (and verified if verify=True), False otherwise
+        """
+        try:
+            # Find all backing deployments
+            deployments = self.k8s_client.call_with_401_retry(
+                lambda: self.apps_api.list_namespaced_deployment(
+                    namespace=namespace,
+                    label_selector=f"serving.kserve.io/inferenceservice={endpoint_name}",
+                ),
+                f"list backing deployments for InferenceService {endpoint_name}",
+            )
+            
+            if not deployments.items:
+                logger.info(f"No deployments found for InferenceService {endpoint_name}")
+                return True
+            
+            scaled_deployments = []
+            for deploy in deployments.items:
+                deploy_name = deploy.metadata.name
+                try:
+                    if self._scale_deployment_to_zero(deploy_name, namespace, verify=False, max_retries=1):
+                        scaled_deployments.append(deploy_name)
+                    else:
+                        logger.warning(f"Failed to scale down KServe deployment {deploy_name}")
+                except Exception as deploy_e:
+                    logger.warning(f"Failed to scale down KServe deployment {deploy_name}: {deploy_e}")
+            
+            # Verify all deployments if requested
+            if verify and scaled_deployments:
+                time.sleep(1)  # Wait for API to propagate
+                all_scaled = True
+                for deploy_name in scaled_deployments:
+                    try:
+                        deployment = self.k8s_client.call_with_401_retry(
+                            lambda: self.apps_api.read_namespaced_deployment(
+                                name=deploy_name,
+                                namespace=namespace,
+                            ),
+                            f"read Deployment {deploy_name} for verification",
+                        )
+                        replicas = deployment.spec.replicas if deployment.spec.replicas is not None else 0
+                        if replicas != 0:
+                            all_scaled = False
+                            logger.warning(
+                                f"Deployment {deploy_name} replicas is {replicas}, not 0"
+                            )
+                        else:
+                            logger.info(
+                                f"Verified: Deployment {deploy_name} replicas={replicas}"
+                            )
+                    except ApiException as e:
+                        logger.warning(f"Failed to verify deployment {deploy_name}: {e}")
+                        all_scaled = False
+                
+                if all_scaled:
+                    logger.info(f"All deployments for InferenceService {endpoint_name} scaled to 0")
+                    return True
+                else:
+                    logger.warning(f"Some deployments for InferenceService {endpoint_name} were not fully scaled to 0")
+                    return False
+            
+            return len(scaled_deployments) > 0
+        except ApiException as e:
+            logger.warning(f"Failed to list KServe deployments for {endpoint_name}: {e}")
+            return False
+        except Exception as e:
+            logger.warning(f"Error scaling down deployments for InferenceService {endpoint_name}: {e}", exc_info=True)
+            return False
+
     def rollback_endpoint(
         self, endpoint_name: str, namespace: str = "default"
     ) -> bool:
@@ -1827,85 +2034,24 @@ class ServingDeployer:
             return self._rollback_kserve(endpoint_name, namespace)
         
         # Legacy: Rollback Deployment
-        try:
-            # Get deployment rollout history
-            # In a real implementation, we'd track revisions and rollback to a specific one
-            # For now, we'll scale down and delete, then recreate from rollback plan
-            deployment = self.apps_api.read_namespaced_deployment(
-                name=endpoint_name, namespace=namespace
-            )
-            # Scale down to 0
-            deployment.spec.replicas = 0
-            self.apps_api.patch_namespaced_deployment(
-                name=endpoint_name, namespace=namespace, body=deployment
-            )
+        # Scale down to 0 replicas using helper method
+        if self._scale_deployment_to_zero(endpoint_name, namespace, verify=True):
             logger.info(f"Rolled back deployment {endpoint_name}")
             return True
-        except ApiException as e:
-            logger.error(f"Failed to rollback {endpoint_name}: {e}")
+        else:
+            logger.error(f"Failed to rollback {endpoint_name}: scaling to 0 failed")
             return False
 
     def _rollback_kserve(
         self, endpoint_name: str, namespace: str = "default"
     ) -> bool:
-        """Rollback KServe InferenceService by scaling down."""
-        try:
-            # Scale down backing deployments immediately (best-effort)
-            try:
-                deployments = self.apps_api.list_namespaced_deployment(
-                    namespace=namespace,
-                    label_selector=f"serving.kserve.io/inferenceservice={endpoint_name}",
-                )
-                for deploy in deployments.items:
-                    name = deploy.metadata.name
-                    self.apps_api.patch_namespaced_deployment_scale(
-                        name=name,
-                        namespace=namespace,
-                        body={"spec": {"replicas": 0}},
-                    )
-                    logger.info(f"Scaled down KServe deployment {name} to 0 replicas")
-            except ApiException as e:
-                # Non-blocking: still try to patch InferenceService
-                logger.warning(
-                    f"Failed to scale down predictor deployments for {endpoint_name}: {e}"
-                )
-
-            patch_body = {
-                "spec": {
-                    "predictor": {
-                        "scaling": {"minReplicas": 0},
-                        "minReplicas": 0,
-                        "replicas": 0,
-                    }
-                }
-            }
-
-            # Retry on resourceVersion conflict (409)
-            for attempt in range(3):
-                try:
-                    self.custom_api.patch_namespaced_custom_object(
-                        group="serving.kserve.io",
-                        version="v1beta1",
-                        namespace=namespace,
-                        plural="inferenceservices",
-                        name=endpoint_name,
-                        body=patch_body,
-                    )
-                    logger.info(f"Rolled back KServe InferenceService {endpoint_name}")
-                    return True
-                except ApiException as e:
-                    if e.status == 409 and attempt < 2:
-                        logger.warning(
-                            f"Conflict patching InferenceService {endpoint_name}, retrying (attempt {attempt+2}/3)"
-                        )
-                        time.sleep(1)
-                        continue
-                    logger.error(
-                        f"Failed to rollback KServe InferenceService {endpoint_name}: {e}"
-                    )
-                    return False
-        except ApiException as e:
-            logger.error(f"Failed to rollback KServe InferenceService {endpoint_name}: {e}")
+        """Rollback KServe InferenceService by scaling down backing deployments."""
+        # Scale down backing deployments using helper method
+        if self._scale_kserve_backing_deployments(endpoint_name, namespace, verify=True):
+            logger.info(f"Rolled back KServe InferenceService {endpoint_name}")
+            return True
+        else:
+            logger.error(f"Failed to rollback KServe InferenceService {endpoint_name}: scaling deployments failed")
             return False
 
     def delete_endpoint(
@@ -1967,9 +2113,12 @@ class ServingDeployer:
             logger.info(f"Checking if Deployment {endpoint_name} exists in namespace {namespace}")
             deployment_exists = False
             try:
-                deployment = self.apps_api.read_namespaced_deployment(
-                    name=endpoint_name,
-                    namespace=namespace
+                deployment = self.k8s_client.call_with_401_retry(
+                    lambda: self.apps_api.read_namespaced_deployment(
+                        name=endpoint_name,
+                        namespace=namespace
+                    ),
+                    f"read Deployment {endpoint_name}",
                 )
                 deployment_exists = True
                 logger.info(
@@ -1989,19 +2138,52 @@ class ServingDeployer:
                 logger.info(f"Deployment {endpoint_name} does not exist, nothing to delete")
                 return True
             
-            # First, scale down deployment to 0 replicas to stop pods immediately
+            # First, delete HPA if it exists (HPA can prevent replica=0 from taking effect)
+            hpa_name = f"{endpoint_name}-hpa"
             try:
-                self.apps_api.patch_namespaced_deployment_scale(
-                    name=endpoint_name,
-                    namespace=namespace,
-                    body={"spec": {"replicas": 0}},
+                self.k8s_client.call_with_401_retry(
+                    lambda: self.autoscaling_api.delete_namespaced_horizontal_pod_autoscaler(
+                        name=hpa_name,
+                        namespace=namespace,
+                    ),
+                    f"delete HPA {hpa_name}",
                 )
-                logger.info(f"Scaled down Deployment {endpoint_name} to 0 replicas")
-                # Wait a bit for pods to start terminating
-                time.sleep(2)
+                logger.info(f"Deleted HPA {hpa_name} before scaling down")
+                # Wait a bit for HPA deletion to propagate
+                time.sleep(1)
             except ApiException as e:
                 if e.status != 404:
-                    logger.warning(f"Failed to scale down Deployment {endpoint_name}: {e}")
+                    logger.warning(f"Failed to delete HPA {hpa_name}: {e}")
+                    # Try to find HPA dynamically
+                    try:
+                        hpas = self.k8s_client.call_with_401_retry(
+                            lambda: self.autoscaling_api.list_namespaced_horizontal_pod_autoscaler(namespace=namespace),
+                            f"list HPAs in namespace {namespace}",
+                        )
+                        for hpa in hpas.items:
+                            if endpoint_name in hpa.metadata.name:
+                                try:
+                                    self.k8s_client.call_with_401_retry(
+                                        lambda: self.autoscaling_api.delete_namespaced_horizontal_pod_autoscaler(
+                                            name=hpa.metadata.name,
+                                            namespace=namespace,
+                                        ),
+                                        f"delete HPA {hpa.metadata.name}",
+                                    )
+                                    logger.info(f"Deleted HPA {hpa.metadata.name} (found dynamically)")
+                                    time.sleep(1)
+                                    break
+                                except ApiException:
+                                    pass
+                    except Exception:
+                        pass
+            
+            # Scale down deployment to 0 replicas using helper method
+            replica_set_to_zero = self._scale_deployment_to_zero(endpoint_name, namespace, verify=True)
+            
+            # Wait a bit for pods to start terminating if replica was set to 0
+            if replica_set_to_zero:
+                time.sleep(2)
             
             # Delete related resources will be handled by _delete_related_resources
             
@@ -2019,10 +2201,13 @@ class ServingDeployer:
                     grace_period_seconds=0  # Force immediate deletion
                 )
                 logger.debug(f"Calling delete_namespaced_deployment with body: {body}")
-                delete_response = self.apps_api.delete_namespaced_deployment(
-                    name=endpoint_name,
-                    namespace=namespace,
-                    body=body,
+                delete_response = self.k8s_client.call_with_401_retry(
+                    lambda: self.apps_api.delete_namespaced_deployment(
+                        name=endpoint_name,
+                        namespace=namespace,
+                        body=body,
+                    ),
+                    f"delete Deployment {endpoint_name}",
                 )
                 logger.info(f"Delete API call successful for Deployment {endpoint_name}. Response: {delete_response}")
             except ApiException as e:
@@ -2089,20 +2274,26 @@ class ServingDeployer:
             try:
                 if resource_type == "InferenceService":
                     # Check if KServe InferenceService still exists
-                    self.custom_api.get_namespaced_custom_object(
-                        group="serving.kserve.io",
-                        version="v1beta1",
-                        namespace=namespace,
-                        plural="inferenceservices",
-                        name=endpoint_name
+                    self.k8s_client.call_with_401_retry(
+                        lambda: self.custom_api.get_namespaced_custom_object(
+                            group="serving.kserve.io",
+                            version="v1beta1",
+                            namespace=namespace,
+                            plural="inferenceservices",
+                            name=endpoint_name
+                        ),
+                        f"check InferenceService {endpoint_name} deletion status",
                     )
                     # If we get here, InferenceService still exists
                     logger.debug(f"Waiting for {resource_type} {endpoint_name} to be deleted... ({waited}s)")
                 else:
                     # Check if Deployment still exists
-                    self.apps_api.read_namespaced_deployment(
-                        name=endpoint_name,
-                        namespace=namespace
+                    self.k8s_client.call_with_401_retry(
+                        lambda: self.apps_api.read_namespaced_deployment(
+                            name=endpoint_name,
+                            namespace=namespace
+                        ),
+                        f"check Deployment {endpoint_name} deletion status",
                     )
                     # If we get here, deployment still exists
                     logger.debug(f"Waiting for {resource_type} {endpoint_name} to be deleted... ({waited}s)")
@@ -2147,43 +2338,55 @@ class ServingDeployer:
         try:
             if resource_type == "InferenceService":
                 # Get InferenceService
-                inference_service = self.custom_api.get_namespaced_custom_object(
-                    group="serving.kserve.io",
-                    version="v1beta1",
-                    namespace=namespace,
-                    plural="inferenceservices",
-                    name=endpoint_name
+                inference_service = self.k8s_client.call_with_401_retry(
+                    lambda: self.custom_api.get_namespaced_custom_object(
+                        group="serving.kserve.io",
+                        version="v1beta1",
+                        namespace=namespace,
+                        plural="inferenceservices",
+                        name=endpoint_name
+                    ),
+                    f"get InferenceService {endpoint_name}",
                 )
                 
                 # Check if it has finalizers
                 if inference_service.get("metadata", {}).get("finalizers"):
                     logger.info(f"Removing finalizers from InferenceService {endpoint_name}")
                     inference_service["metadata"]["finalizers"] = []
-                    self.custom_api.patch_namespaced_custom_object(
-                        group="serving.kserve.io",
-                        version="v1beta1",
-                        namespace=namespace,
-                        plural="inferenceservices",
-                        name=endpoint_name,
-                        body=inference_service
+                    self.k8s_client.call_with_401_retry(
+                        lambda: self.custom_api.patch_namespaced_custom_object(
+                            group="serving.kserve.io",
+                            version="v1beta1",
+                            namespace=namespace,
+                            plural="inferenceservices",
+                            name=endpoint_name,
+                            body=inference_service
+                        ),
+                        f"patch InferenceService {endpoint_name} to remove finalizers",
                     )
                     logger.info(f"Removed finalizers from InferenceService {endpoint_name}")
                     return True
             else:
                 # Get Deployment
-                deployment = self.apps_api.read_namespaced_deployment(
-                    name=endpoint_name,
-                    namespace=namespace
+                deployment = self.k8s_client.call_with_401_retry(
+                    lambda: self.apps_api.read_namespaced_deployment(
+                        name=endpoint_name,
+                        namespace=namespace
+                    ),
+                    f"read Deployment {endpoint_name}",
                 )
                 
                 # Check if it has finalizers
                 if deployment.metadata.finalizers:
                     logger.info(f"Removing finalizers from Deployment {endpoint_name}")
                     deployment.metadata.finalizers = []
-                    self.apps_api.patch_namespaced_deployment(
-                        name=endpoint_name,
-                        namespace=namespace,
-                        body=deployment
+                    self.k8s_client.call_with_401_retry(
+                        lambda: self.apps_api.patch_namespaced_deployment(
+                            name=endpoint_name,
+                            namespace=namespace,
+                            body=deployment
+                        ),
+                        f"patch Deployment {endpoint_name} to remove finalizers",
                     )
                     logger.info(f"Removed finalizers from Deployment {endpoint_name}")
                     return True
@@ -2373,19 +2576,25 @@ class ServingDeployer:
         """
         try:
             if resource_type == "InferenceService":
-                inference_service = self.custom_api.get_namespaced_custom_object(
-                    group="serving.kserve.io",
-                    version="v1beta1",
-                    namespace=namespace,
-                    plural="inferenceservices",
-                    name=endpoint_name
+                inference_service = self.k8s_client.call_with_401_retry(
+                    lambda: self.custom_api.get_namespaced_custom_object(
+                        group="serving.kserve.io",
+                        version="v1beta1",
+                        namespace=namespace,
+                        plural="inferenceservices",
+                        name=endpoint_name
+                    ),
+                    f"check InferenceService {endpoint_name} deletion status",
                 )
                 deletion_timestamp = inference_service.get("metadata", {}).get("deletionTimestamp")
                 return deletion_timestamp is not None
             else:
-                deployment = self.apps_api.read_namespaced_deployment(
-                    name=endpoint_name,
-                    namespace=namespace
+                deployment = self.k8s_client.call_with_401_retry(
+                    lambda: self.apps_api.read_namespaced_deployment(
+                        name=endpoint_name,
+                        namespace=namespace
+                    ),
+                    f"check Deployment {endpoint_name} deletion status",
                 )
                 return deployment.metadata.deletion_timestamp is not None
         except ApiException as e:
@@ -2418,12 +2627,15 @@ class ServingDeployer:
             logger.info(f"Checking if InferenceService {endpoint_name} exists in namespace {namespace}")
             inference_service_exists = False
             try:
-                inference_service = self.custom_api.get_namespaced_custom_object(
-                    group="serving.kserve.io",
-                    version="v1beta1",
-                    namespace=namespace,
-                    plural="inferenceservices",
-                    name=endpoint_name
+                inference_service = self.k8s_client.call_with_401_retry(
+                    lambda: self.custom_api.get_namespaced_custom_object(
+                        group="serving.kserve.io",
+                        version="v1beta1",
+                        namespace=namespace,
+                        plural="inferenceservices",
+                        name=endpoint_name
+                    ),
+                    f"get InferenceService {endpoint_name}",
                 )
                 inference_service_exists = True
                 metadata = inference_service.get("metadata", {})
@@ -2444,6 +2656,13 @@ class ServingDeployer:
                 logger.info(f"InferenceService {endpoint_name} does not exist, nothing to delete")
                 return True
             
+            # Scale down backing deployments to 0 replicas before deletion using helper method
+            replica_set_to_zero = self._scale_kserve_backing_deployments(endpoint_name, namespace, verify=True)
+            
+            # Wait a bit for pods to start terminating if replicas were set to 0
+            if replica_set_to_zero:
+                time.sleep(2)
+            
             # Remove finalizers before deletion to prevent blocking
             logger.info(f"Removing finalizers from InferenceService {endpoint_name} before deletion")
             finalizer_removed = self._remove_finalizers(endpoint_name, namespace, "InferenceService")
@@ -2455,13 +2674,16 @@ class ServingDeployer:
             # and then wait for deletion
             logger.info(f"Attempting to delete KServe InferenceService {endpoint_name} in namespace {namespace}")
             try:
-                delete_response = self.custom_api.delete_namespaced_custom_object(
-                    group="serving.kserve.io",
-                    version="v1beta1",
-                    namespace=namespace,
-                    plural="inferenceservices",
-                    name=endpoint_name,
-                    propagation_policy="Foreground",  # Try Foreground first
+                delete_response = self.k8s_client.call_with_401_retry(
+                    lambda: self.custom_api.delete_namespaced_custom_object(
+                        group="serving.kserve.io",
+                        version="v1beta1",
+                        namespace=namespace,
+                        plural="inferenceservices",
+                        name=endpoint_name,
+                        propagation_policy="Foreground",  # Try Foreground first
+                    ),
+                    f"delete InferenceService {endpoint_name} with Foreground",
                 )
                 logger.info(f"Delete API call successful for InferenceService {endpoint_name}. Response: {delete_response}")
             except ApiException as e:
@@ -2475,13 +2697,16 @@ class ServingDeployer:
                 # If Foreground fails, try Background
                 logger.warning(f"Foreground propagation failed for InferenceService {endpoint_name}, trying Background")
                 try:
-                    delete_response = self.custom_api.delete_namespaced_custom_object(
-                        group="serving.kserve.io",
-                        version="v1beta1",
-                        namespace=namespace,
-                        plural="inferenceservices",
-                        name=endpoint_name,
-                        propagation_policy="Background",
+                    delete_response = self.k8s_client.call_with_401_retry(
+                        lambda: self.custom_api.delete_namespaced_custom_object(
+                            group="serving.kserve.io",
+                            version="v1beta1",
+                            namespace=namespace,
+                            plural="inferenceservices",
+                            name=endpoint_name,
+                            propagation_policy="Background",
+                        ),
+                        f"delete InferenceService {endpoint_name} with Background",
                     )
                     logger.info(f"Delete API call successful for InferenceService {endpoint_name} with Background. Response: {delete_response}")
                 except ApiException as e2:

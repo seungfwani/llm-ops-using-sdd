@@ -14,63 +14,23 @@ from __future__ import annotations
 import logging
 from typing import Optional, Dict, Any, List
 from kubernetes import client
-from kubernetes import config as k8s_config
 from kubernetes.client.rest import ApiException
 
-from core.settings import get_settings
+from core.clients.kubernetes_client import KubernetesClient
 
 logger = logging.getLogger(__name__)
-settings = get_settings()
 
 
 class KubernetesOperations:
     """Service for Kubernetes operational tasks on serving endpoints."""
     
-    def _refresh_kubernetes_token(self) -> bool:
-        """
-        Refresh Kubernetes authentication token for in-cluster operations.
-        Returns True if refresh was successful, False otherwise.
-        """
-        try:
-            logger.info("KubernetesOperations: Attempting to refresh Kubernetes authentication token...")
-            # Reload in-cluster config to refresh the token
-            k8s_config.load_incluster_config()
-            logger.info("KubernetesOperations: Successfully refreshed Kubernetes authentication token")
-            return True
-        except Exception as e:
-            logger.error(f"KubernetesOperations: Failed to refresh Kubernetes token: {e}")
-            return False
-    
     def __init__(self):
         """Initialize Kubernetes client."""
-        try:
-            if settings.kubeconfig_path:
-                logger.info(f"KubernetesOperations: Loading Kubernetes config from: {settings.kubeconfig_path}")
-                k8s_config.load_kube_config(config_file=settings.kubeconfig_path)
-            else:
-                logger.info("KubernetesOperations: Loading in-cluster Kubernetes config")
-                k8s_config.load_incluster_config()
-        except Exception as e:
-            logger.warning(f"KubernetesOperations: Failed to load kubeconfig: {e}, using default")
-            try:
-                logger.info("KubernetesOperations: Trying default kubeconfig location")
-                k8s_config.load_kube_config()
-            except Exception:
-                logger.error("KubernetesOperations: Could not initialize Kubernetes client")
-                raise
-        
-        # Configure SSL verification based on settings
-        configuration = client.Configuration.get_default_copy()
-        if not settings.kubernetes_verify_ssl:
-            logger.warning("SSL verification is disabled for Kubernetes API client")
-            configuration.verify_ssl = False
-            import urllib3
-            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-            client.Configuration.set_default(configuration)
-        
-        self.core_api = client.CoreV1Api()
-        self.apps_api = client.AppsV1Api()
-        self.custom_api = client.CustomObjectsApi()
+        # Initialize Kubernetes client using shared utility
+        self.k8s_client = KubernetesClient(logger_prefix="KubernetesOperations")
+        self.core_api = self.k8s_client.core_api
+        self.apps_api = self.k8s_client.apps_api
+        self.custom_api = self.k8s_client.custom_api
     
     def get_pod_status(
         self,
@@ -414,30 +374,20 @@ class KubernetesOperations:
             )
         except ApiException as e:
             if e.status == 401:
-                logger.warning(
-                    f"KubernetesOperations: Kubernetes API authentication failed (401 Unauthorized) while getting "
-                    f"KServe InferenceService {endpoint_name} status in namespace {namespace}. Attempting token refresh..."
-                )
-                # Try to refresh the token and retry once
-                if self._refresh_kubernetes_token():
-                    logger.info("KubernetesOperations: Token refreshed, retrying status check...")
-                    try:
-                        inference_service = self.custom_api.get_namespaced_custom_object(
+                # Use KubernetesClient's retry mechanism
+                try:
+                    inference_service = self.k8s_client.call_with_401_retry(
+                        lambda: self.custom_api.get_namespaced_custom_object(
                             group="serving.kserve.io",
                             version="v1beta1",
                             namespace=namespace,
                             plural="inferenceservices",
                             name=endpoint_name,
-                        )
-                    except ApiException as retry_e:
-                        logger.error(f"KubernetesOperations: API call still failed after token refresh: {retry_e}")
-                        if retry_e.status == 404:
-                            logger.debug(f"KServe InferenceService {endpoint_name} not found in namespace {namespace}")
-                            return None
-                        raise
-                else:
-                    logger.error("KubernetesOperations: Token refresh failed, cannot retry")
-                    if e.status == 404:
+                        ),
+                        f"get KServe InferenceService {endpoint_name} status"
+                    )
+                except ApiException as retry_e:
+                    if retry_e.status == 404:
                         logger.debug(f"KServe InferenceService {endpoint_name} not found in namespace {namespace}")
                         return None
                     raise

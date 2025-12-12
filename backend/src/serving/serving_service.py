@@ -11,6 +11,7 @@ from kubernetes.client.rest import ApiException
 from sqlalchemy.orm import Session
 
 from catalog import models as catalog_models
+from core.clients.kubernetes_client import KubernetesClient
 from core.image_config import get_image_config
 from core.settings import get_settings
 from serving.converters.kserve_converter import KServeConverter
@@ -20,6 +21,7 @@ from serving.schemas import DeploymentSpec
 from serving.services.deployer import ServingDeployer
 from serving.validators.deployment_spec_validator import DeploymentSpecValidator
 from serving.prompt_router import PromptRouter
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,15 @@ class ServingService:
         self.deployer = ServingDeployer()
         self.prompt_router = PromptRouter(session)
         self.session = session
+        # Kubernetes client will be initialized lazily when needed
+        self._k8s_client: Optional[KubernetesClient] = None
+    
+    @property
+    def k8s_client(self) -> KubernetesClient:
+        """Lazy initialization of Kubernetes client."""
+        if self._k8s_client is None:
+            self._k8s_client = KubernetesClient(logger_prefix="ServingService")
+        return self._k8s_client
 
     def deploy_endpoint(
         self,
@@ -491,51 +502,74 @@ class ServingService:
                 resource_exists = False
                 if settings.use_kserve:
                     try:
-                        from kubernetes import client
-                        custom_api = client.CustomObjectsApi()
-                        custom_api.get_namespaced_custom_object(
-                            group="serving.kserve.io",
-                            version="v1beta1",
-                            namespace=namespace,
-                            plural="inferenceservices",
-                            name=endpoint_name,
+                        # Check KServe InferenceService using KubernetesClient
+                        self.k8s_client.call_with_401_retry(
+                            lambda: self.k8s_client.custom_api.get_namespaced_custom_object(
+                                group="serving.kserve.io",
+                                version="v1beta1",
+                                namespace=namespace,
+                                plural="inferenceservices",
+                                name=endpoint_name,
+                            ),
+                            f"check InferenceService {endpoint_name}",
                         )
                         resource_exists = True
                         logger.info(f"InferenceService {endpoint_name} exists, deployment is in progress")
-                    except Exception:
-                        # InferenceService doesn't exist, check Deployment
-                        try:
-                            apps_api = client.AppsV1Api()
-                            apps_api.read_namespaced_deployment(
+                    except ApiException as e:
+                        if e.status == 404:
+                            # InferenceService doesn't exist, check Deployment
+                            try:
+                                self.k8s_client.call_with_401_retry(
+                                    lambda: self.k8s_client.apps_api.read_namespaced_deployment(
+                                        name=endpoint_name,
+                                        namespace=namespace,
+                                    ),
+                                    f"check Deployment {endpoint_name}",
+                                )
+                                resource_exists = True
+                                logger.info(f"Deployment {endpoint_name} exists, deployment is in progress")
+                            except ApiException as deploy_e:
+                                if deploy_e.status == 404:
+                                    # Neither exists, deployment likely failed
+                                    logger.warning(
+                                        f"Endpoint {endpoint_id} is in 'deploying' state but no Kubernetes resources found. "
+                                        "This indicates a failed deployment. Allowing redeployment."
+                                    )
+                                    resource_exists = False
+                                else:
+                                    logger.warning(f"Error checking Deployment {endpoint_name}: {deploy_e}")
+                                    resource_exists = False
+                        else:
+                            logger.warning(f"Error checking InferenceService {endpoint_name}: {e}")
+                            resource_exists = False
+                    except Exception as e:
+                        logger.warning(f"Unexpected error checking InferenceService {endpoint_name}: {e}")
+                        resource_exists = False
+                else:
+                    # Check Deployment for raw deployment mode
+                    try:
+                        self.k8s_client.call_with_401_retry(
+                            lambda: self.k8s_client.apps_api.read_namespaced_deployment(
                                 name=endpoint_name,
                                 namespace=namespace,
-                            )
-                            resource_exists = True
-                            logger.info(f"Deployment {endpoint_name} exists, deployment is in progress")
-                        except Exception:
-                            # Neither exists, deployment likely failed
+                            ),
+                            f"check Deployment {endpoint_name}",
+                        )
+                        resource_exists = True
+                        logger.info(f"Deployment {endpoint_name} exists, deployment is in progress")
+                    except ApiException as e:
+                        if e.status == 404:
+                            # Deployment doesn't exist, deployment likely failed
                             logger.warning(
                                 f"Endpoint {endpoint_id} is in 'deploying' state but no Kubernetes resources found. "
                                 "This indicates a failed deployment. Allowing redeployment."
                             )
                             resource_exists = False
-                else:
-                    # Check Deployment for raw deployment mode
-                    try:
-                        from kubernetes import client
-                        apps_api = client.AppsV1Api()
-                        apps_api.read_namespaced_deployment(
-                            name=endpoint_name,
-                            namespace=namespace,
-                        )
-                        resource_exists = True
-                        logger.info(f"Deployment {endpoint_name} exists, deployment is in progress")
-                    except Exception:
-                        # Deployment doesn't exist, deployment likely failed
-                        logger.warning(
-                            f"Endpoint {endpoint_id} is in 'deploying' state but no Kubernetes resources found. "
-                            "This indicates a failed deployment. Allowing redeployment."
-                        )
+                        else:
+                            logger.warning(f"Error checking Deployment {endpoint_name}: {e}")
+                            resource_exists = False
+                    except Exception as e:
+                        logger.warning(f"Unexpected error checking Deployment {endpoint_name}: {e}")
                         resource_exists = False
                 
                 # If resources exist, deployment is actually in progress
@@ -906,6 +940,17 @@ class ServingService:
 
         # Delete from database only after Kubernetes resources are confirmed deleted
         try:
+            # Delete ServingDeployment record if it exists
+            from services.serving_deployment_service import ServingDeploymentService
+            deployment_service = ServingDeploymentService(self.session)
+            try:
+                deployment_service.delete_deployment(endpoint.id)
+                logger.info(f"Deleted ServingDeployment record for endpoint {endpoint_id}")
+            except Exception as deployment_error:
+                # Log but don't fail if deployment record doesn't exist or deletion fails
+                logger.warning(f"Failed to delete ServingDeployment record for endpoint {endpoint_id}: {deployment_error}")
+            
+            # Delete ServingEndpoint record
             self.endpoint_repo.delete(endpoint)
             logger.info(f"Deleted serving endpoint {endpoint_id} from database")
             return True
