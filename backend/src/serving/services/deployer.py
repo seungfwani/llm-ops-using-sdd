@@ -144,6 +144,21 @@ class ServingDeployer:
         # Connection will be verified when actually needed for deployment operations
         try:
             logger.info("Testing Kubernetes API connection...")
+            # Check if we're running in-cluster by checking service account token
+            import os
+            token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+            if os.path.exists(token_path):
+                logger.info(f"Running in-cluster, service account token found at {token_path}")
+                try:
+                    with open(token_path, 'r') as f:
+                        token_content = f.read().strip()
+                        token_preview = token_content[:50] + "..." if len(token_content) > 50 else token_content
+                    logger.debug(f"Service account token length: {len(token_content)}, preview: {token_preview}")
+                except Exception as token_e:
+                    logger.warning(f"Could not read service account token: {token_e}")
+            else:
+                logger.warning(f"Service account token not found at {token_path}, not running in-cluster")
+
             # Test connection by listing namespaces (simple API call)
             # Set timeout to prevent hanging (10 seconds)
             # Use _request_timeout parameter to set timeout for this specific API call
@@ -157,6 +172,19 @@ class ServingDeployer:
                     f"Serving operations may fail until authentication is resolved. "
                     f"Error: {e.reason}"
                 )
+                # Additional debugging for 401 errors
+                import os
+                if os.path.exists("/var/run/secrets/kubernetes.io/serviceaccount/token"):
+                    logger.warning("Service account token exists, but authentication failed. Check RBAC permissions.")
+                    # Try to read token info
+                    try:
+                        with open("/var/run/secrets/kubernetes.io/serviceaccount/token", 'r') as f:
+                            token = f.read().strip()
+                        logger.info(f"Service account token exists (length: {len(token)})")
+                    except Exception as token_e:
+                        logger.warning(f"Could not read service account token: {token_e}")
+                else:
+                    logger.warning("No service account token found. Ensure pod is running with proper service account.")
             else:
                 logger.warning(
                     f"Failed to connect to Kubernetes API (status {e.status}): {e.reason}. "
@@ -234,6 +262,24 @@ class ServingDeployer:
                     f"{'KServe InferenceService' if is_kserve else 'Deployment'} {endpoint_name} "
                     f"in namespace {namespace}. Please verify Kubernetes credentials."
                 )
+                # Additional debugging for KServe API calls
+                import os
+                if is_kserve:
+                    logger.error("KServe API call failed with 401. Possible issues:")
+                    logger.error("1. Service Account may not have KServe permissions")
+                    logger.error("2. KServe CRDs may not be installed")
+                    logger.error("3. Service Account token may be expired")
+                    if os.path.exists("/var/run/secrets/kubernetes.io/serviceaccount/namespace"):
+                        try:
+                            with open("/var/run/secrets/kubernetes.io/serviceaccount/namespace", 'r') as f:
+                                current_ns = f.read().strip()
+                            logger.error(f"4. Current namespace: {current_ns}, target namespace: {namespace}")
+                            if current_ns != namespace:
+                                logger.error("   Cross-namespace access may be restricted")
+                        except Exception as ns_e:
+                            logger.error(f"Could not read namespace: {ns_e}")
+                    else:
+                        logger.error("4. Could not determine current namespace")
             raise
 
     def _ensure_resource_deleted(
