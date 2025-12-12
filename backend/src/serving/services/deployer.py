@@ -98,6 +98,89 @@ def _build_s3_sync_resources(
 class ServingDeployer:
     """Controller for deploying model serving endpoints to Kubernetes with HPA."""
 
+    def _refresh_kubernetes_token(self) -> bool:
+        """
+        Refresh Kubernetes authentication token for in-cluster operations.
+        Returns True if refresh was successful, False otherwise.
+        """
+        try:
+            logger.info("Attempting to refresh Kubernetes authentication token...")
+            # Reload in-cluster config to refresh the token
+            config.load_incluster_config()
+            logger.info("Successfully refreshed Kubernetes authentication token")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to refresh Kubernetes token: {e}")
+            return False
+
+    def _validate_service_account_permissions(self) -> dict:
+        """
+        Validate service account permissions for required operations.
+        Returns a dict with validation results.
+        """
+        results = {
+            "token_exists": False,
+            "can_list_namespaces": False,
+            "can_access_kserve": False,
+            "can_create_deployments": False,
+            "current_namespace": None
+        }
+
+        import os
+
+        # Check if running in-cluster
+        token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        namespace_path = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+
+        if not os.path.exists(token_path):
+            logger.warning("Not running in-cluster - no service account token found")
+            return results
+
+        results["token_exists"] = True
+
+        # Read current namespace
+        try:
+            with open(namespace_path, 'r') as f:
+                results["current_namespace"] = f.read().strip()
+        except Exception as e:
+            logger.warning(f"Could not read current namespace: {e}")
+
+        # Test basic API access
+        try:
+            self.core_api.list_namespace(limit=1, _request_timeout=5)
+            results["can_list_namespaces"] = True
+        except Exception as e:
+            logger.warning(f"Cannot list namespaces: {e}")
+
+        # Test KServe access if using KServe
+        if settings.use_kserve:
+            try:
+                self.custom_api.list_cluster_custom_object(
+                    group="serving.kserve.io",
+                    version="v1beta1",
+                    plural="inferenceservices",
+                    limit=1,
+                    _request_timeout=5
+                )
+                results["can_access_kserve"] = True
+            except Exception as e:
+                logger.warning(f"Cannot access KServe InferenceServices: {e}")
+
+        # Test deployment creation permissions
+        try:
+            # Try to list deployments in current namespace as a permission test
+            if results["current_namespace"]:
+                self.apps_api.list_namespaced_deployment(
+                    namespace=results["current_namespace"],
+                    limit=1,
+                    _request_timeout=5
+                )
+                results["can_create_deployments"] = True
+        except Exception as e:
+            logger.warning(f"Cannot access deployments: {e}")
+
+        return results
+
     def __init__(self):
         """Initialize Kubernetes client."""
         try:
@@ -164,8 +247,39 @@ class ServingDeployer:
             # Use _request_timeout parameter to set timeout for this specific API call
             namespaces = self.core_api.list_namespace(limit=1, _request_timeout=10)
             logger.info(f"Kubernetes API connection successful. Cluster accessible (tested via namespace list)")
+
+            # Validate service account permissions
+            perm_results = self._validate_service_account_permissions()
+            if perm_results["token_exists"]:
+                logger.info(f"Service account validation - Current namespace: {perm_results['current_namespace']}")
+                logger.info(f"Permissions - Namespaces: {perm_results['can_list_namespaces']}, "
+                           f"Deployments: {perm_results['can_create_deployments']}, "
+                           f"KServe: {perm_results['can_access_kserve']}")
+                if not perm_results["can_create_deployments"]:
+                    logger.warning("Service account may not have sufficient permissions for deployment operations")
+                if settings.use_kserve and not perm_results["can_access_kserve"]:
+                    logger.warning("Service account may not have sufficient permissions for KServe operations")
         except ApiException as e:
             if e.status == 401:
+                logger.warning(
+                    f"Kubernetes API authentication failed (401 Unauthorized). "
+                    f"This may be due to expired credentials or insufficient permissions. "
+                    f"Attempting token refresh..."
+                )
+
+                # Try to refresh the token during initialization
+                if self._refresh_kubernetes_token():
+                    logger.info("Token refreshed during initialization, retrying connection test...")
+                    try:
+                        namespaces = self.core_api.list_namespace(limit=1, _request_timeout=10)
+                        logger.info(f"Kubernetes API connection successful after token refresh. Cluster accessible (tested via namespace list)")
+                    except ApiException as retry_e:
+                        logger.warning(f"Connection test still failed after token refresh: {retry_e}")
+                        # Fall through to original warning
+                else:
+                    logger.warning("Token refresh failed during initialization")
+
+                # Original warning messages
                 logger.warning(
                     f"Kubernetes API authentication failed (401 Unauthorized). "
                     f"This may be due to expired credentials or insufficient permissions. "
@@ -255,13 +369,60 @@ class ServingDeployer:
                 return True, resource.metadata.deletion_timestamp is not None
         except ApiException as e:
             if e.status == 404:
+                # For KServe, check if CRD exists to provide better error messages
+                if is_kserve:
+                    try:
+                        # Check if KServe CRD exists
+                        self.custom_api.get_cluster_custom_object(
+                            group="apiextensions.k8s.io",
+                            version="v1",
+                            plural="customresourcedefinitions",
+                            name="inferenceservices.serving.kserve.io"
+                        )
+                        # CRD exists, so resource just doesn't exist - this is normal
+                        return False, False
+                    except ApiException as crd_e:
+                        if crd_e.status == 404:
+                            logger.error(
+                                f"KServe CRD 'inferenceservices.serving.kserve.io' not found. "
+                                f"Please install KServe: kubectl apply -f https://github.com/kserve/kserve/releases/download/v0.11.0/kserve.yaml"
+                            )
+                            raise ValueError("KServe CRDs not installed") from crd_e
+                        else:
+                            logger.warning(f"Could not verify KServe CRD existence: {crd_e}")
+                            # Continue with normal 404 handling
                 return False, False
             if e.status == 401:
-                logger.error(
+                logger.warning(
                     f"Kubernetes API authentication failed (401 Unauthorized) while checking "
                     f"{'KServe InferenceService' if is_kserve else 'Deployment'} {endpoint_name} "
-                    f"in namespace {namespace}. Please verify Kubernetes credentials."
+                    f"in namespace {namespace}. Attempting token refresh..."
                 )
+
+                # Try to refresh the token and retry once
+                if self._refresh_kubernetes_token():
+                    logger.info("Token refreshed, retrying API call...")
+                    try:
+                        if is_kserve:
+                            resource = self.custom_api.get_namespaced_custom_object(
+                                group="serving.kserve.io",
+                                version="v1beta1",
+                                namespace=namespace,
+                                plural="inferenceservices",
+                                name=endpoint_name
+                            )
+                            deletion_timestamp = resource.get("metadata", {}).get("deletionTimestamp")
+                            return True, deletion_timestamp is not None
+                        else:
+                            resource = self.apps_api.read_namespaced_deployment(
+                                name=endpoint_name,
+                                namespace=namespace
+                            )
+                            return True, resource.metadata.deletion_timestamp is not None
+                    except ApiException as retry_e:
+                        logger.error(f"API call still failed after token refresh: {retry_e}")
+                        # Fall through to original error handling
+
                 # Additional debugging for KServe API calls
                 import os
                 if is_kserve:
@@ -280,7 +441,7 @@ class ServingDeployer:
                             logger.error(f"Could not read namespace: {ns_e}")
                     else:
                         logger.error("4. Could not determine current namespace")
-            raise
+                raise
 
     def _ensure_resource_deleted(
         self,
@@ -490,6 +651,39 @@ class ServingDeployer:
                     self._ensure_resource_deleted(endpoint_name, namespace, resource_type, max_wait=180)
         except ApiException as e:
             if e.status == 401:
+                logger.warning(
+                    f"Kubernetes API authentication failed (401 Unauthorized) while checking/deleting "
+                    f"{resource_type} {endpoint_name} in namespace {namespace}. Attempting token refresh..."
+                )
+
+                # Try to refresh the token and retry the operation
+                if self._refresh_kubernetes_token():
+                    logger.info("Token refreshed, retrying operation...")
+                    try:
+                        # Retry the check and prepare operation
+                        exists, is_terminating = self._check_resource_exists(endpoint_name, namespace, resource_type == "KServe InferenceService")
+                        if exists:
+                            if is_terminating:
+                                logger.warning(
+                                    f"{resource_type} {endpoint_name} is already being deleted. "
+                                    f"Waiting for deletion to complete before deploying..."
+                                )
+                                self._ensure_resource_deleted(endpoint_name, namespace, resource_type, max_wait=180)
+                            else:
+                                logger.warning(
+                                    f"{resource_type} {endpoint_name} already exists in namespace {namespace}. "
+                                    f"Deleting it before deploying..."
+                                )
+                                try:
+                                    self.delete_endpoint(endpoint_name, namespace=namespace)
+                                except Exception as e:
+                                    logger.warning(f"delete_endpoint() raised exception: {e}, will continue anyway")
+                                self._ensure_resource_deleted(endpoint_name, namespace, resource_type, max_wait=180)
+                        return  # Success, continue with deployment
+                    except ApiException as retry_e:
+                        logger.error(f"Operation still failed after token refresh: {retry_e}")
+                        # Fall through to original error handling
+
                 error_msg = (
                     f"Kubernetes API authentication failed (401 Unauthorized) while checking/deleting "
                     f"{resource_type} {endpoint_name} in namespace {namespace}. "
