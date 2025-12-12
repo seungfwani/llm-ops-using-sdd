@@ -33,12 +33,49 @@ spec:
           containerPort: 8000
           protocol: TCP
         env:
+        # Database Configuration
         - name: DATABASE_URL
+          {{- if .Values.app.databaseUrl }}
           value: {{ .Values.app.databaseUrl | quote }}
+          {{- else if .Values.dependencies.postgresql.enabled }}
+          value: {{ printf "postgresql+psycopg://%s:%s@%s:%d/%s" 
+            (.Values.app.database.user | default .Values.dependencies.postgresql.secret.user)
+            (.Values.app.database.password | default .Values.dependencies.postgresql.secret.password)
+            (.Values.app.database.serviceName | default "postgresql")
+            (.Values.app.database.port | default 5432)
+            (.Values.app.database.database | default .Values.dependencies.postgresql.secret.db) | quote }}
+          {{- else }}
+          value: {{ printf "postgresql+psycopg://%s:%s@%s:%d/%s" 
+            (.Values.app.database.user | default "llmops")
+            (.Values.app.database.password | default "password")
+            (.Values.app.database.serviceName | default "postgresql")
+            (.Values.app.database.port | default 5432)
+            (.Values.app.database.database | default "llmops") | quote }}
+          {{- end }}
+        - name: SQLALCHEMY_ECHO
+          value: {{ .Values.app.sqlalchemyEcho | default false | quote }}
+        
+        # Redis Configuration
         - name: REDIS_URL
+          {{- if .Values.app.redisUrl }}
           value: {{ .Values.app.redisUrl | quote }}
+          {{- else }}
+          value: {{ printf "redis://%s:%d/%d" 
+            (.Values.app.redis.serviceName | default "redis")
+            (.Values.app.redis.port | default 6379)
+            (.Values.app.redis.database | default 0) | quote }}
+          {{- end }}
+        
+        # Object Storage Configuration
         - name: OBJECT_STORE_ENDPOINT
+          {{- if .Values.app.objectStoreEndpoint }}
           value: {{ .Values.app.objectStoreEndpoint | quote }}
+          {{- else }}
+          value: {{ printf "%s://%s:%d" 
+            (cond (eq (.Values.app.objectStoreService.secure | default false) true) "https" "http")
+            (.Values.app.objectStoreService.serviceName | default "minio")
+            (.Values.app.objectStoreService.port | default 9000) | quote }}
+          {{- end }}
         - name: OBJECT_STORE_ACCESS_KEY
           valueFrom:
             secretKeyRef:
@@ -50,19 +87,219 @@ spec:
               name: {{ .Values.objectStore.credentials.secretName | default (printf "%s-object-store" (include "llmops.fullname" .)) }}
               key: secretKey
         - name: OBJECT_STORE_BUCKET
-          value: {{ .Values.objectStore.bucket | default .Release.Namespace | quote }}
+          value: {{ if .Values.app.objectStoreBucket }}{{ .Values.app.objectStoreBucket | quote }}{{ else }}{{ .Values.objectStore.bucket | default .Release.Namespace | quote }}{{ end }}
+        - name: OBJECT_STORE_SECURE
+          value: {{ .Values.app.objectStoreSecure | default .Values.app.objectStoreService.secure | default false | quote }}
+        
+        # Application Configuration
+        - name: PROMETHEUS_NAMESPACE
+          value: {{ .Values.app.prometheusNamespace | default "llm_ops" | quote }}
+        - name: DEFAULT_REQUIRED_ROLE
+          value: {{ .Values.app.defaultRequiredRole | default "llm-ops-user" | quote }}
+        - name: LOG_LEVEL
+          value: {{ .Values.app.logLevel | default "INFO" | quote }}
+        
+        # Kubernetes Configuration
+        - name: KUBECONFIG_PATH
+          value: {{ .Values.app.kubeconfigPath | default "" | quote }}
+        - name: KUBERNETES_VERIFY_SSL
+          value: {{ .Values.app.kubernetesVerifySsl | default true | quote }}
+        
+        # Training Image Configuration
+        - name: TRAIN_IMAGE_PRETRAIN_GPU
+          value: {{ .Values.app.trainingImages.pretrain.gpu | quote }}
+        - name: TRAIN_IMAGE_PRETRAIN_CPU
+          value: {{ .Values.app.trainingImages.pretrain.cpu | quote }}
+        - name: TRAIN_IMAGE_SFT_GPU
+          value: {{ .Values.app.trainingImages.sft.gpu | quote }}
+        - name: TRAIN_IMAGE_SFT_CPU
+          value: {{ .Values.app.trainingImages.sft.cpu | quote }}
+        - name: TRAIN_IMAGE_RAG_TUNING_GPU
+          value: {{ .Values.app.trainingImages.ragTuning.gpu | quote }}
+        - name: TRAIN_IMAGE_RAG_TUNING_CPU
+          value: {{ .Values.app.trainingImages.ragTuning.cpu | quote }}
+        - name: TRAIN_IMAGE_RLHF_GPU
+          value: {{ .Values.app.trainingImages.rlhf.gpu | quote }}
+        - name: TRAIN_IMAGE_RLHF_CPU
+          value: {{ .Values.app.trainingImages.rlhf.cpu | quote }}
+        - name: TRAIN_IMAGE_EMBEDDING_GPU
+          value: {{ .Values.app.trainingImages.embedding.gpu | quote }}
+        - name: TRAIN_IMAGE_EMBEDDING_CPU
+          value: {{ .Values.app.trainingImages.embedding.cpu | quote }}
+        
+        # Training GPU Type Configuration
+        - name: TRAINING_GPU_TYPES_DEV
+          value: {{ .Values.app.trainingGpuTypes.dev | default "" | quote }}
+        - name: TRAINING_GPU_TYPES_STG
+          value: {{ .Values.app.trainingGpuTypes.stg | default "" | quote }}
+        - name: TRAINING_GPU_TYPES_PROD
+          value: {{ .Values.app.trainingGpuTypes.prod | default "" | quote }}
+        
+        # Training Resource Limits (CPU-only)
+        - name: TRAINING_CPU_ONLY_CPU_REQUEST
+          value: {{ .Values.app.trainingCpuOnly.cpuRequest | default "2" | quote }}
+        - name: TRAINING_CPU_ONLY_CPU_LIMIT
+          value: {{ .Values.app.trainingCpuOnly.cpuLimit | default "4" | quote }}
+        - name: TRAINING_CPU_ONLY_MEMORY_REQUEST
+          value: {{ .Values.app.trainingCpuOnly.memoryRequest | default "2Gi" | quote }}
+        - name: TRAINING_CPU_ONLY_MEMORY_LIMIT
+          value: {{ .Values.app.trainingCpuOnly.memoryLimit | default "4Gi" | quote }}
+        
+        # Training Resource Limits (GPU-enabled)
+        - name: TRAINING_GPU_CPU_REQUEST
+          value: {{ .Values.app.trainingGpu.cpuRequest | default "4" | quote }}
+        - name: TRAINING_GPU_CPU_LIMIT
+          value: {{ .Values.app.trainingGpu.cpuLimit | default "8" | quote }}
+        - name: TRAINING_GPU_MEMORY_REQUEST
+          value: {{ .Values.app.trainingGpu.memoryRequest | default "4Gi" | quote }}
+        - name: TRAINING_GPU_MEMORY_LIMIT
+          value: {{ .Values.app.trainingGpu.memoryLimit | default "8Gi" | quote }}
+        - name: TRAINING_GPU_DISTRIBUTED_MEMORY_REQUEST
+          value: {{ .Values.app.trainingGpu.distributedMemoryRequest | default "16Gi" | quote }}
+        - name: TRAINING_GPU_DISTRIBUTED_MEMORY_LIMIT
+          value: {{ .Values.app.trainingGpu.distributedMemoryLimit | default "32Gi" | quote }}
+        
+        # Training Configuration
         - name: TRAINING_NAMESPACE
           value: {{ .Release.Namespace | quote }}
-        - name: KUBECONFIG_PATH
-          value: ""
+        {{- if .Values.app.trainingGpuNodeSelector }}
+        - name: TRAINING_GPU_NODE_SELECTOR
+          value: {{ .Values.app.trainingGpuNodeSelector | toJson | quote }}
+        {{- end }}
+        {{- if .Values.app.trainingGpuTolerations }}
+        - name: TRAINING_GPU_TOLERATIONS
+          value: {{ .Values.app.trainingGpuTolerations | toJson | quote }}
+        {{- end }}
+        - name: TRAINING_API_BASE_URL
+          value: {{ .Values.app.trainingApiBaseUrl | default "" | quote }}
+        - name: TRAINING_JOB_STATUS_SYNC_INTERVAL
+          value: {{ .Values.app.trainingJobStatusSyncInterval | default 30 | quote }}
+        
+        # Serving Image Configuration
+        - name: SERVE_IMAGE_GENERATION_GPU
+          value: {{ .Values.app.servingImages.generation.gpu | quote }}
+        - name: SERVE_IMAGE_GENERATION_CPU
+          value: {{ .Values.app.servingImages.generation.cpu | quote }}
+        - name: SERVE_IMAGE_RAG_GPU
+          value: {{ .Values.app.servingImages.rag.gpu | quote }}
+        - name: SERVE_IMAGE_RAG_CPU
+          value: {{ .Values.app.servingImages.rag.cpu | quote }}
+        
+        # Legacy Serving Configuration
+        - name: SERVING_RUNTIME_IMAGE
+          value: {{ .Values.app.servingRuntimeImage | default "ghcr.io/huggingface/text-generation-inference:latest" | quote }}
+        {{- if .Values.app.servingLocalBaseUrl }}
+        - name: SERVING_LOCAL_BASE_URL
+          value: {{ .Values.app.servingLocalBaseUrl | quote }}
+        {{- end }}
+        {{- if .Values.app.servingInferenceHostOverride }}
+        - name: SERVING_INFERENCE_HOST_OVERRIDE
+          value: {{ .Values.app.servingInferenceHostOverride | quote }}
+        {{- end }}
+        
+        # Serving Framework Configuration
         - name: USE_KSERVE
           value: {{ .Values.app.useKserve | default "true" | quote }}
         - name: KSERVE_NAMESPACE
           value: {{ .Values.kserve.namespaceOverride | default "kserve" | quote }}
         - name: USE_GPU
           value: {{ .Values.app.useGpu | default "false" | quote }}
-        - name: LOG_LEVEL
-          value: {{ .Values.app.logLevel | default "INFO" | quote }}
+        
+        # Serving Resource Limits (GPU-enabled)
+        - name: SERVING_CPU_REQUEST
+          value: {{ .Values.app.servingGpu.cpuRequest | default "1" | quote }}
+        - name: SERVING_CPU_LIMIT
+          value: {{ .Values.app.servingGpu.cpuLimit | default "2" | quote }}
+        - name: SERVING_MEMORY_REQUEST
+          value: {{ .Values.app.servingGpu.memoryRequest | default "2Gi" | quote }}
+        - name: SERVING_MEMORY_LIMIT
+          value: {{ .Values.app.servingGpu.memoryLimit | default "16Gi" | quote }}
+        
+        # Serving Resource Limits (CPU-only)
+        - name: SERVING_CPU_ONLY_CPU_REQUEST
+          value: {{ .Values.app.servingCpuOnly.cpuRequest | default "500m" | quote }}
+        - name: SERVING_CPU_ONLY_CPU_LIMIT
+          value: {{ .Values.app.servingCpuOnly.cpuLimit | default "1" | quote }}
+        - name: SERVING_CPU_ONLY_MEMORY_REQUEST
+          value: {{ .Values.app.servingCpuOnly.memoryRequest | default "512Mi" | quote }}
+        - name: SERVING_CPU_ONLY_MEMORY_LIMIT
+          value: {{ .Values.app.servingCpuOnly.memoryLimit | default "1Gi" | quote }}
+        
+        # Feature Flags & Integrations
+        - name: EXPERIMENT_TRACKING_ENABLED
+          value: {{ .Values.app.experimentTracking.enabled | default false | quote }}
+        - name: EXPERIMENT_TRACKING_SYSTEM
+          value: {{ .Values.app.experimentTracking.system | default "mlflow" | quote }}
+        - name: SERVING_FRAMEWORK_ENABLED
+          value: {{ .Values.app.servingFramework.enabled | default false | quote }}
+        - name: SERVING_FRAMEWORK_DEFAULT
+          value: {{ .Values.app.servingFramework.default | default "kserve" | quote }}
+        - name: WORKFLOW_ORCHESTRATION_ENABLED
+          value: {{ .Values.app.workflowOrchestration.enabled | default false | quote }}
+        - name: WORKFLOW_ORCHESTRATION_SYSTEM
+          value: {{ .Values.app.workflowOrchestration.system | default "argo_workflows" | quote }}
+        - name: MODEL_REGISTRY_ENABLED
+          value: {{ .Values.app.modelRegistry.enabled | default true | quote }}
+        - name: MODEL_REGISTRY_DEFAULT
+          value: {{ .Values.app.modelRegistry.default | default "huggingface" | quote }}
+        - name: DATA_VERSIONING_ENABLED
+          value: {{ .Values.app.dataVersioning.enabled | default false | quote }}
+        - name: DATA_VERSIONING_SYSTEM
+          value: {{ .Values.app.dataVersioning.system | default "dvc" | quote }}
+        - name: ENVIRONMENT
+          value: {{ .Values.app.environment | default "dev" | quote }}
+        
+        # MLflow Configuration
+        - name: MLFLOW_ENABLED
+          value: {{ .Values.app.mlflow.enabled | default false | quote }}
+        {{- if .Values.app.mlflow.trackingUri }}
+        - name: MLFLOW_TRACKING_URI
+          value: {{ .Values.app.mlflow.trackingUri | quote }}
+        {{- end }}
+        {{- if .Values.app.mlflow.backendStoreUri }}
+        - name: MLFLOW_BACKEND_STORE_URI
+          value: {{ .Values.app.mlflow.backendStoreUri | quote }}
+        {{- end }}
+        {{- if .Values.app.mlflow.defaultArtifactRoot }}
+        - name: MLFLOW_DEFAULT_ARTIFACT_ROOT
+          value: {{ .Values.app.mlflow.defaultArtifactRoot | quote }}
+        {{- end }}
+        
+        # Argo Workflows Configuration
+        - name: ARGO_WORKFLOWS_ENABLED
+          value: {{ .Values.app.argoWorkflows.enabled | default false | quote }}
+        - name: ARGO_WORKFLOWS_NAMESPACE
+          value: {{ .Values.app.argoWorkflows.namespace | default "argo" | quote }}
+        - name: ARGO_WORKFLOWS_CONTROLLER_SERVICE
+          value: {{ .Values.app.argoWorkflows.controllerService | default "argo-workflows-server.argo.svc.cluster.local:2746" | quote }}
+        
+        # Hugging Face Hub Configuration
+        - name: HUGGINGFACE_HUB_ENABLED
+          value: {{ .Values.app.huggingfaceHub.enabled | default false | quote }}
+        {{- if .Values.app.huggingfaceHub.token }}
+        - name: HUGGINGFACE_HUB_TOKEN
+          value: {{ .Values.app.huggingfaceHub.token | quote }}
+        {{- end }}
+        - name: HUGGINGFACE_HUB_CACHE_DIR
+          value: {{ .Values.app.huggingfaceHub.cacheDir | default "/tmp/hf_cache" | quote }}
+        - name: HUGGINGFACE_MAX_DOWNLOAD_SIZE_GB
+          value: {{ .Values.app.huggingfaceHub.maxDownloadSizeGb | default 5.0 | quote }}
+        - name: HUGGINGFACE_CONCURRENT_UPLOADS
+          value: {{ .Values.app.huggingfaceHub.concurrentUploads | default 5 | quote }}
+        
+        # DVC Configuration
+        - name: DVC_ENABLED
+          value: {{ .Values.app.dvc.enabled | default false | quote }}
+        - name: DVC_REMOTE_NAME
+          value: {{ .Values.app.dvc.remoteName | default "minio" | quote }}
+        {{- if .Values.app.dvc.remoteUrl }}
+        - name: DVC_REMOTE_URL
+          value: {{ .Values.app.dvc.remoteUrl | quote }}
+        {{- end }}
+        - name: DVC_CACHE_DIR
+          value: {{ .Values.app.dvc.cacheDir | default "/tmp/dvc-cache" | quote }}
+        
+        # Additional environment variables
         {{- if .Values.app.extraEnv }}
         {{- toYaml .Values.app.extraEnv | nindent 8 }}
         {{- end }}

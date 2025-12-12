@@ -133,19 +133,184 @@ app:
   
   # Database connection URL
   # Format: postgresql+psycopg://user:password@host:port/dbname
-  databaseUrl: "postgresql+psycopg://llmops:password@postgresql:5432/llmops"
+  # If not set, will be auto-generated from dependencies.postgresql template
+  # databaseUrl: ""  # Leave empty to auto-generate from dependencies
+  
+  # Database service configuration (used to build DATABASE_URL if databaseUrl not set)
+  database:
+    serviceName: "postgresql"  # Service name from postgresql template (line 85)
+    port: 5432
+    # If user/password/database are not set, they will be taken from dependencies.postgresql.secret
+    # user: ""
+    # password: ""
+    # database: ""
   
   # Redis connection URL
   # Format: redis://host:port/db
-  redisUrl: "redis://redis:6379/0"
+  # If not set, will be auto-generated from dependencies.redis template
+  # redisUrl: ""  # Leave empty to auto-generate from dependencies
+  
+  # Redis service configuration (used to build REDIS_URL if redisUrl not set)
+  redis:
+    serviceName: "redis"  # Service name from redis template (line 47)
+    port: 6379
+    database: 0
   
   # Object store endpoint
-  objectStoreEndpoint: "http://minio:9000"
+  # Format: http://host:port or https://host:port
+  # If not set, will be auto-generated from dependencies.minio template
+  # objectStoreEndpoint: ""  # Leave empty to auto-generate from dependencies
+  
+  # Object store service configuration (used to build OBJECT_STORE_ENDPOINT if objectStoreEndpoint not set)
+  objectStoreService:
+    serviceName: "minio"  # Service name from minio template (line 85)
+    port: 9000
+    secure: false  # Use https if true
   
   # Application settings
   useKserve: true
   useGpu: false
   logLevel: "INFO"
+  
+  # Database Configuration
+  sqlalchemyEcho: false
+  
+  # Object Storage Configuration
+  objectStoreSecure: false
+  objectStoreBucket: ""  # Optional, defaults to namespace
+  
+  # Application Configuration
+  prometheusNamespace: "llm_ops"
+  defaultRequiredRole: "llm-ops-user"
+  
+  # Kubernetes Configuration
+  kubeconfigPath: ""  # Empty for in-cluster config
+  kubernetesVerifySsl: true
+  
+  # Training Image Configuration
+  trainingImages:
+    pretrain:
+      gpu: "registry/llm-train-pretrain:pytorch2.1-cuda12.1-v1"
+      cpu: "registry/llm-train-pretrain:pytorch2.1-cpu-v1"
+    sft:
+      gpu: "registry/llm-train-sft:pytorch2.1-cuda12.1-v1"
+      cpu: "registry/llm-train-sft:pytorch2.1-cpu-v1"
+    ragTuning:
+      gpu: "registry/llm-train-rag:pytorch2.1-cuda12.1-v1"
+      cpu: "registry/llm-train-rag:pytorch2.1-cpu-v1"
+    rlhf:
+      gpu: "registry/llm-train-rlhf:pytorch2.1-cuda12.1-v1"
+      cpu: "registry/llm-train-rlhf:pytorch2.1-cpu-v1"
+    embedding:
+      gpu: "registry/llm-train-embedding:pytorch2.1-cuda12.1-v1"
+      cpu: "registry/llm-train-embedding:pytorch2.1-cpu-v1"
+  
+  # Training GPU Type Configuration
+  trainingGpuTypes:
+    dev: "nvidia-rtx-4090,nvidia-rtx-a6000"
+    stg: ""
+    prod: ""
+  
+  # Training Resource Limits (CPU-only)
+  trainingCpuOnly:
+    cpuRequest: "2"
+    cpuLimit: "4"
+    memoryRequest: "2Gi"
+    memoryLimit: "4Gi"
+  
+  # Training Resource Limits (GPU-enabled)
+  trainingGpu:
+    cpuRequest: "4"
+    cpuLimit: "8"
+    memoryRequest: "4Gi"
+    memoryLimit: "8Gi"
+    distributedMemoryRequest: "16Gi"
+    distributedMemoryLimit: "32Gi"
+  
+  # Training Configuration
+  trainingGpuNodeSelector: {}  # JSON object, e.g. {"node-type":"gpu"}
+  trainingGpuTolerations: []  # JSON array, e.g. [{"key":"nvidia.com/gpu","operator":"Exists","effect":"NoSchedule"}]
+  trainingApiBaseUrl: ""  # Empty to disable
+  trainingJobStatusSyncInterval: 30  # seconds, 0 to disable
+  
+  # Serving Image Configuration
+  servingImages:
+    generation:
+      gpu: "ghcr.io/huggingface/text-generation-inference:latest"
+      cpu: "ghcr.io/huggingface/text-generation-inference:latest"
+    rag:
+      gpu: "ghcr.io/vllm/vllm:latest"
+      cpu: "ghcr.io/vllm/vllm:latest"
+  
+  # Legacy Serving Configuration (fallback)
+  servingRuntimeImage: "ghcr.io/huggingface/text-generation-inference:latest"
+  servingLocalBaseUrl: ""  # Optional override for local development
+  servingInferenceHostOverride: ""  # Optional override for external IP access
+  
+  # Serving Resource Limits (GPU-enabled)
+  servingGpu:
+    cpuRequest: "1"
+    cpuLimit: "2"
+    memoryRequest: "2Gi"
+    memoryLimit: "16Gi"
+  
+  # Serving Resource Limits (CPU-only)
+  servingCpuOnly:
+    cpuRequest: "500m"
+    cpuLimit: "1"
+    memoryRequest: "512Mi"
+    memoryLimit: "1Gi"
+  
+  # Feature Flags & Integrations
+  experimentTracking:
+    enabled: false
+    system: "mlflow"
+  
+  servingFramework:
+    enabled: false
+    default: "kserve"
+  
+  workflowOrchestration:
+    enabled: false
+    system: "argo_workflows"
+  
+  modelRegistry:
+    enabled: true
+    default: "huggingface"
+  
+  dataVersioning:
+    enabled: false
+    system: "dvc"
+  
+  environment: "dev"  # dev, stg, prod
+  
+  # MLflow Configuration
+  mlflow:
+    enabled: false
+    # trackingUri: ""  # e.g., http://mlflow-service.mlflow.svc.cluster.local:5000
+    # backendStoreUri: ""  # PostgreSQL URI
+    # defaultArtifactRoot: ""  # S3 URI
+  
+  # Argo Workflows Configuration
+  argoWorkflows:
+    enabled: false
+    namespace: "argo"
+    controllerService: "argo-workflows-server.argo.svc.cluster.local:2746"
+  
+  # Hugging Face Hub Configuration
+  huggingfaceHub:
+    enabled: false
+    # token: ""  # Optional, for private repos
+    cacheDir: "/tmp/hf_cache"
+    maxDownloadSizeGb: 5.0
+    concurrentUploads: 5
+  
+  # DVC Configuration
+  dvc:
+    enabled: false
+    remoteName: "minio"
+    # remoteUrl: ""  # e.g., s3://datasets-dvc
+    cacheDir: "/tmp/dvc-cache"
   
   # Resource limits
   resources:
