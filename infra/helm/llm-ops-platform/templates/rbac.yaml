@@ -51,6 +51,16 @@ rules:
     resources: ["clusterservingruntimes"]
     verbs: ["get", "list", "watch"]
   
+  # API resource discovery (for checking KServe CRD availability)
+  - apiGroups: [""]
+    resources: ["*"]
+    verbs: ["get", "list"]
+  
+  # Custom resource definition access (for checking CRD existence)
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch"]
+  
   # Event access (for debugging)
   - apiGroups: [""]
     resources: ["events"]

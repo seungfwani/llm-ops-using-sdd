@@ -126,7 +126,7 @@ class KubernetesOperations:
                     logger.debug(f"Label selector didn't find pods, trying to list all pods in namespace {namespace}")
                     all_pods = self.core_api.list_namespaced_pod(namespace=namespace)
                     logger.debug(f"Found {len(all_pods.items)} total pods in namespace {namespace}")
-                    # Filter pods that start with endpoint_name (KServe naming: {endpoint_name}-predictor-default-{hash})
+                    # Filter pods that start with endpoint_name (KServe naming: {endpoint_name}-predictor-{hash})
                     matching_pods = [p for p in all_pods.items if p.metadata.name.startswith(f"{endpoint_name}-predictor")]
                     logger.debug(f"Found {len(matching_pods)} pods matching name pattern {endpoint_name}-predictor")
                     if matching_pods:

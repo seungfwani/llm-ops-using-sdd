@@ -26,7 +26,6 @@ from typing import Any, Dict, Optional
 from uuid import UUID
 
 from kubernetes import client
-from kubernetes import config as k8s_config
 from kubernetes.client.rest import ApiException
 
 from integrations.serving.interface import ServingFrameworkAdapter
@@ -37,6 +36,7 @@ from integrations.error_handler import (
     ToolOperationError,
 )
 from core.settings import get_settings
+from core.clients.kubernetes_client import KubernetesClient
 
 logger = logging.getLogger(__name__)
 
@@ -56,33 +56,6 @@ class KServeAdapter(ServingFrameworkAdapter):
     - InferenceService CRD available
     """
     
-    def _refresh_kubernetes_token(self) -> bool:
-        """
-        Refresh Kubernetes authentication token for in-cluster operations.
-        Returns True if refresh was successful, False otherwise.
-        """
-        try:
-            logger.info("KServeAdapter: Attempting to refresh Kubernetes authentication token...")
-            # Reload in-cluster config - let it handle authentication automatically
-            import os
-            token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-            ca_cert_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
-
-            if os.path.exists(token_path) and os.path.exists(ca_cert_path):
-                logger.info(f"KServeAdapter: Service account files available during refresh - token: {token_path}, ca_cert: {ca_cert_path}")
-                k8s_config.load_incluster_config()
-                logger.info("KServeAdapter: Successfully refreshed Kubernetes authentication token (automatic)")
-                return True
-            else:
-                logger.warning(f"KServeAdapter: Service account files not found during refresh - token: {os.path.exists(token_path)}, ca_cert: {os.path.exists(ca_cert_path)}")
-                # Still try to refresh as fallback
-                k8s_config.load_incluster_config()
-                logger.info("KServeAdapter: Attempted token refresh (fallback)")
-                return True
-        except Exception as e:
-            logger.error(f"KServeAdapter: Failed to refresh Kubernetes token: {e}")
-            return False
-
     def __init__(self, config: Dict[str, Any]):
         """Initialize KServe adapter.
         
@@ -95,97 +68,10 @@ class KServeAdapter(ServingFrameworkAdapter):
         self.namespace = config.get("namespace", "kserve")
         self.settings = get_settings()
         
-        # Initialize Kubernetes client
-        try:
-            if self.settings.kubeconfig_path:
-                logger.info(f"KServeAdapter: Loading Kubernetes config from: {self.settings.kubeconfig_path}")
-                k8s_config.load_kube_config(config_file=self.settings.kubeconfig_path)
-            else:
-                logger.info("KServeAdapter: Loading in-cluster Kubernetes config")
-                # Check if service account files exist
-                import os
-                token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-                ca_cert_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
-
-                if os.path.exists(token_path) and os.path.exists(ca_cert_path):
-                    logger.info(f"KServeAdapter: Service account files found - token: {token_path}, ca_cert: {ca_cert_path}")
-                    # Let load_incluster_config() handle the authentication automatically
-                    k8s_config.load_incluster_config()
-                    logger.info("KServeAdapter: Successfully loaded in-cluster config (automatic service account authentication)")
-                else:
-                    logger.warning(f"KServeAdapter: Service account files not found - token: {os.path.exists(token_path)}, ca_cert: {os.path.exists(ca_cert_path)}")
-                    logger.warning("KServeAdapter: This may cause authentication issues in Kubernetes cluster")
-                    # Still try to load in-cluster config as fallback
-                    k8s_config.load_incluster_config()
-        except Exception as e:
-            logger.warning(f"KServeAdapter: Failed to load kubeconfig: {e}, using default")
-            try:
-                logger.info("KServeAdapter: Trying default kubeconfig location")
-                k8s_config.load_kube_config()
-            except Exception:
-                logger.error("KServeAdapter: Could not initialize Kubernetes client")
-                raise
-        
-        # Configure SSL verification based on settings and authentication method
-        configuration = client.Configuration.get_default_copy()
-
-        # For in-cluster authentication, always verify SSL since we use CA certificate
-        # For external kubeconfig, respect the kubernetes_verify_ssl setting
-        if self.settings.kubeconfig_path:
-            # External kubeconfig - use user setting
-            if not self.settings.kubernetes_verify_ssl:
-                logger.warning("SSL verification is disabled for Kubernetes API client (external kubeconfig)")
-                configuration.verify_ssl = False
-                # Also disable SSL warnings
-                import urllib3
-                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        else:
-            # In-cluster authentication - always verify SSL with CA certificate
-            logger.info("SSL verification enabled for in-cluster Kubernetes API client")
-            configuration.verify_ssl = True
-
-            # Update all API clients to use this configuration
-            client.Configuration.set_default(configuration)
-        
-        self.custom_api = client.CustomObjectsApi()
-        self.core_api = client.CoreV1Api()
-        
-        # Test Kubernetes connection
-        try:
-            logger.info("KServeAdapter: Testing Kubernetes API connection...")
-            # Test connection by listing namespaces (simple API call)
-            namespaces = self.core_api.list_namespace(limit=1)
-            logger.info(f"KServeAdapter: Kubernetes API connection successful. Cluster accessible (tested via namespace list)")
-        except ApiException as e:
-            if e.status == 401:
-                logger.warning(
-                    f"KServeAdapter: Kubernetes API authentication failed (401 Unauthorized). "
-                    f"Attempting token refresh..."
-                )
-                # Try to refresh the token during initialization
-                if self._refresh_kubernetes_token():
-                    logger.info("KServeAdapter: Token refreshed during initialization, retrying connection test...")
-                    try:
-                        namespaces = self.core_api.list_namespace(limit=1)
-                        logger.info(f"KServeAdapter: Kubernetes API connection successful after token refresh. Cluster accessible (tested via namespace list)")
-                    except ApiException as retry_e:
-                        logger.warning(f"KServeAdapter: Connection test still failed after token refresh: {retry_e}")
-                        # Fall through to original error handling
-                else:
-                    logger.warning("KServeAdapter: Token refresh failed during initialization")
-                # Original warning messages
-                logger.warning(
-                    f"KServeAdapter: Kubernetes API authentication failed (401 Unauthorized). "
-                    f"This may be due to expired credentials or insufficient permissions. "
-                    f"KServe operations may fail until authentication is resolved. "
-                    f"Error: {e.reason}"
-                )
-            else:
-                logger.error(f"KServeAdapter: Failed to connect to Kubernetes API: {e}", exc_info=True)
-                raise
-        except Exception as e:
-            logger.error(f"KServeAdapter: Failed to connect to Kubernetes API: {e}", exc_info=True)
-            raise
+        # Initialize Kubernetes client using shared utility
+        self.k8s_client = KubernetesClient(logger_prefix="KServeAdapter")
+        self.custom_api = self.k8s_client.custom_api
+        self.core_api = self.k8s_client.core_api
     
     def is_available(self) -> bool:
         """Check if KServe is available."""
@@ -202,16 +88,18 @@ class KServeAdapter(ServingFrameworkAdapter):
             except ApiException as api_resources_error:
                 if api_resources_error.status == 401:
                     logger.warning("KServeAdapter: 401 error in get_api_resources, attempting token refresh...")
-                    if self._refresh_kubernetes_token():
-                        try:
-                            resources = self.custom_api.get_api_resources(group="serving.kserve.io")
-                            if resources and hasattr(resources, 'resources'):
-                                for resource in resources.resources:
-                                    if resource.name == "inferenceservices":
-                                        logger.info("KServe InferenceService CRD is available via API resources (after token refresh)")
-                                        return True
-                        except Exception:
-                            pass
+                    try:
+                        resources = self.k8s_client.call_with_401_retry(
+                            lambda: self.custom_api.get_api_resources(group="serving.kserve.io"),
+                            "get_api_resources"
+                        )
+                        if resources and hasattr(resources, 'resources'):
+                            for resource in resources.resources:
+                                if resource.name == "inferenceservices":
+                                    logger.info("KServe InferenceService CRD is available via API resources (after token refresh)")
+                                    return True
+                    except Exception:
+                        pass
                 logger.debug(f"get_api_resources failed: {api_resources_error}, trying direct CRD check")
             except Exception as api_resources_error:
                 logger.debug(f"get_api_resources failed: {api_resources_error}, trying direct CRD check")
@@ -265,27 +153,30 @@ class KServeAdapter(ServingFrameworkAdapter):
                     except ApiException as list_error:
                         if list_error.status == 401:
                             logger.warning(f"KServeAdapter: 401 error in list_namespaced_custom_object for namespace {test_ns}, attempting token refresh...")
-                            if self._refresh_kubernetes_token():
-                                try:
-                                    self.custom_api.list_namespaced_custom_object(
+                            try:
+                                self.k8s_client.call_with_401_retry(
+                                    lambda: self.custom_api.list_namespaced_custom_object(
                                         group="serving.kserve.io",
                                         version="v1beta1",
                                         namespace=test_ns,
                                         plural="inferenceservices",
                                         limit=1,
-                                    )
-                                    logger.info(f"KServe InferenceService CRD is available (verified via list in {test_ns} after token refresh)")
-                                    return True
-                                except ApiException as retry_list_error:
-                                    if retry_list_error.status == 404:
-                                        continue
-                                    elif retry_list_error.status == 403:
-                                        logger.info("KServe InferenceService CRD exists (permission denied on list, but CRD is available)")
-                                        return True
-                                    # Continue to next namespace
+                                    ),
+                                    f"list_namespaced_custom_object for namespace {test_ns}"
+                                )
+                                logger.info(f"KServe InferenceService CRD is available (verified via list in {test_ns} after token refresh)")
+                                return True
+                            except ApiException as retry_list_error:
+                                if retry_list_error.status == 404:
                                     continue
-                            # Token refresh failed, continue to next namespace
-                            continue
+                                elif retry_list_error.status == 403:
+                                    logger.info("KServe InferenceService CRD exists (permission denied on list, but CRD is available)")
+                                    return True
+                                # Continue to next namespace
+                                continue
+                            except Exception:
+                                # Token refresh failed, continue to next namespace
+                                continue
                         elif list_error.status == 404:
                             # Namespace doesn't exist, try next
                             continue
@@ -385,32 +276,35 @@ class KServeAdapter(ServingFrameworkAdapter):
         try:
             logger.info(f"KServeAdapter: Testing API connectivity before creating InferenceService {endpoint_name}")
             # Quick test by listing namespaces (should be fast and require minimal permissions)
-            test_namespaces = self.core_api.list_namespace(limit=1, timeout_seconds=10)
+            test_namespaces = self.k8s_client.call_with_401_retry(
+                lambda: self.core_api.list_namespace(limit=1, timeout_seconds=10),
+                "API connectivity test"
+            )
             logger.info(f"KServeAdapter: API connectivity test passed - found {len(test_namespaces.items)} namespaces")
         except ApiException as test_e:
             if test_e.status == 401:
                 logger.error(f"KServeAdapter: API connectivity test failed with 401 - authentication issue detected before InferenceService creation")
                 logger.error(f"KServeAdapter: Test error: {test_e.reason}")
-                # Try token refresh before proceeding
-                if not self._refresh_kubernetes_token():
-                    raise ToolOperationError(
-                        message="Kubernetes API authentication failed during connectivity test. Token refresh unsuccessful.",
-                        tool_name="kserve",
-                        operation="deploy",
-                        original_error=str(test_e),
-                    ) from test_e
-                logger.info("KServeAdapter: Token refreshed during connectivity test, proceeding with InferenceService creation")
+                raise ToolOperationError(
+                    message="Kubernetes API authentication failed during connectivity test. Token refresh unsuccessful.",
+                    tool_name="kserve",
+                    operation="deploy",
+                    original_error=str(test_e),
+                ) from test_e
             else:
                 logger.warning(f"KServeAdapter: API connectivity test failed (non-401): {test_e}")
         
         try:
-            # Create InferenceService
-            created = self.custom_api.create_namespaced_custom_object(
-                group="serving.kserve.io",
-                version="v1beta1",
-                namespace=namespace,
-                plural="inferenceservices",
-                body=inference_service,
+            # Create InferenceService with automatic 401 retry
+            created = self.k8s_client.call_with_401_retry(
+                lambda: self.custom_api.create_namespaced_custom_object(
+                    group="serving.kserve.io",
+                    version="v1beta1",
+                    namespace=namespace,
+                    plural="inferenceservices",
+                    body=inference_service,
+                ),
+                f"create InferenceService {endpoint_name}"
             )
             
             uid = created.get("metadata", {}).get("uid", "")
@@ -455,45 +349,6 @@ class KServeAdapter(ServingFrameworkAdapter):
                 "status": "deploying",
             }
         except ApiException as e:
-            # Handle 401 Unauthorized errors
-            if e.status == 401:
-                logger.warning(
-                    f"KServeAdapter: Kubernetes API authentication failed (401 Unauthorized) while creating "
-                    f"InferenceService {endpoint_name} in namespace {namespace}. "
-                    f"Error details: {e.reason}. Attempting token refresh..."
-                )
-                logger.warning(f"KServeAdapter: Request URL: {e.request.url if hasattr(e, 'request') else 'N/A'}")
-                logger.warning(f"KServeAdapter: Response body: {e.body if hasattr(e, 'body') else 'N/A'}")
-                # Try to refresh the token and retry once
-                if self._refresh_kubernetes_token():
-                    logger.info("KServeAdapter: Token refreshed, retrying InferenceService creation...")
-                    try:
-                        created = self.custom_api.create_namespaced_custom_object(
-                            group="serving.kserve.io",
-                            version="v1beta1",
-                            namespace=namespace,
-                            plural="inferenceservices",
-                            body=inference_service,
-                        )
-                        uid = created.get("metadata", {}).get("uid", "")
-                        logger.info(f"KServeAdapter: Created KServe InferenceService {endpoint_name} with UID {uid} after token refresh")
-                        
-                        # Wait a bit and check if pods are being created
-                        import time
-                        time.sleep(2)
-                        
-                        return {
-                            "framework_resource_id": endpoint_name,
-                            "framework_namespace": namespace,
-                            "status": "deploying",
-                        }
-                    except ApiException as retry_e:
-                        logger.error(f"KServeAdapter: API call still failed after token refresh: {retry_e}")
-                        # Fall through to original error handling
-                else:
-                    logger.error("KServeAdapter: Token refresh failed, cannot retry")
-                    # Fall through to original error handling
-            
             # Handle CRD not registered errors
             # Handle CRD not registered errors
             if "no kind" in str(e.body).lower() and "registered" in str(e.body).lower():
@@ -534,7 +389,7 @@ class KServeAdapter(ServingFrameworkAdapter):
                     original_error=str(e),
                 ) from e
 
-            # Handle 401 errors that might be from admission webhooks
+            # Handle 401 errors that might be from admission webhooks (after retry failed)
             if e.status == 401:
                 error_msg = (
                     f"KServe authentication failed (401 Unauthorized): {e.reason}\n"
@@ -951,40 +806,19 @@ class KServeAdapter(ServingFrameworkAdapter):
             logger.warning(f"Failed to get deployment status via Kubernetes operations: {e}, falling back to direct check")
             # Fallback to direct InferenceService check (for compatibility)
         try:
-            inference_service = self.custom_api.get_namespaced_custom_object(
-                group="serving.kserve.io",
-                version="v1beta1",
-                namespace=namespace,
-                plural="inferenceservices",
-                name=framework_resource_id,
+            inference_service = self.k8s_client.call_with_401_retry(
+                lambda: self.custom_api.get_namespaced_custom_object(
+                    group="serving.kserve.io",
+                    version="v1beta1",
+                    namespace=namespace,
+                    plural="inferenceservices",
+                    name=framework_resource_id,
+                ),
+                f"get InferenceService {framework_resource_id} status"
             )
         except ApiException as e:
-            if e.status == 401:
-                logger.warning(
-                    f"KServeAdapter: Kubernetes API authentication failed (401 Unauthorized) while getting "
-                    f"InferenceService {framework_resource_id} status in namespace {namespace}. Attempting token refresh..."
-                )
-                # Try to refresh the token and retry once
-                if self._refresh_kubernetes_token():
-                    logger.info("KServeAdapter: Token refreshed, retrying status check...")
-                    try:
-                        inference_service = self.custom_api.get_namespaced_custom_object(
-                            group="serving.kserve.io",
-                            version="v1beta1",
-                            namespace=namespace,
-                            plural="inferenceservices",
-                            name=framework_resource_id,
-                        )
-                    except ApiException as retry_e:
-                        logger.error(f"KServeAdapter: API call still failed after token refresh: {retry_e}")
-                        # Fall through to original error handling
-                        raise wrap_tool_error(retry_e, "kserve", "get_deployment_status")
-                else:
-                    logger.error("KServeAdapter: Token refresh failed, cannot retry")
-                    raise wrap_tool_error(e, "kserve", "get_deployment_status")
-            else:
-                # Re-raise for other status codes
-                raise
+            # Re-raise for error handling
+            raise
         
         try:
             
@@ -1046,37 +880,18 @@ class KServeAdapter(ServingFrameworkAdapter):
         
         try:
             # Get current InferenceService
-            inference_service = self.custom_api.get_namespaced_custom_object(
-                group="serving.kserve.io",
-                version="v1beta1",
-                namespace=namespace,
-                plural="inferenceservices",
-                name=framework_resource_id,
+            inference_service = self.k8s_client.call_with_401_retry(
+                lambda: self.custom_api.get_namespaced_custom_object(
+                    group="serving.kserve.io",
+                    version="v1beta1",
+                    namespace=namespace,
+                    plural="inferenceservices",
+                    name=framework_resource_id,
+                ),
+                f"get InferenceService {framework_resource_id} for update"
             )
         except ApiException as e:
-            if e.status == 401:
-                logger.warning(
-                    f"KServeAdapter: Kubernetes API authentication failed (401 Unauthorized) while getting "
-                    f"InferenceService {framework_resource_id} in namespace {namespace}. Attempting token refresh..."
-                )
-                if self._refresh_kubernetes_token():
-                    logger.info("KServeAdapter: Token refreshed, retrying get operation...")
-                    try:
-                        inference_service = self.custom_api.get_namespaced_custom_object(
-                            group="serving.kserve.io",
-                            version="v1beta1",
-                            namespace=namespace,
-                            plural="inferenceservices",
-                            name=framework_resource_id,
-                        )
-                    except ApiException as retry_e:
-                        logger.error(f"KServeAdapter: API call still failed after token refresh: {retry_e}")
-                        raise wrap_tool_error(retry_e, "kserve", "update_deployment")
-                else:
-                    logger.error("KServeAdapter: Token refresh failed, cannot retry")
-                    raise wrap_tool_error(e, "kserve", "update_deployment")
-            else:
-                raise wrap_tool_error(e, "kserve", "update_deployment")
+            raise wrap_tool_error(e, "kserve", "update_deployment")
         
         # Update spec
         spec = inference_service.get("spec", {})
@@ -1100,39 +915,19 @@ class KServeAdapter(ServingFrameworkAdapter):
         
         # Update InferenceService
         try:
-            updated = self.custom_api.patch_namespaced_custom_object(
-                group="serving.kserve.io",
-                version="v1beta1",
-                namespace=namespace,
-                plural="inferenceservices",
-                name=framework_resource_id,
-                body=inference_service,
+            updated = self.k8s_client.call_with_401_retry(
+                lambda: self.custom_api.patch_namespaced_custom_object(
+                    group="serving.kserve.io",
+                    version="v1beta1",
+                    namespace=namespace,
+                    plural="inferenceservices",
+                    name=framework_resource_id,
+                    body=inference_service,
+                ),
+                f"patch InferenceService {framework_resource_id}"
             )
         except ApiException as e:
-            if e.status == 401:
-                logger.warning(
-                    f"KServeAdapter: Kubernetes API authentication failed (401 Unauthorized) while patching "
-                    f"InferenceService {framework_resource_id} in namespace {namespace}. Attempting token refresh..."
-                )
-                if self._refresh_kubernetes_token():
-                    logger.info("KServeAdapter: Token refreshed, retrying patch operation...")
-                    try:
-                        updated = self.custom_api.patch_namespaced_custom_object(
-                            group="serving.kserve.io",
-                            version="v1beta1",
-                            namespace=namespace,
-                            plural="inferenceservices",
-                            name=framework_resource_id,
-                            body=inference_service,
-                        )
-                    except ApiException as retry_e:
-                        logger.error(f"KServeAdapter: API call still failed after token refresh: {retry_e}")
-                        raise wrap_tool_error(retry_e, "kserve", "update_deployment")
-                else:
-                    logger.error("KServeAdapter: Token refresh failed, cannot retry")
-                    raise wrap_tool_error(e, "kserve", "update_deployment")
-            else:
-                raise wrap_tool_error(e, "kserve", "update_deployment")
+            raise wrap_tool_error(e, "kserve", "update_deployment")
         
         return {
             "framework_resource_id": framework_resource_id,
@@ -1151,42 +946,19 @@ class KServeAdapter(ServingFrameworkAdapter):
             return  # Graceful degradation
         
         try:
-            self.custom_api.delete_namespaced_custom_object(
-                group="serving.kserve.io",
-                version="v1beta1",
-                namespace=namespace,
-                plural="inferenceservices",
-                name=framework_resource_id,
+            self.k8s_client.call_with_401_retry(
+                lambda: self.custom_api.delete_namespaced_custom_object(
+                    group="serving.kserve.io",
+                    version="v1beta1",
+                    namespace=namespace,
+                    plural="inferenceservices",
+                    name=framework_resource_id,
+                ),
+                f"delete InferenceService {framework_resource_id}"
             )
             logger.info(f"Deleted KServe InferenceService {framework_resource_id}")
         except ApiException as e:
-            if e.status == 401:
-                logger.warning(
-                    f"KServeAdapter: Kubernetes API authentication failed (401 Unauthorized) while deleting "
-                    f"InferenceService {framework_resource_id} in namespace {namespace}. Attempting token refresh..."
-                )
-                if self._refresh_kubernetes_token():
-                    logger.info("KServeAdapter: Token refreshed, retrying delete operation...")
-                    try:
-                        self.custom_api.delete_namespaced_custom_object(
-                            group="serving.kserve.io",
-                            version="v1beta1",
-                            namespace=namespace,
-                            plural="inferenceservices",
-                            name=framework_resource_id,
-                        )
-                        logger.info(f"KServeAdapter: Deleted KServe InferenceService {framework_resource_id} after token refresh")
-                        return
-                    except ApiException as retry_e:
-                        if retry_e.status == 404:
-                            logger.warning(f"InferenceService {framework_resource_id} not found, may already be deleted")
-                            return  # Graceful degradation
-                        logger.error(f"KServeAdapter: API call still failed after token refresh: {retry_e}")
-                        raise wrap_tool_error(retry_e, "kserve", "delete_deployment")
-                else:
-                    logger.error("KServeAdapter: Token refresh failed, cannot retry")
-                    raise wrap_tool_error(e, "kserve", "delete_deployment")
-            elif e.status == 404:
+            if e.status == 404:
                 logger.warning(f"InferenceService {framework_resource_id} not found, may already be deleted")
                 return  # Graceful degradation
             raise wrap_tool_error(e, "kserve", "delete_deployment")
@@ -1205,44 +977,25 @@ class KServeAdapter(ServingFrameworkAdapter):
             )
         
         try:
-            inference_service = self.custom_api.get_namespaced_custom_object(
-                group="serving.kserve.io",
-                version="v1beta1",
-                namespace=namespace,
-                plural="inferenceservices",
-                name=framework_resource_id,
+            inference_service = self.k8s_client.call_with_401_retry(
+                lambda: self.custom_api.get_namespaced_custom_object(
+                    group="serving.kserve.io",
+                    version="v1beta1",
+                    namespace=namespace,
+                    plural="inferenceservices",
+                    name=framework_resource_id,
+                ),
+                f"get InferenceService {framework_resource_id} URL"
             )
         except ApiException as e:
-            if e.status == 401:
-                logger.warning(
-                    f"KServeAdapter: Kubernetes API authentication failed (401 Unauthorized) while getting "
-                    f"InferenceService {framework_resource_id} URL in namespace {namespace}. Attempting token refresh..."
-                )
-                if self._refresh_kubernetes_token():
-                    logger.info("KServeAdapter: Token refreshed, retrying get operation...")
-                    try:
-                        inference_service = self.custom_api.get_namespaced_custom_object(
-                            group="serving.kserve.io",
-                            version="v1beta1",
-                            namespace=namespace,
-                            plural="inferenceservices",
-                            name=framework_resource_id,
-                        )
-                    except ApiException as retry_e:
-                        logger.error(f"KServeAdapter: API call still failed after token refresh: {retry_e}")
-                        raise wrap_tool_error(retry_e, "kserve", "get_inference_url")
-                else:
-                    logger.error("KServeAdapter: Token refresh failed, cannot retry")
-                    raise wrap_tool_error(e, "kserve", "get_inference_url")
-            else:
-                raise wrap_tool_error(e, "kserve", "get_inference_url")
+            raise wrap_tool_error(e, "kserve", "get_inference_url")
         
         status = inference_service.get("status", {})
         url = status.get("url", "")
         
         if not url:
             # Fallback: construct URL from service name
-            url = f"http://{framework_resource_id}-predictor-default.{namespace}.svc.cluster.local:80"
+            url = f"http://{framework_resource_id}-predictor.{namespace}.svc.cluster.local:80"
         
         return url
 

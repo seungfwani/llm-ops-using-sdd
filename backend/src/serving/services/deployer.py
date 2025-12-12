@@ -6,11 +6,12 @@ import time
 from typing import Optional
 from uuid import UUID, uuid4
 
-from kubernetes import client, config
+from kubernetes import client
 from kubernetes.client.rest import ApiException
 
 from core.image_config import get_image_config
 from core.settings import get_settings
+from core.clients.kubernetes_client import KubernetesClient
 from integrations.serving.factory import ServingFrameworkFactory
 from serving.converters.kserve_converter import KServeConverter
 from serving.converters.ray_serve_converter import RayServeConverter
@@ -98,20 +99,6 @@ def _build_s3_sync_resources(
 class ServingDeployer:
     """Controller for deploying model serving endpoints to Kubernetes with HPA."""
 
-    def _refresh_kubernetes_token(self) -> bool:
-        """
-        Refresh Kubernetes authentication token for in-cluster operations.
-        Returns True if refresh was successful, False otherwise.
-        """
-        try:
-            logger.info("Attempting to refresh Kubernetes authentication token...")
-            # Reload in-cluster config to refresh the token
-            config.load_incluster_config()
-            logger.info("Successfully refreshed Kubernetes authentication token")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to refresh Kubernetes token: {e}")
-            return False
 
     def _validate_service_account_permissions(self) -> dict:
         """
@@ -183,72 +170,16 @@ class ServingDeployer:
 
     def __init__(self):
         """Initialize Kubernetes client."""
+        # Initialize Kubernetes client using shared utility
+        self.k8s_client = KubernetesClient(logger_prefix="ServingDeployer")
+        self.apps_api = self.k8s_client.apps_api
+        self.core_api = self.k8s_client.core_api
+        self.autoscaling_api = self.k8s_client.autoscaling_api
+        self.networking_api = self.k8s_client.networking_api
+        self.custom_api = self.k8s_client.custom_api
+        
+        # Validate service account permissions
         try:
-            if settings.kubeconfig_path:
-                logger.info(f"Loading Kubernetes config from: {settings.kubeconfig_path}")
-                config.load_kube_config(config_file=settings.kubeconfig_path)
-            else:
-                logger.info("Loading in-cluster Kubernetes config")
-                config.load_incluster_config()
-        except Exception as e:
-            logger.warning(f"Failed to load kubeconfig: {e}, using default")
-            try:
-                logger.info("Trying default kubeconfig location")
-                config.load_kube_config()
-            except Exception:
-                logger.error("Could not initialize Kubernetes client")
-                raise
-
-        # Configure SSL verification and timeout based on settings
-        configuration = client.Configuration.get_default_copy()
-        if not settings.kubernetes_verify_ssl:
-            logger.warning("SSL verification is disabled for Kubernetes API client")
-            configuration.verify_ssl = False
-            # Also disable SSL warnings
-            import urllib3
-            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        
-        # Set timeout for API calls to prevent hanging (default: 10 seconds)
-        api_timeout = getattr(settings, 'kubernetes_api_timeout', 10)
-        configuration.api_key_prefix['authorization'] = 'Bearer'
-        # Note: kubernetes-python client doesn't directly support timeout in Configuration
-        # We'll handle timeout in individual API calls instead
-        
-        # Update all API clients to use this configuration
-        client.Configuration.set_default(configuration)
-
-        self.apps_api = client.AppsV1Api()
-        self.core_api = client.CoreV1Api()
-        self.autoscaling_api = client.AutoscalingV1Api()
-        self.networking_api = client.NetworkingV1Api()
-        self.custom_api = client.CustomObjectsApi()  # For KServe InferenceService CRD
-        
-        # Test Kubernetes connection (non-blocking - warn only)
-        # Connection will be verified when actually needed for deployment operations
-        try:
-            logger.info("Testing Kubernetes API connection...")
-            # Check if we're running in-cluster by checking service account token
-            import os
-            token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-            if os.path.exists(token_path):
-                logger.info(f"Running in-cluster, service account token found at {token_path}")
-                try:
-                    with open(token_path, 'r') as f:
-                        token_content = f.read().strip()
-                        token_preview = token_content[:50] + "..." if len(token_content) > 50 else token_content
-                    logger.debug(f"Service account token length: {len(token_content)}, preview: {token_preview}")
-                except Exception as token_e:
-                    logger.warning(f"Could not read service account token: {token_e}")
-            else:
-                logger.warning(f"Service account token not found at {token_path}, not running in-cluster")
-
-            # Test connection by listing namespaces (simple API call)
-            # Set timeout to prevent hanging (10 seconds)
-            # Use _request_timeout parameter to set timeout for this specific API call
-            namespaces = self.core_api.list_namespace(limit=1, _request_timeout=10)
-            logger.info(f"Kubernetes API connection successful. Cluster accessible (tested via namespace list)")
-
-            # Validate service account permissions
             perm_results = self._validate_service_account_permissions()
             if perm_results["token_exists"]:
                 logger.info(f"Service account validation - Current namespace: {perm_results['current_namespace']}")
@@ -259,56 +190,8 @@ class ServingDeployer:
                     logger.warning("Service account may not have sufficient permissions for deployment operations")
                 if settings.use_kserve and not perm_results["can_access_kserve"]:
                     logger.warning("Service account may not have sufficient permissions for KServe operations")
-        except ApiException as e:
-            if e.status == 401:
-                logger.warning(
-                    f"Kubernetes API authentication failed (401 Unauthorized). "
-                    f"This may be due to expired credentials or insufficient permissions. "
-                    f"Attempting token refresh..."
-                )
-
-                # Try to refresh the token during initialization
-                if self._refresh_kubernetes_token():
-                    logger.info("Token refreshed during initialization, retrying connection test...")
-                    try:
-                        namespaces = self.core_api.list_namespace(limit=1, _request_timeout=10)
-                        logger.info(f"Kubernetes API connection successful after token refresh. Cluster accessible (tested via namespace list)")
-                    except ApiException as retry_e:
-                        logger.warning(f"Connection test still failed after token refresh: {retry_e}")
-                        # Fall through to original warning
-                else:
-                    logger.warning("Token refresh failed during initialization")
-
-                # Original warning messages
-                logger.warning(
-                    f"Kubernetes API authentication failed (401 Unauthorized). "
-                    f"This may be due to expired credentials or insufficient permissions. "
-                    f"Serving operations may fail until authentication is resolved. "
-                    f"Error: {e.reason}"
-                )
-                # Additional debugging for 401 errors
-                import os
-                if os.path.exists("/var/run/secrets/kubernetes.io/serviceaccount/token"):
-                    logger.warning("Service account token exists, but authentication failed. Check RBAC permissions.")
-                    # Try to read token info
-                    try:
-                        with open("/var/run/secrets/kubernetes.io/serviceaccount/token", 'r') as f:
-                            token = f.read().strip()
-                        logger.info(f"Service account token exists (length: {len(token)})")
-                    except Exception as token_e:
-                        logger.warning(f"Could not read service account token: {token_e}")
-                else:
-                    logger.warning("No service account token found. Ensure pod is running with proper service account.")
-            else:
-                logger.warning(
-                    f"Failed to connect to Kubernetes API (status {e.status}): {e.reason}. "
-                    f"Serving operations may fail until connection is resolved."
-                )
         except Exception as e:
-            logger.warning(
-                f"Failed to test Kubernetes API connection: {e}. "
-                f"Serving operations may fail until connection is resolved."
-            )
+            logger.warning(f"Failed to validate service account permissions: {e}")
 
     def _normalize_route(self, route: str) -> str:
         """
@@ -400,28 +283,32 @@ class ServingDeployer:
                 )
 
                 # Try to refresh the token and retry once
-                if self._refresh_kubernetes_token():
-                    logger.info("Token refreshed, retrying API call...")
-                    try:
-                        if is_kserve:
-                            resource = self.custom_api.get_namespaced_custom_object(
+                try:
+                    if is_kserve:
+                        resource = self.k8s_client.call_with_401_retry(
+                            lambda: self.custom_api.get_namespaced_custom_object(
                                 group="serving.kserve.io",
                                 version="v1beta1",
                                 namespace=namespace,
                                 plural="inferenceservices",
                                 name=endpoint_name
-                            )
-                            deletion_timestamp = resource.get("metadata", {}).get("deletionTimestamp")
-                            return True, deletion_timestamp is not None
-                        else:
-                            resource = self.apps_api.read_namespaced_deployment(
+                            ),
+                            f"check KServe InferenceService {endpoint_name}"
+                        )
+                        deletion_timestamp = resource.get("metadata", {}).get("deletionTimestamp")
+                        return True, deletion_timestamp is not None
+                    else:
+                        resource = self.k8s_client.call_with_401_retry(
+                            lambda: self.apps_api.read_namespaced_deployment(
                                 name=endpoint_name,
                                 namespace=namespace
-                            )
-                            return True, resource.metadata.deletion_timestamp is not None
-                    except ApiException as retry_e:
-                        logger.error(f"API call still failed after token refresh: {retry_e}")
-                        # Fall through to original error handling
+                            ),
+                            f"check Deployment {endpoint_name}"
+                        )
+                        return True, resource.metadata.deletion_timestamp is not None
+                except ApiException as retry_e:
+                    logger.error(f"API call still failed after token refresh: {retry_e}")
+                    # Fall through to original error handling
 
                 # Additional debugging for KServe API calls
                 import os
@@ -657,32 +544,30 @@ class ServingDeployer:
                 )
 
                 # Try to refresh the token and retry the operation
-                if self._refresh_kubernetes_token():
-                    logger.info("Token refreshed, retrying operation...")
-                    try:
-                        # Retry the check and prepare operation
-                        exists, is_terminating = self._check_resource_exists(endpoint_name, namespace, resource_type == "KServe InferenceService")
-                        if exists:
-                            if is_terminating:
-                                logger.warning(
-                                    f"{resource_type} {endpoint_name} is already being deleted. "
-                                    f"Waiting for deletion to complete before deploying..."
-                                )
-                                self._ensure_resource_deleted(endpoint_name, namespace, resource_type, max_wait=180)
-                            else:
-                                logger.warning(
-                                    f"{resource_type} {endpoint_name} already exists in namespace {namespace}. "
-                                    f"Deleting it before deploying..."
-                                )
-                                try:
-                                    self.delete_endpoint(endpoint_name, namespace=namespace)
-                                except Exception as e:
-                                    logger.warning(f"delete_endpoint() raised exception: {e}, will continue anyway")
-                                self._ensure_resource_deleted(endpoint_name, namespace, resource_type, max_wait=180)
-                        return  # Success, continue with deployment
-                    except ApiException as retry_e:
-                        logger.error(f"Operation still failed after token refresh: {retry_e}")
-                        # Fall through to original error handling
+                try:
+                    # Retry the check and prepare operation
+                    exists, is_terminating = self._check_resource_exists(endpoint_name, namespace, resource_type == "KServe InferenceService")
+                    if exists:
+                        if is_terminating:
+                            logger.warning(
+                                f"{resource_type} {endpoint_name} is already being deleted. "
+                                f"Waiting for deletion to complete before deploying..."
+                            )
+                            self._ensure_resource_deleted(endpoint_name, namespace, resource_type, max_wait=180)
+                        else:
+                            logger.warning(
+                                f"{resource_type} {endpoint_name} already exists in namespace {namespace}. "
+                                f"Deleting it before deploying..."
+                            )
+                            try:
+                                self.delete_endpoint(endpoint_name, namespace=namespace)
+                            except Exception as e:
+                                logger.warning(f"delete_endpoint() raised exception: {e}, will continue anyway")
+                            self._ensure_resource_deleted(endpoint_name, namespace, resource_type, max_wait=180)
+                    return  # Success, continue with deployment
+                except ApiException as retry_e:
+                    logger.error(f"Operation still failed after token refresh: {retry_e}")
+                    # Fall through to original error handling
 
                 error_msg = (
                     f"Kubernetes API authentication failed (401 Unauthorized) while checking/deleting "
@@ -2652,7 +2537,7 @@ class ServingDeployer:
                         # Label selector may not match any pods, continue
                         pass
                 
-                # Also try to find pods by name pattern (KServe pods: {endpoint_name}-predictor-default-{hash})
+                # Also try to find pods by name pattern (KServe pods: {endpoint_name}-predictor-{hash})
                 all_pods = self.core_api.list_namespaced_pod(namespace=namespace)
                 for pod in all_pods.items:
                     if endpoint_name in pod.metadata.name:

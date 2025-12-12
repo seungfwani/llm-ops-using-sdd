@@ -369,7 +369,7 @@ async def _call_model_inference(
                 logger.warning(f"Failed to get inference URL from framework adapter: {e}, falling back to default")
                 # Fall back to default behavior
                 if settings.use_kserve:
-                    service_name = f"{endpoint_name}-predictor-default"
+                    service_name = f"{endpoint_name}-predictor"
                     service_url = f"http://{service_name}.{namespace}.svc.cluster.local"
                     inference_url = f"{service_url}/v1/chat/completions"
                 else:
@@ -380,9 +380,9 @@ async def _call_model_inference(
             # No framework deployment, use default behavior
             if settings.use_kserve:
                 # KServe InferenceService URL
-                # KServe creates a service named: {inference-service-name}-predictor-default
+                # KServe creates a service named: {inference-service-name}-predictor
                 # For vLLM, we use OpenAI-compatible API at /v1/chat/completions
-                service_name = f"{endpoint_name}-predictor-default"
+                service_name = f"{endpoint_name}-predictor"
                 service_url = f"http://{service_name}.{namespace}.svc.cluster.local"
                 inference_url = f"{service_url}/v1/chat/completions"
             else:

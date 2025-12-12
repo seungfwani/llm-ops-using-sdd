@@ -24,6 +24,8 @@ spec:
       {{- else if .Values.serviceAccount.create }}
       serviceAccountName: {{ include "llmops.fullname" . }}-api
       {{- end }}
+      # Explicitly enable service account token mounting for in-cluster Kubernetes API access
+      automountServiceAccountToken: true
       containers:
       - name: app
         image: {{ .Values.app.image.repository }}:{{ .Values.app.image.tag | default .Chart.AppVersion }}

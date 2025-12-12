@@ -1388,7 +1388,7 @@ The platform provides a unified inference API for chat completions:
   - Supports inference parameters: `temperature` (0.0-2.0), `max_tokens` (1-4000)
   - Automatically routes requests to the appropriate backend:
     - **Internal models (KServe)**: Routes to KServe InferenceService predictor
-      service (`{endpoint-name}-predictor-default.{namespace}.svc.cluster.local`)
+      service (`{endpoint-name}-predictor.{namespace}.svc.cluster.local`)
       using OpenAI-compatible API at `/v1/chat/completions`
     - **Internal models (raw Deployment)**: Routes to Kubernetes Service
       (`{endpoint-name}-svc.{namespace}.svc.cluster.local:8000`) using
