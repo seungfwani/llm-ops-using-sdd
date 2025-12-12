@@ -434,9 +434,6 @@ build_docker_image() {
     docker push "${FULL_IMAGE_NAME}"
     echo "✅ Docker 이미지 푸시 완료: ${FULL_IMAGE_NAME}"
   fi
-
-  # 환경 변수에 이미지 이름 저장 (Helm 설치 시 사용)
-  export DEPLOY_IMAGE_NAME="${FULL_IMAGE_NAME}"
 }
 
 # ===== llm-ops-platform (Helm) 설치 =====
@@ -458,18 +455,32 @@ install_llm_ops_platform() {
   )
 
   # 이미지가 빌드된 경우 이미지 이름 설정
-  if [[ -n "${DEPLOY_IMAGE_NAME:-}" ]]; then
+  if [[ "${BUILD_IMAGE}" == "true" ]]; then
+    # 이미지 이름 구성 (build_docker_image와 동일한 로직)
+    local full_image_name
+    if [[ -n "${IMAGE_REGISTRY}" ]]; then
+      full_image_name="${IMAGE_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+    else
+      full_image_name="${IMAGE_NAME}:${IMAGE_TAG}"
+    fi
+    
     # 이미지 이름에서 repository와 tag 분리 (마지막 : 기준)
-    local image_repo="${DEPLOY_IMAGE_NAME%:*}"
-    local image_tag="${DEPLOY_IMAGE_NAME##*:}"
+    local image_repo="${full_image_name%:*}"
+    local image_tag="${full_image_name##*:}"
     helm_args+=(
       "--set" "app.enabled=true"
       "--set" "app.image.repository=${image_repo}"
       "--set" "app.image.tag=${image_tag}"
     )
-    echo ">>> Using Docker image: ${DEPLOY_IMAGE_NAME}"
+    echo ">>> Using Docker image: ${full_image_name}"
     echo "   - Repository: ${image_repo}"
     echo "   - Tag: ${image_tag}"
+  else
+    # 이미지 빌드가 요청되지 않은 경우에도 app 활성화 (values.yaml 기본값 사용)
+    helm_args+=(
+      "--set" "app.enabled=true"
+    )
+    echo ">>> Using default image from values.yaml"
   fi
 
   echo ">>> Installing llm-ops-platform..."
@@ -488,8 +499,14 @@ echo "✅ llm-ops-platform + KServe + NVIDIA Device Plugin (time-slicing) 배포
 echo "   - NVIDIA DP Pod:    kubectl get pods -n ${NVDP_NAMESPACE} | grep nvidia"
 echo "   - GPU 노드 리소스:  kubectl describe node <NODE> | grep -A3 nvidia"
 echo "   - KServe 컨트롤러:  kubectl get pods -n ${NAMESPACE} | grep kserve"
-if [[ "${BUILD_IMAGE}" == "true" ]] && [[ -n "${DEPLOY_IMAGE_NAME:-}" ]]; then
+if [[ "${BUILD_IMAGE}" == "true" ]]; then
+  local deployed_image
+  if [[ -n "${IMAGE_REGISTRY}" ]]; then
+    deployed_image="${IMAGE_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+  else
+    deployed_image="${IMAGE_NAME}:${IMAGE_TAG}"
+  fi
   echo "   - App Pod:         kubectl get pods -n ${NAMESPACE} | grep app"
   echo "   - App Service:     kubectl get svc -n ${NAMESPACE} | grep app"
-  echo "   - 배포된 이미지:    ${DEPLOY_IMAGE_NAME}"
+  echo "   - 배포된 이미지:    ${deployed_image}"
 fi
