@@ -97,10 +97,10 @@ spec:
           {{- if .Values.app.objectStoreEndpoint }}
           value: {{ .Values.app.objectStoreEndpoint | quote }}
           {{- else }}
-          value: {{ printf "%s://%s:%d" 
+          value: {{ printf "%s://%s:%v" 
             (ternary "https" "http" (.Values.app.objectStoreService.secure | default false))
             (.Values.app.objectStoreService.serviceName | default "minio")
-            (.Values.app.objectStoreService.port | default 9000) | quote }}
+            (.Values.app.objectStoreService.port | default 9000 | int) | quote }}
           {{- end }}
         - name: OBJECT_STORE_ACCESS_KEY
           valueFrom:

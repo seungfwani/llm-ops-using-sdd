@@ -29,7 +29,15 @@ class RBACMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         # Skip RBAC for docs, openapi, and health check endpoints
-        if request.url.path in ["/llm-ops/v1/docs", "/llm-ops/v1/openapi.json", "/llm-ops/v1/redoc", "/health"]:
+        skip_paths = [
+            "/llm-ops/v1/docs",
+            "/llm-ops/v1/openapi.json",
+            "/llm-ops/v1/redoc",
+            "/health",
+            "/llm-ops/v1/health",  # Main health check endpoint
+        ]
+        # Also skip paths that start with health check prefix
+        if request.url.path in skip_paths or request.url.path.startswith("/llm-ops/v1/health"):
             return await call_next(request)
         
         actor_id = request.headers.get("X-User-Id")
