@@ -5,6 +5,9 @@
 
 set -euo pipefail
 
+# ===== 스크립트 경로 설정 (먼저 설정해야 함) =====
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # ===== 환경 설정 =====
 ENVIRONMENT="${1:-dev}"                 # dev | stg | prod ...
 KSERVE_VERSION="${KSERVE_VERSION:-v0.16.0}"
@@ -39,7 +42,6 @@ NVDP_CHART_VERSION="${NVDP_CHART_VERSION:-0.15.0}"
 NVDP_CONFIGMAP_NAME="${NVDP_CONFIGMAP_NAME:-nvidia-device-plugin-config}"
 
 # 스크립트 / 차트 경로
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ -f "${SCRIPT_DIR}/Chart.yaml" ]]; then
   CHART_DIR="${SCRIPT_DIR}"
