@@ -63,10 +63,29 @@ class KServeAdapter(ServingFrameworkAdapter):
         """
         try:
             logger.info("KServeAdapter: Attempting to refresh Kubernetes authentication token...")
-            # Reload in-cluster config to refresh the token
-            k8s_config.load_incluster_config()
-            logger.info("KServeAdapter: Successfully refreshed Kubernetes authentication token")
-            return True
+            # Reload in-cluster config with explicit service account configuration
+            import os
+            token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+            ca_cert_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+            if os.path.exists(token_path) and os.path.exists(ca_cert_path):
+                k8s_config.load_incluster_config()
+                # Reconfigure with explicit service account token and CA cert
+                configuration = client.Configuration.get_default_copy()
+                with open(token_path, 'r') as f:
+                    token = f.read().strip()
+                configuration.api_key['authorization'] = f"Bearer {token}"
+                configuration.api_key_prefix['authorization'] = 'Bearer'
+                configuration.ssl_ca_cert = ca_cert_path
+                configuration.verify_ssl = True
+                client.Configuration.set_default(configuration)
+                logger.info("KServeAdapter: Successfully refreshed Kubernetes authentication token with service account")
+                return True
+            else:
+                logger.warning("KServeAdapter: Service account files not found, attempting default refresh")
+                k8s_config.load_incluster_config()
+                logger.info("KServeAdapter: Successfully refreshed Kubernetes authentication token (default)")
+                return True
         except Exception as e:
             logger.error(f"KServeAdapter: Failed to refresh Kubernetes token: {e}")
             return False
@@ -90,7 +109,28 @@ class KServeAdapter(ServingFrameworkAdapter):
                 k8s_config.load_kube_config(config_file=self.settings.kubeconfig_path)
             else:
                 logger.info("KServeAdapter: Loading in-cluster Kubernetes config")
-                k8s_config.load_incluster_config()
+                # Explicitly configure service account token and CA certificate for in-cluster authentication
+                import os
+                token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+                ca_cert_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+                if os.path.exists(token_path) and os.path.exists(ca_cert_path):
+                    logger.info("KServeAdapter: Using service account token and CA certificate for in-cluster authentication")
+                    k8s_config.load_incluster_config()
+                    # Ensure the configuration uses the service account token and CA cert
+                    configuration = client.Configuration.get_default_copy()
+                    with open(token_path, 'r') as f:
+                        token = f.read().strip()
+                    configuration.api_key['authorization'] = f"Bearer {token}"
+                    configuration.api_key_prefix['authorization'] = 'Bearer'
+                    configuration.ssl_ca_cert = ca_cert_path
+                    # Force SSL verification for in-cluster auth
+                    configuration.verify_ssl = True
+                    client.Configuration.set_default(configuration)
+                    logger.info("KServeAdapter: Successfully configured service account authentication")
+                else:
+                    logger.warning("KServeAdapter: Service account token or CA certificate not found, falling back to default in-cluster config")
+                    k8s_config.load_incluster_config()
         except Exception as e:
             logger.warning(f"KServeAdapter: Failed to load kubeconfig: {e}, using default")
             try:
@@ -100,16 +140,26 @@ class KServeAdapter(ServingFrameworkAdapter):
                 logger.error("KServeAdapter: Could not initialize Kubernetes client")
                 raise
         
-        # Configure SSL verification based on settings
+        # Configure SSL verification based on settings and authentication method
         configuration = client.Configuration.get_default_copy()
-        if not self.settings.kubernetes_verify_ssl:
-            logger.warning("SSL verification is disabled for Kubernetes API client")
-            configuration.verify_ssl = False
-            # Also disable SSL warnings
-            import urllib3
-            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-            # Update all API clients to use this configuration
-            client.Configuration.set_default(configuration)
+
+        # For in-cluster authentication, always verify SSL since we use CA certificate
+        # For external kubeconfig, respect the kubernetes_verify_ssl setting
+        if self.settings.kubeconfig_path:
+            # External kubeconfig - use user setting
+            if not self.settings.kubernetes_verify_ssl:
+                logger.warning("SSL verification is disabled for Kubernetes API client (external kubeconfig)")
+                configuration.verify_ssl = False
+                # Also disable SSL warnings
+                import urllib3
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        else:
+            # In-cluster authentication - always verify SSL with CA certificate
+            logger.info("SSL verification enabled for in-cluster Kubernetes API client")
+            configuration.verify_ssl = True
+
+        # Update all API clients to use this configuration
+        client.Configuration.set_default(configuration)
         
         self.custom_api = client.CustomObjectsApi()
         self.core_api = client.CoreV1Api()
