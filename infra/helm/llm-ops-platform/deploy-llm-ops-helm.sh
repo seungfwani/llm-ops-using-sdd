@@ -8,6 +8,11 @@ set -euo pipefail
 # ===== 스크립트 경로 설정 (먼저 설정해야 함) =====
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# ===== 프로젝트 루트 경로 계산 =====
+# 스크립트가 infra/helm/llm-ops-platform/ 에 있으므로, 루트는 ../../../ 입니다
+PROJECT_ROOT_DEFAULT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+DOCKERFILE_PATH_DEFAULT="${PROJECT_ROOT_DEFAULT}/Dockerfile"
+
 # ===== 기본값 설정 =====
 ENVIRONMENT="dev"
 KSERVE_VERSION="v0.16.0"
@@ -22,8 +27,8 @@ PUSH_IMAGE="false"
 IMAGE_REGISTRY=""
 IMAGE_NAME="llm-ops-platform"
 IMAGE_TAG=""
-DOCKERFILE_PATH="${SCRIPT_DIR}/../../Dockerfile"
-PROJECT_ROOT="${SCRIPT_DIR}/../.."
+DOCKERFILE_PATH="${DOCKERFILE_PATH_DEFAULT}"
+PROJECT_ROOT="${PROJECT_ROOT_DEFAULT}"
 NVDP_REPLICAS="4"
 NVDP_NAMESPACE="kube-system"
 NVDP_RELEASE_NAME="nvidia-device-plugin"
@@ -386,6 +391,10 @@ build_docker_image() {
 
   echo ">>> Building Docker image..."
   
+  # 경로를 절대 경로로 변환
+  DOCKERFILE_PATH="$(cd "$(dirname "${DOCKERFILE_PATH}")" && pwd)/$(basename "${DOCKERFILE_PATH}")"
+  PROJECT_ROOT="$(cd "${PROJECT_ROOT}" && pwd)"
+  
   # 이미지 이름 구성
   if [[ -n "${IMAGE_REGISTRY}" ]]; then
     FULL_IMAGE_NAME="${IMAGE_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
@@ -400,6 +409,14 @@ build_docker_image() {
   # Dockerfile 존재 확인
   if [[ ! -f "${DOCKERFILE_PATH}" ]]; then
     echo "❌ Dockerfile을 찾을 수 없습니다: ${DOCKERFILE_PATH}"
+    echo "   프로젝트 루트: ${PROJECT_ROOT}"
+    echo "   프로젝트 루트에 Dockerfile이 있는지 확인하세요."
+    exit 1
+  fi
+  
+  # 프로젝트 루트 존재 확인
+  if [[ ! -d "${PROJECT_ROOT}" ]]; then
+    echo "❌ 프로젝트 루트 디렉토리를 찾을 수 없습니다: ${PROJECT_ROOT}"
     exit 1
   fi
 
