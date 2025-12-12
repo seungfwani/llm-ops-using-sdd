@@ -146,12 +146,25 @@ async def chat_completion(
     try:
         # Find endpoint by route name
         endpoint_id, full_route = get_endpoint_by_route_name(route_name, session)
-        logger.info(f"Found endpoint: {endpoint_id} for route_name: {route_name}")
+        logger.info(f"Found endpoint: {endpoint_id} for route_name: {route_name}, full_route: {full_route}")ㄹㄷㅁㅅ
         
         if not endpoint_id:
+            # Debug: Log available endpoints for troubleshooting
+            repo = ServingEndpointRepository(session)
+            all_endpoints = repo.list()
+            available_routes = [f"{ep.environment}:{ep.route} (status: {ep.status})" for ep in all_endpoints]
+            logger.warning(f"Endpoint not found for route: {route_name}. Available endpoints: {available_routes}")
+
+            # Provide helpful error message with available options
+            available_healthy = [f"{ep.environment}:{extract_route_name(ep.route)}" for ep in all_endpoints if ep.status == "healthy"]
+            if available_healthy:
+                available_msg = f"Available healthy endpoints: {', '.join(available_healthy)}"
+            else:
+                available_msg = "No healthy endpoints found. Please deploy a model first."
+
             return schemas.ChatCompletionResponse(
                 status="fail",
-                message=f"Endpoint not found for route: {route_name}. Make sure the endpoint is deployed and healthy.",
+                message=f"Endpoint not found for route: {route_name}. {available_msg}",
                 data=None,
             )
         
@@ -383,8 +396,8 @@ async def _call_model_inference(
     if service_name is None:
         service_name = str(endpoint_name_or_host)
 
-    logger.info(f"Calling model inference at: {inference_url}")
-    
+    logger.info(f"Calling model inference at: {inference_url} (service: {service_name}, namespace: {namespace})")
+
     # Prepare request payload (OpenAI-compatible chat completions schema)
     payload = {
         "model": model_entry.name,
@@ -461,11 +474,32 @@ async def _call_model_inference(
         raise ValueError("Model inference request timed out") from None
     except httpx.ConnectError as e:
         logger.error(f"Connection error calling model inference: {e}")
-        raise ValueError(
+        error_msg = (
             f"Cannot connect to model service at {inference_url}. "
             f"Make sure the endpoint is deployed and healthy. "
             f"Service: {service_name}, Namespace: {namespace}"
-        ) from e
+        )
+
+        # Add troubleshooting suggestions
+        if settings.use_kserve:
+            error_msg += (
+                ". For KServe deployments, ensure InferenceService is created and "
+                "predictor pod is running. Check: kubectl get inferenceservice -n {namespace}"
+            )
+        else:
+            error_msg += (
+                ". For raw Kubernetes deployments, ensure deployment and service exist. "
+                "Check: kubectl get deployments,svc -n {namespace}"
+            )
+
+        # Suggest local development override if available
+        if not settings.serving_inference_host_override:
+            error_msg += (
+                ". For local development, set SERVING_INFERENCE_HOST_OVERRIDE "
+                "to your local model service URL."
+            )
+
+        raise ValueError(error_msg) from e
     except Exception as e:
         logger.error(f"Unexpected error calling model inference: {e}", exc_info=True)
         raise ValueError(f"Model inference failed: {str(e)}") from e
