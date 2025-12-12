@@ -26,8 +26,10 @@ coverage/
 # Env / Secrets
 .env
 .env.*
+kube.conf
 backend/.env
 frontend/.env
+backend/kube.conf
 
 # Logs
 *.log

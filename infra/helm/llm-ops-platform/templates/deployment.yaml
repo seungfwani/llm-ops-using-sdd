@@ -136,8 +136,10 @@ spec:
           value: {{ .Values.app.logLevel | default "INFO" | quote }}
         
         # Kubernetes Configuration
+        {{- if .Values.app.kubeconfigPath }}
         - name: KUBECONFIG_PATH
-          value: {{ .Values.app.kubeconfigPath | default "" | quote }}
+          value: {{ .Values.app.kubeconfigPath | quote }}
+        {{- end }}
         - name: KUBERNETES_VERIFY_SSL
           value: {{ .Values.app.kubernetesVerifySsl | default true | quote }}
         
