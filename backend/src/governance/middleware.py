@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Sequence
 
 from fastapi import HTTPException, Request
@@ -7,6 +8,8 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import Response
 
 from core.settings import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class PolicyEngine:
@@ -28,23 +31,18 @@ class RBACMiddleware(BaseHTTPMiddleware):
         self.policy_engine = policy_engine or PolicyEngine()
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        # Skip RBAC for docs, openapi, health check, and frontend static files
-        skip_paths = [
+        # Apply RBAC only to API endpoints (/llm-ops/v1/*)
+        # Skip all non-API paths (frontend, static files, docs, health, etc.)
+        if not request.url.path.startswith("/llm-ops/v1"):
+            return await call_next(request)
+
+        # For API endpoints, check if it's a documentation or health endpoint to skip
+        skip_api_paths = [
             "/llm-ops/v1/docs",
             "/llm-ops/v1/openapi.json",
             "/llm-ops/v1/redoc",
-            "/health",
-            "/llm-ops/v1/health",  # Main health check endpoint
         ]
-        # Also skip paths that start with health check prefix
-        if request.url.path in skip_paths or request.url.path.startswith("/llm-ops/v1/health"):
-            return await call_next(request)
-        
-        # Skip RBAC for frontend static files and root path
-        # Frontend is served at root (/) and assets are at /assets
-        if (request.url.path == "/" or 
-            request.url.path.startswith("/assets") or
-            not request.url.path.startswith("/llm-ops/v1")):
+        if request.url.path in skip_api_paths or request.url.path.startswith("/llm-ops/v1/health"):
             return await call_next(request)
         
         actor_id = request.headers.get("X-User-Id")
