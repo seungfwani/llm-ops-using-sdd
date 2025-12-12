@@ -1,4 +1,16 @@
 {{- if .Values.dependencies.redis.enabled }}
+{{- if .Values.dependencies.redis.secret.enabled }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: redis-secret
+  labels:
+    {{- include "llmops.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  REDIS_PASSWORD: {{ .Values.dependencies.redis.secret.password | quote }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -24,9 +36,24 @@ spec:
             - containerPort: 6379
               name: redis
           command:
+            {{- if .Values.dependencies.redis.secret.enabled }}
+            - /bin/sh
+            - -c
+            - |
+              redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
+            {{- else }}
             - redis-server
             - --appendonly
             - "yes"
+            {{- end }}
+          env:
+            {{- if .Values.dependencies.redis.secret.enabled }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: REDIS_PASSWORD
+            {{- end }}
           volumeMounts:
             - name: redis-storage
               mountPath: /data

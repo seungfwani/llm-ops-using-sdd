@@ -66,6 +66,9 @@ dependencies:
     service:
       type: ClusterIP
       port: 6379
+    secret:
+      enabled: false  # Set to true to enable Redis password authentication
+      password: ""  # Redis password (required if enabled is true)
   minio:
     enabled: true
     storage: 50Gi
@@ -136,21 +139,26 @@ app:
   # If not set, will be auto-generated from dependencies.postgresql template
   # databaseUrl: ""  # Leave empty to auto-generate from dependencies
   
-  # Database service configuration (used to build DATABASE_URL if databaseUrl not set)
+  # Database service configuration
+  # If databaseUrl is not set, individual components (DB_USER, DB_PASSWORD, etc.) will be used
+  # When dependencies.postgresql.enabled is true, credentials are loaded from postgresql-secret via secretKeyRef
+  # When dependencies.postgresql.enabled is false, fallback values below are used
   database:
     serviceName: "postgresql"  # Service name from postgresql template (line 85)
     port: 5432
-    # If user/password/database are not set, they will be taken from dependencies.postgresql.secret
+    # Fallback values (only used when dependencies.postgresql.enabled is false)
+    # If not set, defaults to "llmops", "password", "llmops"
     # user: ""
     # password: ""
     # database: ""
   
   # Redis connection URL
-  # Format: redis://host:port/db
-  # If not set, will be auto-generated from dependencies.redis template
-  # redisUrl: ""  # Leave empty to auto-generate from dependencies
+  # Format: redis://host:port/db or redis://:password@host:port/db
+  # If not set, will be auto-generated from individual components (REDIS_HOST, REDIS_PORT, etc.)
+  # redisUrl: ""  # Leave empty to auto-generate from components
   
-  # Redis service configuration (used to build REDIS_URL if redisUrl not set)
+  # Redis service configuration (used to build REDIS_URL components if redisUrl not set)
+  # When dependencies.redis.secret.enabled is true, password is loaded from redis-secret via secretKeyRef
   redis:
     serviceName: "redis"  # Service name from redis template (line 47)
     port: 6379

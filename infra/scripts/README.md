@@ -521,10 +521,10 @@ USE_KSERVE=false
 # 또는 전체 재설정
 ./setup-object-store.sh llm-ops-dev setup-all
 
-# 수동 생성
-kubectl create secret generic llm-ops-object-store-credentials \
-  --from-literal=access-key-id=llmops \
-  --from-literal=secret-access-key=llmops-secret \
+# 수동 생성 (minio-secret 사용)
+kubectl create secret generic minio-secret \
+  --from-literal=MINIO_ROOT_USER=llmops \
+  --from-literal=MINIO_ROOT_PASSWORD=llmops-secret \
   -n llm-ops-dev
 ```
 

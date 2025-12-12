@@ -51,8 +51,8 @@ def _build_s3_sync_resources(
             name="AWS_ACCESS_KEY_ID",
             value_from=client.V1EnvVarSource(
                 secret_key_ref=client.V1SecretKeySelector(
-                    name="llm-ops-object-store-credentials",
-                    key="access-key-id",
+                    name="minio-secret",
+                    key="MINIO_ROOT_USER",
                 )
             ),
         ),
@@ -60,8 +60,8 @@ def _build_s3_sync_resources(
             name="AWS_SECRET_ACCESS_KEY",
             value_from=client.V1EnvVarSource(
                 secret_key_ref=client.V1SecretKeySelector(
-                    name="llm-ops-object-store-credentials",
-                    key="secret-access-key",
+                    name="minio-secret",
+                    key="MINIO_ROOT_PASSWORD",
                 )
             ),
         ),
@@ -771,8 +771,8 @@ class ServingDeployer:
                     name="AWS_ACCESS_KEY_ID",
                     value_from=client.V1EnvVarSource(
                         secret_key_ref=client.V1SecretKeySelector(
-                            name="llm-ops-object-store-credentials",
-                            key="access-key-id",
+                            name="minio-secret",
+                            key="MINIO_ROOT_USER",
                         )
                     ),
                 ),
@@ -780,8 +780,8 @@ class ServingDeployer:
                     name="AWS_SECRET_ACCESS_KEY",
                     value_from=client.V1EnvVarSource(
                         secret_key_ref=client.V1SecretKeySelector(
-                            name="llm-ops-object-store-credentials",
-                            key="secret-access-key",
+                            name="minio-secret",
+                            key="MINIO_ROOT_PASSWORD",
                         )
                     ),
                 ),
@@ -1432,8 +1432,8 @@ class ServingDeployer:
                     "name": "AWS_ACCESS_KEY_ID",
                     "valueFrom": {
                         "secretKeyRef": {
-                            "name": "llm-ops-object-store-credentials",
-                            "key": "access-key-id",
+                            "name": "minio-secret",
+                            "key": "MINIO_ROOT_USER",
                         }
                     },
                 },
@@ -1441,8 +1441,8 @@ class ServingDeployer:
                     "name": "AWS_SECRET_ACCESS_KEY",
                     "valueFrom": {
                         "secretKeyRef": {
-                            "name": "llm-ops-object-store-credentials",
-                            "key": "secret-access-key",
+                            "name": "minio-secret",
+                            "key": "MINIO_ROOT_PASSWORD",
                         }
                     },
                 },

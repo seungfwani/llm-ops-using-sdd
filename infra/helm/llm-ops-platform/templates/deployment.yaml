@@ -34,37 +34,63 @@ spec:
           protocol: TCP
         env:
         # Database Configuration
+        {{- if .Values.app.databaseUrl }}
         - name: DATABASE_URL
-          {{- if .Values.app.databaseUrl }}
           value: {{ .Values.app.databaseUrl | quote }}
-          {{- else if .Values.dependencies.postgresql.enabled }}
-          value: {{ printf "postgresql+psycopg://%s:%s@%s:%d/%s" 
-            (.Values.app.database.user | default .Values.dependencies.postgresql.secret.user)
-            (.Values.app.database.password | default .Values.dependencies.postgresql.secret.password)
-            (.Values.app.database.serviceName | default "postgresql")
-            (.Values.app.database.port | default 5432)
-            (.Values.app.database.database | default .Values.dependencies.postgresql.secret.db) | quote }}
-          {{- else }}
-          value: {{ printf "postgresql+psycopg://%s:%s@%s:%d/%s" 
-            (.Values.app.database.user | default "llmops")
-            (.Values.app.database.password | default "password")
-            (.Values.app.database.serviceName | default "postgresql")
-            (.Values.app.database.port | default 5432)
-            (.Values.app.database.database | default "llmops") | quote }}
-          {{- end }}
+        {{- else }}
+        # Database connection components (using secrets for credentials)
+        {{- if .Values.dependencies.postgresql.enabled }}
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-secret
+              key: POSTGRES_USER
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-secret
+              key: POSTGRES_PASSWORD
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-secret
+              key: POSTGRES_DB
+        {{- else }}
+        - name: DB_USER
+          value: {{ .Values.app.database.user | default "llmops" | quote }}
+        - name: DB_PASSWORD
+          value: {{ .Values.app.database.password | default "password" | quote }}
+        - name: DB_NAME
+          value: {{ .Values.app.database.database | default "llmops" | quote }}
+        {{- end }}
+        - name: DB_HOST
+          value: {{ .Values.app.database.serviceName | default "postgresql" | quote }}
+        - name: DB_PORT
+          value: {{ .Values.app.database.port | default 5432 | quote }}
+        {{- end }}
         - name: SQLALCHEMY_ECHO
           value: {{ .Values.app.sqlalchemyEcho | default false | quote }}
         
         # Redis Configuration
+        {{- if .Values.app.redisUrl }}
         - name: REDIS_URL
-          {{- if .Values.app.redisUrl }}
           value: {{ .Values.app.redisUrl | quote }}
-          {{- else }}
-          value: {{ printf "redis://%s:%d/%d" 
-            (.Values.app.redis.serviceName | default "redis")
-            (.Values.app.redis.port | default 6379)
-            (.Values.app.redis.database | default 0) | quote }}
-          {{- end }}
+        {{- else }}
+        # Redis connection components (using secrets for password if enabled)
+        - name: REDIS_HOST
+          value: {{ .Values.app.redis.serviceName | default "redis" | quote }}
+        - name: REDIS_PORT
+          value: {{ .Values.app.redis.port | default 6379 | quote }}
+        - name: REDIS_DATABASE
+          value: {{ .Values.app.redis.database | default 0 | quote }}
+        {{- if and .Values.dependencies.redis.enabled .Values.dependencies.redis.secret.enabled }}
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: redis-secret
+              key: REDIS_PASSWORD
+        {{- end }}
+        {{- end }}
         
         # Object Storage Configuration
         - name: OBJECT_STORE_ENDPOINT
@@ -79,13 +105,23 @@ spec:
         - name: OBJECT_STORE_ACCESS_KEY
           valueFrom:
             secretKeyRef:
+              {{- if .Values.dependencies.minio.enabled }}
+              name: minio-secret
+              key: MINIO_ROOT_USER
+              {{- else }}
               name: {{ .Values.objectStore.credentials.secretName | default (printf "%s-object-store" (include "llmops.fullname" .)) }}
               key: accessKey
+              {{- end }}
         - name: OBJECT_STORE_SECRET_KEY
           valueFrom:
             secretKeyRef:
+              {{- if .Values.dependencies.minio.enabled }}
+              name: minio-secret
+              key: MINIO_ROOT_PASSWORD
+              {{- else }}
               name: {{ .Values.objectStore.credentials.secretName | default (printf "%s-object-store" (include "llmops.fullname" .)) }}
               key: secretKey
+              {{- end }}
         - name: OBJECT_STORE_BUCKET
           value: {{ if .Values.app.objectStoreBucket }}{{ .Values.app.objectStoreBucket | quote }}{{ else }}{{ .Values.objectStore.bucket | default .Release.Namespace | quote }}{{ end }}
         - name: OBJECT_STORE_SECURE

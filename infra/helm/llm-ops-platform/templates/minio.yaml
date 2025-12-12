@@ -24,6 +24,15 @@ stringData:
   MINIO_ROOT_USER: {{ .Values.dependencies.minio.secret.accessKey | quote }}
   MINIO_ROOT_PASSWORD: {{ .Values.dependencies.minio.secret.secretKey | quote }}
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-ops-object-store-config
+  labels:
+    {{- include "llmops.labels" . | nindent 4 }}
+data:
+  endpoint-url: {{ .Values.objectStore.config.endpointUrl | default "http://minio:9000" | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:

@@ -36,8 +36,8 @@ create_secrets_and_configmap() {
         return 1
     fi
     
-    # Create Secret for object store credentials
-    SECRET_NAME="llm-ops-object-store-credentials"
+    # Create/Update Secret for object store credentials (minio-secret)
+    SECRET_NAME="minio-secret"
     if kubectl get secret "${SECRET_NAME}" -n "${namespace}" &> /dev/null; then
         echo "🔄 Updating existing secret: ${SECRET_NAME}"
         kubectl delete secret "${SECRET_NAME}" -n "${namespace}"
@@ -45,8 +45,8 @@ create_secrets_and_configmap() {
     
     echo "📦 Creating secret: ${SECRET_NAME}"
     kubectl create secret generic "${SECRET_NAME}" \
-        --from-literal=access-key-id="${access_key}" \
-        --from-literal=secret-access-key="${secret_key}" \
+        --from-literal=MINIO_ROOT_USER="${access_key}" \
+        --from-literal=MINIO_ROOT_PASSWORD="${secret_key}" \
         -n "${namespace}"
     
     # Create ConfigMap for object store endpoint
@@ -230,10 +230,10 @@ check_object_store_status() {
     
     # Check Secret
     echo "📋 Checking Secret..."
-    if kubectl get secret llm-ops-object-store-credentials -n "${namespace}" &> /dev/null; then
-        echo "   ✅ Object store credentials secret exists"
+    if kubectl get secret minio-secret -n "${namespace}" &> /dev/null; then
+        echo "   ✅ Object store credentials secret (minio-secret) exists"
     else
-        echo "   ❌ Object store credentials secret not found"
+        echo "   ❌ Object store credentials secret (minio-secret) not found"
         echo "   Run: ./setup-object-store.sh ${namespace} setup"
     fi
     

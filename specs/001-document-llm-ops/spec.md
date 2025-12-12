@@ -1504,7 +1504,7 @@ management capabilities.
     image does not exist (ImagePullBackOff errors) by providing clear error messages
     and alternative image options.
   - **Object Storage Access**: Serving containers receive object storage credentials
-    and endpoint configuration via Kubernetes secrets (`llm-ops-object-store-credentials`)
+    and endpoint configuration via Kubernetes secrets (`minio-secret`)
     and ConfigMaps (`llm-ops-object-store-config`). The `MODEL_STORAGE_URI` environment
     variable is set to the catalog entry's `storage_uri` (e.g., `s3://models/{model_id}/{version}/`).
   - **Deployment Validation**: Before deployment, the platform validates that the

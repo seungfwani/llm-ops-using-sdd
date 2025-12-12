@@ -486,8 +486,8 @@ class KServeAdapter(ServingFrameworkAdapter):
                 "name": "AWS_ACCESS_KEY_ID",
                 "valueFrom": {
                     "secretKeyRef": {
-                        "name": "llm-ops-object-store-credentials",
-                        "key": "access-key-id",
+                        "name": "minio-secret",
+                        "key": "MINIO_ROOT_USER",
                     }
                 },
             },
@@ -495,8 +495,8 @@ class KServeAdapter(ServingFrameworkAdapter):
                 "name": "AWS_SECRET_ACCESS_KEY",
                 "valueFrom": {
                     "secretKeyRef": {
-                        "name": "llm-ops-object-store-credentials",
-                        "key": "secret-access-key",
+                        "name": "minio-secret",
+                        "key": "MINIO_ROOT_PASSWORD",
                     }
                 },
             },

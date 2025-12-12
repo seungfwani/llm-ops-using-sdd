@@ -20,10 +20,21 @@ class Settings(BaseSettings):
     # =========================================================================
     # Database Configuration
     # =========================================================================
-    # PostgreSQL connection URL
+    # PostgreSQL connection URL (can be set directly or constructed from components)
     # Local: postgresql+psycopg://llmops:password@localhost:5432/llmops
     # Kubernetes: postgresql+psycopg://llmops:password@postgresql.llm-ops-dev.svc.cluster.local:5432/llmops
-    database_url: AnyUrl = "postgresql+psycopg://llmops:password@localhost:5432/llmops"
+    # If not set, will be constructed from DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME
+    database_url: AnyUrl | None = None
+    
+    # Database connection components (used when database_url is not set)
+    # These are typically loaded from Kubernetes secrets via secretKeyRef
+    # Environment variable names: DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME
+    # Pydantic Settings automatically converts field names to uppercase for env vars
+    db_user: str = "llmops"  # Maps to DB_USER env var
+    db_password: str = "password"  # Maps to DB_PASSWORD env var
+    db_host: str = "localhost"  # Maps to DB_HOST env var
+    db_port: int = 5432  # Maps to DB_PORT env var
+    db_name: str = "llmops"  # Maps to DB_NAME env var
     
     # Enable SQLAlchemy query logging (for debugging)
     sqlalchemy_echo: bool = False
@@ -31,10 +42,19 @@ class Settings(BaseSettings):
     # =========================================================================
     # Redis Configuration
     # =========================================================================
-    # Redis connection URL
+    # Redis connection URL (can be set directly or constructed from components)
     # Local: redis://localhost:6379/0
     # Kubernetes: redis://redis.llm-ops-dev.svc.cluster.local:6379/0
-    redis_url: AnyUrl = "redis://localhost:6379/0"
+    # If not set, will be constructed from REDIS_HOST, REDIS_PORT, REDIS_DATABASE, REDIS_PASSWORD
+    redis_url: AnyUrl | None = None
+    
+    # Redis connection components (used when redis_url is not set)
+    # These are typically loaded from Kubernetes secrets via secretKeyRef
+    # Environment variable names: REDIS_HOST, REDIS_PORT, REDIS_DATABASE, REDIS_PASSWORD
+    redis_host: str = "localhost"  # Maps to REDIS_HOST env var
+    redis_port: int = 6379  # Maps to REDIS_PORT env var
+    redis_database: int = 0  # Maps to REDIS_DATABASE env var
+    redis_password: str | None = None  # Maps to REDIS_PASSWORD env var (optional)
     
     # =========================================================================
     # Object Storage Configuration (MinIO/S3)
@@ -319,6 +339,33 @@ def get_settings() -> Settings:
     if settings.object_store_bucket is None:
         # training_namespace is already in format "llm-ops-{env}"
         settings.object_store_bucket = settings.training_namespace
+    
+    # If database_url is not set, construct it from individual components
+    if settings.database_url is None:
+        from urllib.parse import quote_plus
+        # URL-encode password to handle special characters
+        encoded_password = quote_plus(settings.db_password)
+        database_url_str = (
+            f"postgresql+psycopg://{settings.db_user}:{encoded_password}"
+            f"@{settings.db_host}:{settings.db_port}/{settings.db_name}"
+        )
+        settings.database_url = AnyUrl(database_url_str)
+    
+    # If redis_url is not set, construct it from individual components
+    if settings.redis_url is None:
+        from urllib.parse import quote_plus
+        # Build Redis URL with optional password
+        if settings.redis_password:
+            encoded_password = quote_plus(settings.redis_password)
+            redis_url_str = (
+                f"redis://:{encoded_password}@{settings.redis_host}:{settings.redis_port}/{settings.redis_database}"
+            )
+        else:
+            redis_url_str = (
+                f"redis://{settings.redis_host}:{settings.redis_port}/{settings.redis_database}"
+            )
+        settings.redis_url = AnyUrl(redis_url_str)
+    
     return settings
 
 

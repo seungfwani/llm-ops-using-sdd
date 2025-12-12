@@ -47,7 +47,7 @@ ValueError: Model path does not exist: s3://models/...
 kubectl exec -n llm-ops-dev deployment/minio -- mc ls minio/models/
 
 # 2. S3 접근 권한 확인
-kubectl get secret llm-ops-object-store-credentials -n llm-ops-dev -o yaml
+kubectl get secret minio-secret -n llm-ops-dev -o yaml
 
 # 3. 모델 카탈로그에서 storage_uri 확인
 # API: GET /catalog/models/{model_id}
