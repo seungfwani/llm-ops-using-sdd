@@ -25,6 +25,8 @@ build_helm_args() {
     "--set" "image.tag=${IMAGE##*:}"
     # 차트 내부 gpuPlugin은 외부 설치를 전제로 끔 (중복 방지)
     "--set" "gpuPlugin.enabled=false"
+    # 차트 내 kserve 서브차트는 prereq 단계에서 별도 설치를 전제로 끔 (리소스 충돌 방지)
+    "--set" "kserve.enabled=false"
     # KServe hook이 잘못된 ns를 바라보지 않도록 강제
     "--set" "kserve.namespaceOverride=${KSERVE_NAMESPACE}"
   )
