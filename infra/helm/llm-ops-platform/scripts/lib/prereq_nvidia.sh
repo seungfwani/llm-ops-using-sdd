@@ -2,6 +2,11 @@
 set -euo pipefail
 # expects common.sh loaded
 
+
+: "${GPU_ALLOC_WAIT_SECONDS:=90}"
+: "${GPU_ALLOC_WAIT_INTERVAL:=5}"
+
+
 _detect_existing_nvidia_stack() {
   # GPU Operator나 기존 device-plugin이 있으면 true
   kubectl get ds -A 2>/dev/null | grep -qiE 'nvidia|gpu-operator' && return 0
@@ -35,6 +40,61 @@ EOF
     --namespace "${NVDP_NAMESPACE}" \
     --version "${NVDP_CHART_VERSION}" \
     --set config.name="${NVDP_CONFIGMAP_NAME}"
+
+_get_nvd_ds_name() {
+  # Try to find daemonset name for this helm release
+  kubectl -n "${NVDP_NAMESPACE}" get ds \
+    -l "app.kubernetes.io/instance=${NVDP_RELEASE_NAME}" \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true
+}
+
+_wait_nvidia_device_plugin_ready() {
+  local ds
+  ds="$(_get_nvd_ds_name)"
+  if [[ -z "${ds}" ]]; then
+    warn "NVIDIA device plugin DaemonSet을 찾지 못했습니다. (namespace=${NVDP_NAMESPACE}, release=${NVDP_RELEASE_NAME})"
+    return 1
+  fi
+  log "NVIDIA device plugin DaemonSet 준비 대기: ${ds}"
+  # rollout status가 실패해도 바로 종료하지 않고 후속 진단을 위해 return code를 전달
+  kubectl -n "${NVDP_NAMESPACE}" rollout status "ds/${ds}" --timeout=120s
+}
+
+_wait_gpu_allocatable() {
+  local deadline=$((SECONDS + GPU_ALLOC_WAIT_SECONDS))
+  while (( SECONDS < deadline )); do
+    if _verify_gpu_allocatable; then
+      return 0
+    fi
+    sleep "${GPU_ALLOC_WAIT_INTERVAL}"
+  done
+  return 1
+}
+
+_dump_nvidia_diagnostics() {
+  warn "=== NVIDIA 진단 정보 ==="
+  warn "[nodes allocatable]"
+  kubectl get nodes -o custom-columns=NAME:.metadata.name,GPU:.status.allocatable.nvidia\\.com/gpu 2>/dev/null || true
+
+  warn "[daemonsets in kube-system (nvidia 관련)]"
+  kubectl -n "${NVDP_NAMESPACE}" get ds 2>/dev/null | grep -i nvidia || true
+
+  local ds pod
+  ds="$(_get_nvd_ds_name)"
+  if [[ -n "${ds}" ]]; then
+    warn "[daemonset describe: ${ds}]"
+    kubectl -n "${NVDP_NAMESPACE}" describe "ds/${ds}" 2>/dev/null || true
+    pod=$(kubectl -n "${NVDP_NAMESPACE}" get pods -l "app.kubernetes.io/instance=${NVDP_RELEASE_NAME}" \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [[ -n "${pod}" ]]; then
+      warn "[device-plugin pod logs (tail 200): ${pod}]"
+      kubectl -n "${NVDP_NAMESPACE}" logs "${pod}" --tail=200 2>/dev/null || true
+    fi
+  fi
+  warn "=== NVIDIA 진단 정보 끝 ==="
+}
+
+
 }
 
 _verify_gpu_allocatable() {
@@ -78,12 +138,15 @@ ensure_nvidia_device_plugin() {
       ;;
   esac
 
+  # device-plugin 적용 직후 allocatable 반영까지 약간의 지연이 있을 수 있어 대기 후 확인
   if [[ "${FAIL_FAST}" == "true" ]]; then
-    if ! _verify_gpu_allocatable; then
+    if ! _wait_gpu_allocatable; then
+      _dump_nvidia_diagnostics
       die "GPU allocatable(nvidia.com/gpu)이 확인되지 않습니다. (FAIL_FAST=true)"
     fi
   else
-    if ! _verify_gpu_allocatable; then
+    if ! _wait_gpu_allocatable; then
+      _dump_nvidia_diagnostics
       warn "GPU allocatable(nvidia.com/gpu)이 확인되지 않습니다."
     fi
   fi
