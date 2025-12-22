@@ -18,6 +18,8 @@ _kserve_controller_exists() {
 
 ensure_kserve_stack() {
   log "KServe stack 설치/업데이트 (controller/webhook 포함)"
+  # KServe stack chart는 ClusterServingRuntime 등 CRD가 선행되어야 함
+  ensure_kserve_crds
   # 공식 chart: oci://ghcr.io/kserve/charts/kserve
   helm upgrade --install kserve oci://ghcr.io/kserve/charts/kserve \
     --version "${KSERVE_VERSION}" \
@@ -25,7 +27,8 @@ ensure_kserve_stack() {
 
   log "KServe 컨트롤러 준비 대기"
   # 이름이 다를 수 있어 deployment label 기반으로 대기
-  kubectl -n "${KSERVE_NAMESPACE}" wait --for=condition=available deploy --all --timeout=300s || true
+  kubectl -n "${KSERVE_NAMESPACE}" wait --for=condition=available deploy -l app.kubernetes.io/name=kserve --timeout=300s || true
+  kubectl -n "${KSERVE_NAMESPACE}" get deploy
 }
 
 ensure_kserve() {

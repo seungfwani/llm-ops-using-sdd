@@ -59,7 +59,13 @@ ensure_nvidia_device_plugin() {
       ;;
     detect)
       if _detect_existing_nvidia_stack; then
-        log "기존 NVIDIA/GPU 스택이 감지되어 설치를 건너뜁니다."
+        log "기존 NVIDIA/GPU 스택이 감지되었습니다."
+        if ! _verify_gpu_allocatable; then
+          warn "기존 NVIDIA 스택이 있지만 GPU allocatable(nvidia.com/gpu)이 확인되지 않습니다. device-plugin 설치/업데이트를 시도합니다."
+          _install_nvidia_device_plugin
+        else
+          log "GPU allocatable이 확인되어 설치를 건너뜁니다."
+        fi
       else
         _install_nvidia_device_plugin
       fi
