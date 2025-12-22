@@ -19,7 +19,7 @@ show_help() {
 KServe 옵션:
   --kserve-install-mode <detect|stack|crd-only|skip>  KServe 설치 모드 (기본: detect)
   --kserve-namespace <ns>                              KServe 네임스페이스 (기본: kserve-system)
-  --kserve-version <ver>                               KServe chart 버전(기본: 0.15.1)
+  --kserve-version <ver>                               KServe chart 버전(기본: v0.16.0)
 
 GPU 옵션:
   --gpu-install-mode <detect|install|skip>             NVIDIA device plugin 설치 모드 (기본: detect)
@@ -51,7 +51,7 @@ init_defaults() {
   export DOCKERFILE_PATH="${DOCKERFILE_PATH:-${DOCKERFILE_PATH_DEFAULT}}"
 
   # KServe
-  export KSERVE_VERSION="${KSERVE_VERSION:-0.15.1}"
+  export KSERVE_VERSION="${KSERVE_VERSION:-v0.16.0}"
   export KSERVE_NAMESPACE="${KSERVE_NAMESPACE:-kserve-system}"
   export KSERVE_INSTALL_MODE="${KSERVE_INSTALL_MODE:-detect}"
 
