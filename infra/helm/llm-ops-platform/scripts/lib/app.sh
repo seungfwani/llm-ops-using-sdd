@@ -12,8 +12,14 @@ build_docker_image() {
 
   log "Docker 이미지 빌드: ${IMAGE}"
   docker build -t "${IMAGE}" -f "${DOCKERFILE_PATH}" "${PROJECT_ROOT}"
-  log "Docker 이미지 푸시: ${IMAGE}"
-  docker push "${IMAGE}"
+  if [[ "${PUSH_IMAGE}" == "true" ]]; then
+    log "Docker 이미지 푸시: ${IMAGE}"
+    docker push "${IMAGE}"
+    log "Docker 이미지 푸시 완료: ${IMAGE}"
+  else
+    log "Docker 이미지 푸시를 건너뜁니다."
+  fi
+  log "Docker 이미지 빌드 완료: ${IMAGE}"
 }
 
 build_helm_args() {

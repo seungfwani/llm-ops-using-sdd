@@ -13,6 +13,7 @@ show_help() {
 
 빌드 옵션:
   --build-image                    Docker 이미지 빌드+푸시 수행
+  --push-image                     Docker 이미지 푸시 (기본: false)
   --image <repo/name:tag>          사용할 이미지 (기본: ghcr.io/your-org/llm-ops:latest)
   --dockerfile <path>              Dockerfile 경로
 
@@ -46,6 +47,7 @@ init_defaults() {
   export VALUES_FILE="${VALUES_FILE:-${CHART_DIR}/values.yaml}"
   export IMAGE="${IMAGE:-ghcr.io/your-org/llm-ops:latest}"
   export BUILD_IMAGE="${BUILD_IMAGE:-false}"
+  export PUSH_IMAGE="${PUSH_IMAGE:-false}"
 
   export PROJECT_ROOT="${PROJECT_ROOT:-${PROJECT_ROOT_DEFAULT}}"
   export DOCKERFILE_PATH="${DOCKERFILE_PATH:-${DOCKERFILE_PATH_DEFAULT}}"
@@ -75,6 +77,7 @@ parse_args() {
       --values) VALUES_FILE="$2"; shift 2 ;;
       --image) IMAGE="$2"; shift 2 ;;
       --build-image) BUILD_IMAGE=true; shift ;;
+      --push-image) PUSH_IMAGE=true; shift ;;
       --dockerfile) DOCKERFILE_PATH="$2"; shift 2 ;;
 
       --kserve-install-mode) KSERVE_INSTALL_MODE="$2"; shift 2 ;;
