@@ -41,84 +41,49 @@ class KubernetesClient:
         self._initialize_client()
         self._test_connection()
 
-    def _initialize_client(self) -> None:
-        """Initialize Kubernetes client configuration."""
-        # Load Kubernetes config
-        try:
-            if self.settings.kubeconfig_path:
-                log_msg = f"{self.logger_prefix}: Loading Kubernetes config from: {self.settings.kubeconfig_path}"
-                logger.info(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
-                k8s_config.load_kube_config(config_file=self.settings.kubeconfig_path)
-            else:
-                log_msg = f"{self.logger_prefix}: Loading in-cluster Kubernetes config"
-                logger.info(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
-                # Check if service account files exist
-                token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-                ca_cert_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+def _initialize_client(self) -> None:
+    cfg = client.Configuration()
 
-                if os.path.exists(token_path) and os.path.exists(ca_cert_path):
-                    log_msg = f"{self.logger_prefix}: Service account files found - token: {token_path}, ca_cert: {ca_cert_path}"
-                    logger.info(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
-                    k8s_config.load_incluster_config()
-                    log_msg = f"{self.logger_prefix}: Successfully loaded in-cluster config (automatic service account authentication)"
-                    logger.info(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
-                else:
-                    log_msg = f"{self.logger_prefix}: Service account files not found - token: {os.path.exists(token_path)}, ca_cert: {os.path.exists(ca_cert_path)}"
-                    logger.warning(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
-                    if self.logger_prefix:
-                        logger.warning(f"{self.logger_prefix}: This may cause authentication issues in Kubernetes cluster")
-                    else:
-                        logger.warning("This may cause authentication issues in Kubernetes cluster")
-                    # Still try to load in-cluster config as fallback
-                    k8s_config.load_incluster_config()
-        except Exception as e:
-            log_msg = f"{self.logger_prefix}: Failed to load kubeconfig: {e}, using default"
-            logger.warning(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
-            try:
-                log_msg = f"{self.logger_prefix}: Trying default kubeconfig location"
-                logger.info(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
-                k8s_config.load_kube_config()
-            except Exception:
-                log_msg = f"{self.logger_prefix}: Could not initialize Kubernetes client"
-                logger.error(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
-                raise
-
-        # Configure SSL verification
-        configuration = client.Configuration.get_default_copy()
-
-        # For in-cluster authentication, always verify SSL since we use CA certificate
-        # For external kubeconfig, respect the kubernetes_verify_ssl setting
+    try:
         if self.settings.kubeconfig_path:
-            # External kubeconfig - use user setting
-            if not self.settings.kubernetes_verify_ssl:
-                log_msg = f"{self.logger_prefix}: SSL verification is disabled for Kubernetes API client (external kubeconfig)"
-                logger.warning(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
-                configuration.verify_ssl = False
-                # Also disable SSL warnings
-                import urllib3
-                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            logger.info(f"{self.logger_prefix}: Loading kubeconfig: {self.settings.kubeconfig_path}")
+            k8s_config.load_kube_config(
+                config_file=self.settings.kubeconfig_path,
+                client_configuration=cfg,
+            )
         else:
-            # In-cluster authentication - always verify SSL with CA certificate
-            log_msg = f"{self.logger_prefix}: SSL verification enabled for in-cluster Kubernetes API client"
-            logger.info(log_msg if self.logger_prefix else log_msg.replace(": ", ""))
-            configuration.verify_ssl = True
+            logger.info(f"{self.logger_prefix}: Loading in-cluster config")
+            k8s_config.load_incluster_config(client_configuration=cfg)
+    except Exception as e:
+        logger.error(f"{self.logger_prefix}: Failed to load kubernetes config: {e}")
+        raise
 
-        # Set timeout for API calls to prevent hanging (default: 10 seconds)
-        api_timeout = getattr(self.settings, 'kubernetes_api_timeout', 10)
-        configuration.api_key_prefix['authorization'] = 'Bearer'
-        # Note: kubernetes-python client doesn't directly support timeout in Configuration
-        # We'll handle timeout in individual API calls instead
+    # SSL 옵션 적용 (cfg에 직접)
+    if self.settings.kubeconfig_path and not self.settings.kubernetes_verify_ssl:
+        cfg.verify_ssl = False
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    else:
+        cfg.verify_ssl = True
 
-        # Update all API clients to use this configuration
-        client.Configuration.set_default(configuration)
+    # “localhost” 방지 가드 + 로그
+    logger.info(f"{self.logger_prefix}: Kubernetes API host = {cfg.host!r}")
+    if not cfg.host or "localhost" in cfg.host:
+        raise RuntimeError(
+            f"Kubernetes configuration host is invalid: {cfg.host!r} "
+            f"(kubeconfig/in-cluster config not applied)"
+        )
 
-        # Initialize API clients
-        self.apps_api = client.AppsV1Api()
-        self.batch_api = client.BatchV1Api()
-        self.core_api = client.CoreV1Api()
-        self.autoscaling_api = client.AutoscalingV1Api()
-        self.networking_api = client.NetworkingV1Api()
-        self.custom_api = client.CustomObjectsApi()
+    # ApiClient를 cfg로 고정
+    self.api_client = client.ApiClient(configuration=cfg)
+
+    # 각 API에 주입 (전역 default 사용 X)
+    self.apps_api = client.AppsV1Api(self.api_client)
+    self.batch_api = client.BatchV1Api(self.api_client)
+    self.core_api = client.CoreV1Api(self.api_client)
+    self.autoscaling_api = client.AutoscalingV1Api(self.api_client)
+    self.networking_api = client.NetworkingV1Api(self.api_client)
+    self.custom_api = client.CustomObjectsApi(self.api_client)
 
     def _validate_service_account(self) -> Dict[str, Any]:
         """
