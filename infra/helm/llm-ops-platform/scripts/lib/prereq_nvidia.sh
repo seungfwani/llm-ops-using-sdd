@@ -41,6 +41,9 @@ EOF
     --version "${NVDP_CHART_VERSION}" \
     --set config.name="${NVDP_CONFIGMAP_NAME}"
 
+  # NOTE: function boundary.
+}
+
 _get_nvd_ds_name() {
   # Try to find daemonset name for this helm release
   kubectl -n "${NVDP_NAMESPACE}" get ds \
@@ -94,9 +97,6 @@ _dump_nvidia_diagnostics() {
   warn "=== NVIDIA 진단 정보 끝 ==="
 }
 
-
-}
-
 _verify_gpu_allocatable() {
   # allocatable 확인 (0이면 실패)
   local cnt
@@ -137,6 +137,10 @@ ensure_nvidia_device_plugin() {
       die "잘못된 GPU_INSTALL_MODE: ${GPU_INSTALL_MODE}"
       ;;
   esac
+
+  # 설치/업데이트를 시도했다면 DaemonSet이 실제로 스케줄링/기동될 시간을 준다.
+  # (스킵 케이스에서도 이미 존재하는 DS가 rollout 중일 수 있어 항상 호출해도 무방)
+  _wait_nvidia_device_plugin_ready || true
 
   # device-plugin 적용 직후 allocatable 반영까지 약간의 지연이 있을 수 있어 대기 후 확인
   if [[ "${FAIL_FAST}" == "true" ]]; then
