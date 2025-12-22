@@ -63,7 +63,7 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - name: KNS
-              value: {{ default .Release.Namespace .Values.kserve.namespaceOverride | quote }}
+              value: {{ default "kserve-system" .Values.kserve.namespaceOverride | quote }}
             - name: SERVICE_NAME
               value: {{ .Values.kserve.selfSignedCert.serviceName | quote }}
             - name: SECRET_NAME

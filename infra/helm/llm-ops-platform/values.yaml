@@ -1,6 +1,6 @@
 kserve:
   enabled: true
-  namespaceOverride: ""
+  namespaceOverride: "kserve-system"
   version: v0.16.0
   setDefaultDeploymentMode: true
   selfSignedCert:
