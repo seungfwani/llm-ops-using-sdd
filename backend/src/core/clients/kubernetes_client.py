@@ -41,49 +41,49 @@ class KubernetesClient:
         self._initialize_client()
         self._test_connection()
 
-def _initialize_client(self) -> None:
-    cfg = client.Configuration()
+    def _initialize_client(self) -> None:
+        cfg = client.Configuration()
 
-    try:
-        if self.settings.kubeconfig_path:
-            logger.info(f"{self.logger_prefix}: Loading kubeconfig: {self.settings.kubeconfig_path}")
-            k8s_config.load_kube_config(
-                config_file=self.settings.kubeconfig_path,
-                client_configuration=cfg,
-            )
+        try:
+            if self.settings.kubeconfig_path:
+                logger.info(f"{self.logger_prefix}: Loading kubeconfig: {self.settings.kubeconfig_path}")
+                k8s_config.load_kube_config(
+                    config_file=self.settings.kubeconfig_path,
+                    client_configuration=cfg,
+                )
+            else:
+                logger.info(f"{self.logger_prefix}: Loading in-cluster config")
+                k8s_config.load_incluster_config(client_configuration=cfg)
+        except Exception as e:
+            logger.error(f"{self.logger_prefix}: Failed to load kubernetes config: {e}")
+            raise
+
+        # SSL 옵션 적용 (cfg에 직접)
+        if self.settings.kubeconfig_path and not self.settings.kubernetes_verify_ssl:
+            cfg.verify_ssl = False
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         else:
-            logger.info(f"{self.logger_prefix}: Loading in-cluster config")
-            k8s_config.load_incluster_config(client_configuration=cfg)
-    except Exception as e:
-        logger.error(f"{self.logger_prefix}: Failed to load kubernetes config: {e}")
-        raise
+            cfg.verify_ssl = True
 
-    # SSL 옵션 적용 (cfg에 직접)
-    if self.settings.kubeconfig_path and not self.settings.kubernetes_verify_ssl:
-        cfg.verify_ssl = False
-        import urllib3
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-    else:
-        cfg.verify_ssl = True
+        # “localhost” 방지 가드 + 로그
+        logger.info(f"{self.logger_prefix}: Kubernetes API host = {cfg.host!r}")
+        if not cfg.host or "localhost" in cfg.host:
+            raise RuntimeError(
+                f"Kubernetes configuration host is invalid: {cfg.host!r} "
+                f"(kubeconfig/in-cluster config not applied)"
+            )
 
-    # “localhost” 방지 가드 + 로그
-    logger.info(f"{self.logger_prefix}: Kubernetes API host = {cfg.host!r}")
-    if not cfg.host or "localhost" in cfg.host:
-        raise RuntimeError(
-            f"Kubernetes configuration host is invalid: {cfg.host!r} "
-            f"(kubeconfig/in-cluster config not applied)"
-        )
+        # ApiClient를 cfg로 고정
+        self.api_client = client.ApiClient(configuration=cfg)
 
-    # ApiClient를 cfg로 고정
-    self.api_client = client.ApiClient(configuration=cfg)
-
-    # 각 API에 주입 (전역 default 사용 X)
-    self.apps_api = client.AppsV1Api(self.api_client)
-    self.batch_api = client.BatchV1Api(self.api_client)
-    self.core_api = client.CoreV1Api(self.api_client)
-    self.autoscaling_api = client.AutoscalingV1Api(self.api_client)
-    self.networking_api = client.NetworkingV1Api(self.api_client)
-    self.custom_api = client.CustomObjectsApi(self.api_client)
+        # 각 API에 주입 (전역 default 사용 X)
+        self.apps_api = client.AppsV1Api(self.api_client)
+        self.batch_api = client.BatchV1Api(self.api_client)
+        self.core_api = client.CoreV1Api(self.api_client)
+        self.autoscaling_api = client.AutoscalingV1Api(self.api_client)
+        self.networking_api = client.NetworkingV1Api(self.api_client)
+        self.custom_api = client.CustomObjectsApi(self.api_client)
 
     def _validate_service_account(self) -> Dict[str, Any]:
         """
