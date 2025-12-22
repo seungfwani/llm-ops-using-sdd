@@ -35,7 +35,7 @@ EOF
 # ===== defaults (export to make libs see them) =====
 init_defaults() {
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  CHART_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+  CHART_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
   PROJECT_ROOT_DEFAULT="$(cd "${CHART_DIR}/../../.." && pwd)"
   DOCKERFILE_PATH_DEFAULT="${PROJECT_ROOT_DEFAULT}/Dockerfile"
@@ -91,7 +91,7 @@ parse_args() {
     esac
   done
 
-  export NAMESPACE RELEASE_NAME VALUES_FILE IMAGE BUILD_IMAGE DOCKERFILE_PATH
+  export CHART_DIR PROJECT_ROOT NAMESPACE RELEASE_NAME VALUES_FILE IMAGE BUILD_IMAGE DOCKERFILE_PATH
   export KSERVE_INSTALL_MODE KSERVE_NAMESPACE KSERVE_VERSION
   export GPU_INSTALL_MODE NVDP_REPLICAS
   export FAIL_FAST

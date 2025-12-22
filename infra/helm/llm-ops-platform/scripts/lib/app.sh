@@ -34,5 +34,5 @@ install_llm_ops_platform() {
   build_helm_args
 
   log "llm-ops-platform Helm 배포: ns=${NAMESPACE}, release=${RELEASE_NAME}"
-  (cd "$(dirname "${BASH_SOURCE[0]}")/.." && helm upgrade --install "${RELEASE_NAME}" . "${HELM_ARGS[@]}")
+  (cd "${CHART_DIR}" && helm upgrade --install "${RELEASE_NAME}" . "${HELM_ARGS[@]}")
 }
