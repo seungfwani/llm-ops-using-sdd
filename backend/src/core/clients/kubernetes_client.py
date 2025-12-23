@@ -65,7 +65,6 @@ class KubernetesClient:
     def _initialize_client(self) -> None:
         """Initialize Configuration + ApiClient and API wrappers."""
         cfg = client.Configuration()
-        self.cfg = cfg
 
         try:
             if getattr(self.settings, "kubeconfig_path", None):
@@ -104,6 +103,7 @@ class KubernetesClient:
 
         # Build ApiClient and typed APIs
         self._rebuild_clients()
+        self.cfg = cfg
 
     def _rebuild_clients(self) -> None:
         """Rebuild ApiClient and API wrappers based on current self.cfg."""
