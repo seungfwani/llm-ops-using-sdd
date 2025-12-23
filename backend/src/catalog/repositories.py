@@ -269,6 +269,52 @@ class WorkflowPipelineRepository:
         return self.session.execute(stmt.order_by(models.WorkflowPipeline.created_at.desc())).scalars().all()
 
 
+class PromptTemplateRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def list(self, status: str | None = None) -> Sequence[models.PromptTemplate]:
+        stmt = select(models.PromptTemplate).order_by(
+            models.PromptTemplate.created_at.desc(),
+            models.PromptTemplate.updated_at.desc(),
+        )
+        if status:
+            stmt = stmt.where(models.PromptTemplate.status == status)
+        return self.session.execute(stmt).scalars().all()
+
+    def get(self, template_id: str | UUID) -> models.PromptTemplate | None:
+        try:
+            uuid_id = UUID(template_id) if isinstance(template_id, str) else template_id
+        except (ValueError, TypeError):
+            return None
+        return self.session.get(models.PromptTemplate, uuid_id)
+
+    def save(self, template: models.PromptTemplate) -> models.PromptTemplate:
+        self.session.add(template)
+        self.session.commit()
+        self.session.refresh(template)
+        return template
+
+    def update(self, template: models.PromptTemplate) -> models.PromptTemplate:
+        self.session.commit()
+        self.session.refresh(template)
+        return template
+
+    def delete(self, template_id: str | UUID) -> bool:
+        template = self.get(template_id)
+        if not template:
+            return False
+        self.session.delete(template)
+        self.session.commit()
+        return True
+
+    def get_by_name_version(self, name: str, version: str) -> models.PromptTemplate | None:
+        stmt = select(models.PromptTemplate).where(
+            models.PromptTemplate.name == name,
+            models.PromptTemplate.version == version
+        )
+        return self.session.execute(stmt).scalar_one_or_none()
+
 class RegistryModelRepository:
     """Repository for RegistryModel entities."""
     

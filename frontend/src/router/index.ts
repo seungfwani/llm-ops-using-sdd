@@ -100,6 +100,22 @@ const router = createRouter({
       component: () => import('@/pages/governance/CostDashboard.vue'),
     },
     {
+      path: '/prompts',
+      name: 'PromptList',
+      component: () => import('@/pages/prompts/PromptList.vue'),
+    },
+    {
+      path: '/prompts/create',
+      name: 'PromptCreate',
+      component: () => import('@/pages/prompts/PromptCreate.vue'),
+    },
+    {
+      path: '/prompts/:id',
+      name: 'PromptDetail',
+      component: () => import('@/pages/prompts/PromptDetail.vue'),
+      props: true,
+    },
+    {
       path: '/prompts/experiments',
       component: () => import('@/pages/prompts/ExperimentCreate.vue'),
     },

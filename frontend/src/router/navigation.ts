@@ -24,6 +24,12 @@ export const navigationGroups: NavigationGroup[] = [
     ],
   },
   {
+    label: 'Prompts',
+    items: [
+      { label: '프롬프트 관리', path: '/prompts' },
+    ],
+  },
+  {
     label: 'ML Operations',
     items: [
       { label: 'Training', path: '/training/jobs' },

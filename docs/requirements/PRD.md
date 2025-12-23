@@ -1092,6 +1092,18 @@ Vue.js SPA(Single Page Application)를 기반으로 동작하며, RBAC에 따라
 
 # **8. 기술 요구사항 (Technical Requirements)**
 
+# **8.1 운영 및 배포 표준 (Helm, KServe, GPU 인프라)
+
+8.1.1. 본 플랫폼은 Helm 패키지 단일 엔트리로 모든 핵심 인프라(데이터베이스, Redis, MinIO, NVIDIA device plugin, KServe, 필요시 Prometheus/Grafana) 배포를 표준으로 한다.
+8.1.2. GPU 환경은 반드시 NVIDIA device plugin, time-slicing(기본 10-slice per GPU) 활성화 필수
+8.1.3. GPU 타입, 포트, 네임스페이스 등 시스템 파라미터는 values.yaml/ConfigMap/DB/API에서 관리(하드코딩 금지)
+8.1.4. KServe는 공식 Helm chart+post-install hook으로 cert 패치, defaultDeploymentMode 지정 등 운영 자동화
+8.1.5. KServe가 활성화되면 Serving Pod은 InferenceService CRD(오토스케일/롤백/스테이트 관리 포함)
+8.1.6. 프론트엔드는 GPU 타입/파라미터를 반드시 backend API에서 동적으로 로딩해서 사용
+8.1.7. 헬름 배포는 --namespace --create-namespace 옵션 사용(메니페스트 직접 네임스페이스 생성 금지)
+8.1.8. 상세 예시 및 변경점은 HELM_DEPLOYMENT.md, values.yaml 등 실 배포 문서/템플릿을 참조
+
+
 ## **8.1 지원 언어 / 프레임워크 (Languages & Frameworks)**
 
 ### **① Backend (FastAPI 기반)**

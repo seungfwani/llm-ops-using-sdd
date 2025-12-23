@@ -268,6 +268,55 @@ class EnvelopeRegistryModel(BaseModel):
     data: Optional[RegistryModelResponse] = None
 
 
+class PromptTemplateCreate(BaseModel):
+    name: str
+    version: str
+    language: Optional[str] = None
+    content: str
+    context_tags: Optional[list[str]] = None
+    status: str = Field(default="draft")
+
+class PromptTemplateUpdate(BaseModel):
+    name: Optional[str] = None
+    version: Optional[str] = None
+    language: Optional[str] = None
+    content: Optional[str] = None
+    context_tags: Optional[list[str]] = None
+    status: Optional[str] = None
+
+from pydantic import field_serializer
+
+from uuid import UUID
+from pydantic import field_serializer
+
+class PromptTemplateResponse(BaseModel):
+    id: UUID
+    name: str
+    version: str
+    language: Optional[str] = None
+    content: str
+    context_tags: Optional[list[str]] = None
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+    @field_serializer('id')
+    def uuid_to_str(self, v: UUID, _info):
+        return str(v)
+
+    class Config:
+        from_attributes = True
+
+class EnvelopePromptTemplate(BaseModel):
+    status: str = Field(..., pattern="^(success|fail)$")
+    message: str = ""
+    data: Optional[PromptTemplateResponse] = None
+
+class EnvelopePromptTemplateList(BaseModel):
+    status: str = Field(..., pattern="^(success|fail)$")
+    message: str = ""
+    data: Optional[list[PromptTemplateResponse]] = None
+
 class EnvelopeRegistryModelList(BaseModel):
     """Envelope for list of registry model links."""
 
