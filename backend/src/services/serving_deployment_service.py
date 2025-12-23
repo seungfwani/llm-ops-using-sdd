@@ -161,52 +161,124 @@ class ServingDeploymentService:
             Updated ServingDeployment entity (may be newly created)
         """
         deployment = self.deployment_repo.get_by_endpoint_id(endpoint_id)
-        
+
         # If deployment record doesn't exist, get info from ServingEndpoint
         if not deployment:
             from serving.repositories import ServingEndpointRepository
+
             endpoint_repo = ServingEndpointRepository(self.session)
             endpoint = endpoint_repo.get(endpoint_id)
             if not endpoint:
                 raise ValueError(f"Endpoint {endpoint_id} not found")
-            
+
             # Generate Kubernetes resource name from endpoint ID
             endpoint_id_str = str(endpoint_id).replace("-", "")
             short_id = endpoint_id_str[:12]
             base_name = f"svc-{short_id}"
             namespace = f"llm-ops-{endpoint.environment}"
-            
+
             # Determine serving framework from settings
             serving_framework = "kserve" if self.settings.use_kserve else "deployment"
-            
-            # For KServe, framework_resource_id includes -predictor suffix
-            # For Deployment, use base name
-            if serving_framework == "kserve":
-                framework_resource_id = f"{base_name}-predictor"
-            else:
-                framework_resource_id = base_name
-            
+
+            # framework_resource_id는 "기본 이름"으로 유지 (ISVC name에 유리)
+            framework_resource_id = base_name
+
             logger.info(
                 f"ServingDeployment record not found for endpoint {endpoint_id}, "
-                f"using endpoint info: resource_id={framework_resource_id}, "
+                f"using endpoint info: base_resource_id={framework_resource_id}, "
                 f"namespace={namespace}, framework={serving_framework}"
             )
         else:
             namespace = deployment.framework_namespace
-            framework_resource_id = deployment.framework_resource_id
             serving_framework = deployment.serving_framework
-        
-        # Use Kubernetes API directly for post-deployment management
+
+            # DB에 저장된 값이 -predictor 포함일 수 있으므로,
+            # base 이름과 stored 이름 둘 다 파생할 수 있게 정리
+            stored_id = deployment.framework_resource_id
+            if stored_id.endswith("-predictor"):
+                framework_resource_id = stored_id[:-10]  # base
+            else:
+                framework_resource_id = stored_id  # base
+
+        # -----------------------------
+        # Decide names used for patching
+        # -----------------------------
+        # Deployment name: KServe면 -predictor 붙인 이름을 우선 사용 (요구사항: deploy replica 조작)
+        deployment_name = framework_resource_id
+        if serving_framework == "kserve" and not deployment_name.endswith("-predictor"):
+            deployment_name = f"{deployment_name}-predictor"
+
+        # InferenceService name: base name (no -predictor)
+        inferenceservice_name = framework_resource_id
+
+        # -----------------------------
+        # 1) Patch Deployment first (regardless of kserve)
+        # -----------------------------
+        deployment_patched = False
+        try:
+            k8s_deployment = self.k8s_client.call_with_401_retry(
+                lambda: self.k8s_client.apps_api.read_namespaced_deployment(
+                    name=deployment_name,
+                    namespace=namespace,
+                ),
+                f"get Deployment {deployment_name} for update",
+            )
+
+            # replicas policy: min_replicas 우선, 없으면 max_replicas
+            if min_replicas is not None:
+                k8s_deployment.spec.replicas = min_replicas
+            elif max_replicas is not None:
+                k8s_deployment.spec.replicas = max_replicas
+
+            # Update resources if provided
+            if resource_requests or resource_limits:
+                if k8s_deployment.spec.template.spec.containers:
+                    container = k8s_deployment.spec.template.spec.containers[0]
+                    if not container.resources:
+                        from kubernetes import client
+
+                        container.resources = client.V1ResourceRequirements()
+
+                    if resource_requests:
+                        if not container.resources.requests:
+                            container.resources.requests = {}
+                        container.resources.requests.update(resource_requests)
+
+                    if resource_limits:
+                        if not container.resources.limits:
+                            container.resources.limits = {}
+                        container.resources.limits.update(resource_limits)
+
+            self.k8s_client.call_with_401_retry(
+                lambda: self.k8s_client.apps_api.patch_namespaced_deployment(
+                    name=deployment_name,
+                    namespace=namespace,
+                    body=k8s_deployment,
+                ),
+                f"patch Deployment {deployment_name}",
+            )
+
+            deployment_patched = True
+            logger.info(
+                f"Updated Deployment {deployment_name} via Kubernetes API (framework={serving_framework})"
+            )
+
+        except ApiException as e:
+            # KServe가 Knative 기반일 경우 Deployment 이름이 다를 수 있음 → 404면 ISVC로 fallback
+            if serving_framework == "kserve" and getattr(e, "status", None) == 404:
+                logger.warning(
+                    f"Deployment {deployment_name} not found for KServe endpoint; "
+                    f"fallback to patch InferenceService. ({e})"
+                )
+            else:
+                logger.error(f"Failed to update Deployment {deployment_name}: {e}")
+                raise ValueError(f"Failed to update Deployment: {getattr(e, 'reason', str(e))}")
+
+        # -----------------------------
+        # 2) If KServe, also patch InferenceService (best-effort unless Deployment also failed)
+        # -----------------------------
         if serving_framework == "kserve":
-            # Update KServe InferenceService via Kubernetes CustomObjectsApi
-            # framework_resource_id may include -predictor suffix, but InferenceService name doesn't
-            # Remove -predictor suffix if present to get actual InferenceService name
-            inferenceservice_name = framework_resource_id
-            if inferenceservice_name.endswith("-predictor"):
-                inferenceservice_name = inferenceservice_name[:-10]  # Remove "-predictor"
-            
             try:
-                # Get current InferenceService
                 inference_service = self.k8s_client.call_with_401_retry(
                     lambda: self.k8s_client.custom_api.get_namespaced_custom_object(
                         group="serving.kserve.io",
@@ -215,30 +287,32 @@ class ServingDeploymentService:
                         plural="inferenceservices",
                         name=inferenceservice_name,
                     ),
-                    f"get InferenceService {inferenceservice_name} for update"
+                    f"get InferenceService {inferenceservice_name} for update",
                 )
-                
-                # Update spec
+
                 spec = inference_service.get("spec", {})
                 predictor = spec.get("predictor", {})
-                
+
                 if min_replicas is not None:
                     predictor["minReplicas"] = min_replicas
                 if max_replicas is not None:
                     predictor["maxReplicas"] = max_replicas
-                
+
                 # Update resources if provided
-                predictor_type = next(iter(predictor.keys() - {"minReplicas", "maxReplicas"}), None)
+                predictor_type = next(
+                    iter(predictor.keys() - {"minReplicas", "maxReplicas"}), None
+                )
                 if predictor_type and predictor_type in predictor:
                     if resource_requests or resource_limits:
-                        if "resources" not in predictor[predictor_type]:
-                            predictor[predictor_type]["resources"] = {}
+                        predictor[predictor_type].setdefault("resources", {})
                         if resource_requests:
                             predictor[predictor_type]["resources"]["requests"] = resource_requests
                         if resource_limits:
                             predictor[predictor_type]["resources"]["limits"] = resource_limits
-                
-                # Patch InferenceService
+
+                spec["predictor"] = predictor
+                inference_service["spec"] = spec
+
                 self.k8s_client.call_with_401_retry(
                     lambda: self.k8s_client.custom_api.patch_namespaced_custom_object(
                         group="serving.kserve.io",
@@ -248,76 +322,29 @@ class ServingDeploymentService:
                         name=inferenceservice_name,
                         body=inference_service,
                     ),
-                    f"patch InferenceService {inferenceservice_name}"
+                    f"patch InferenceService {inferenceservice_name}",
                 )
-                logger.info(f"Updated KServe InferenceService {inferenceservice_name} via Kubernetes API")
-                
+                logger.info(
+                    f"Updated KServe InferenceService {inferenceservice_name} via Kubernetes API"
+                )
+
             except ApiException as e:
                 logger.error(f"Failed to update KServe InferenceService {inferenceservice_name}: {e}")
-                raise ValueError(f"Failed to update KServe InferenceService: {e.reason}")
-        else:
-            # For non-KServe deployments, update Deployment directly
-            try:
-                # Get current Deployment
-                k8s_deployment = self.k8s_client.call_with_401_retry(
-                    lambda: self.k8s_client.apps_api.read_namespaced_deployment(
-                        name=framework_resource_id,
-                        namespace=namespace,
-                    ),
-                    f"get Deployment {framework_resource_id} for update"
-                )
-                
-                # Update replicas if provided
-                if min_replicas is not None or max_replicas is not None:
-                    # For Deployment, we typically update spec.replicas (which sets desired replicas)
-                    # min/max replicas are usually handled by HPA
-                    if min_replicas is not None and min_replicas > 0:
-                        k8s_deployment.spec.replicas = min_replicas
-                    elif max_replicas is not None and max_replicas > 0:
-                        k8s_deployment.spec.replicas = max_replicas
-                    elif min_replicas == 0 and max_replicas == 0:
-                        k8s_deployment.spec.replicas = 0
-                
-                # Update resources if provided
-                if resource_requests or resource_limits:
-                    if k8s_deployment.spec.template.spec.containers:
-                        container = k8s_deployment.spec.template.spec.containers[0]
-                        if not container.resources:
-                            from kubernetes import client
-                            container.resources = client.V1ResourceRequirements()
-                        if resource_requests:
-                            if not container.resources.requests:
-                                container.resources.requests = {}
-                            container.resources.requests.update(resource_requests)
-                        if resource_limits:
-                            if not container.resources.limits:
-                                container.resources.limits = {}
-                            container.resources.limits.update(resource_limits)
-                
-                # Patch Deployment
-                self.k8s_client.call_with_401_retry(
-                    lambda: self.k8s_client.apps_api.patch_namespaced_deployment(
-                        name=framework_resource_id,
-                        namespace=namespace,
-                        body=k8s_deployment,
-                    ),
-                    f"patch Deployment {framework_resource_id}"
-                )
-                logger.info(f"Updated Deployment {framework_resource_id} via Kubernetes API")
-                
-            except ApiException as e:
-                logger.error(f"Failed to update Deployment {framework_resource_id}: {e}")
-                raise ValueError(f"Failed to update Deployment: {e.reason}")
-        
-        # Update or create deployment record in database
+                if not deployment_patched:
+                    raise ValueError(
+                        f"Failed to update KServe InferenceService: {getattr(e, 'reason', str(e))}"
+                    )
+
+        # -----------------------------
+        # 3) Upsert deployment record in DB
+        # -----------------------------
+        # DB에는 kserve면 -predictor 붙인 값을 저장(기존 관례 유지)하여
+        # "deploy replica 조작"에 쓰는 리소스 이름과 일치시키는 것이 운영상 편함
+        stored_resource_id = deployment_name if serving_framework == "kserve" else framework_resource_id
+
         if not deployment:
-            # Create new deployment record
-            # Use framework_resource_id with -predictor suffix for KServe (as stored in DB)
             from catalog import models as catalog_models
-            stored_resource_id = framework_resource_id
-            if serving_framework == "kserve" and not stored_resource_id.endswith("-predictor"):
-                stored_resource_id = f"{framework_resource_id}-predictor"
-            
+
             deployment = catalog_models.ServingDeployment(
                 id=uuid4(),
                 serving_endpoint_id=endpoint_id,
@@ -331,9 +358,16 @@ class ServingDeploymentService:
                 resource_limits=resource_limits,
             )
             deployment = self.deployment_repo.create(deployment)
-            logger.info(f"Created new ServingDeployment record for endpoint {endpoint_id} with resource_id={stored_resource_id}")
+            logger.info(
+                f"Created new ServingDeployment record for endpoint {endpoint_id} "
+                f"with resource_id={stored_resource_id}"
+            )
         else:
-            # Update existing deployment record
+            # resource_id / namespace / framework이 drift 날 수 있으니 갱신해두는 편이 안전
+            deployment.serving_framework = serving_framework
+            deployment.framework_namespace = namespace
+            deployment.framework_resource_id = stored_resource_id
+
             if min_replicas is not None:
                 deployment.min_replicas = min_replicas
             if max_replicas is not None:
@@ -342,9 +376,9 @@ class ServingDeploymentService:
                 deployment.resource_requests = resource_requests
             if resource_limits is not None:
                 deployment.resource_limits = resource_limits
-            
+
             deployment = self.deployment_repo.update(deployment)
-        
+
         return deployment
     
     def refresh_deployment_status(
