@@ -137,9 +137,9 @@ class KubernetesClient:
 
         IMPORTANT:
         - For in-cluster config, ensure the Authorization header is always:
-          `Authorization: Bearer <token>`
+            `Authorization: Bearer <token>`
         - The upstream kubernetes client may store tokens as `"bearer <token>"`.
-          We normalize to raw token + api_key_prefix="Bearer".
+            We normalize to raw token + api_key_prefix="Bearer".
         """
         if self.cfg is None:
             return
@@ -154,11 +154,17 @@ class KubernetesClient:
             token = raw.strip()
             if not token:
                 return
-            # Normalize possible "bearer <token>" from upstream loaders.
+            # Normalize possible "bearer <token>" / "Bearer <token>" from upstream loaders.
             if token.lower().startswith("bearer "):
                 token = token.split(" ", 1)[1].strip()
-            cfg.api_key["authorization"] = token
-            cfg.api_key_prefix["authorization"] = "Bearer"
+            # Be maximally compatible across kubernetes-python-client versions:
+            # write the fully-qualified Authorization value directly.
+            cfg.api_key["authorization"] = f"Bearer {token}"
+            # Prevent accidental double-prefixing (e.g., "Bearer bearer <token>")
+            try:
+                cfg.api_key_prefix.pop("authorization", None)
+            except Exception:
+                pass
 
         def refresh_api_key_hook(cfg: client.Configuration) -> None:
             try:
@@ -166,6 +172,8 @@ class KubernetesClient:
                     with open(token_path, "r") as f:
                         raw_token = f.read()
                     _normalize_and_set_token(cfg, raw_token)
+                    cur = cfg.api_key.get("authorization")
+                    self._log(logging.INFO, f"incluster auth header refreshed: startswith_Bearer={bool(cur and cur.startswith('Bearer '))} length={len(cur) if cur else 0}")
             except Exception as e:
                 self._log(logging.WARNING, f"token refresh hook failed: {e}")
 
@@ -174,6 +182,8 @@ class KubernetesClient:
             existing = self.cfg.api_key.get("authorization")
             if existing:
                 _normalize_and_set_token(self.cfg, existing)
+                cur = self.cfg.api_key.get("authorization")
+                self._log(logging.INFO, f"incluster auth header normalized: startswith_Bearer={bool(cur and cur.startswith('Bearer '))} length={len(cur) if cur else 0}")
         except Exception:
             pass
 
