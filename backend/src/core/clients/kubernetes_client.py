@@ -149,7 +149,6 @@ class KubernetesClient:
                     if token:
                         # Kubernetes python client expects "authorization" key
                         cfg.api_key["authorization"] = token
-                        cfg.api_key_prefix["authorization"] = "Bearer"
             except Exception as e:
                 self._log(logging.WARNING, f"token refresh hook failed: {e}")
 
