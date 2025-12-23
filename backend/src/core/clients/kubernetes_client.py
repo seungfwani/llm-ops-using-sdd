@@ -136,7 +136,7 @@ class KubernetesClient:
 
         # If kubeconfig is used, authentication is usually handled via kubeconfig;
         # no need to attach SA token hook.
-        if getattr(self.settings, "kubeconfig_path", None):
+        if getattr(self.settings, "kubeconfig_path", None) is None:
             return
 
         token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
