@@ -13,7 +13,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Get API base URL from environment or use default
-API_BASE_URL = os.getenv("API_BASE_URL", "http://llm-ops-api:8000/llm-ops/v1")
+from core.settings import get_settings
+
+API_BASE_URL = get_settings().training_api_base_url
+if not API_BASE_URL:
+    raise RuntimeError(
+        "Training API base url (training_api_base_url) is NOT set. "
+        "환경변수 TRAINING_API_HOSTPORT, TRAINING_API_BASE_PATH 또는 백엔드 .env/helm에 올바로 반영 필요."
+    )
 
 
 def record_metric(job_id: str, name: str, value: float, unit: str = None):

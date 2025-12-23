@@ -238,7 +238,9 @@ app:
   # Training Configuration
   trainingGpuNodeSelector: {}  # JSON object, e.g. {"node-type":"gpu"}
   trainingGpuTolerations: []  # JSON array, e.g. [{"key":"nvidia.com/gpu","operator":"Exists","effect":"NoSchedule"}]
-  trainingApiBaseUrl: ""  # Empty to disable
+  trainingApiHostport: "llm-ops-platform-app:8000" # 서비스 Host+Port (환경마다 deployment에서 오버라이드)
+  trainingApiBasePath: "/llm-ops/v1"  # API base path만 chart에서 관리(빠른버전 업/변경 가능)
+  # trainingApiBaseUrl: ""  # (구방식) 합치는 건 비권장, 필요시 직접 조합
   trainingJobStatusSyncInterval: 30  # seconds, 0 to disable
   
   # Serving Image Configuration

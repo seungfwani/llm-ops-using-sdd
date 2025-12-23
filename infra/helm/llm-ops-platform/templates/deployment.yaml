@@ -210,8 +210,12 @@ spec:
         - name: TRAINING_GPU_TOLERATIONS
           value: {{ .Values.app.trainingGpuTolerations | toJson | quote }}
         {{- end }}
-        - name: TRAINING_API_BASE_URL
-          value: {{ .Values.app.trainingApiBaseUrl | default "" | quote }}
+        - name: TRAINING_API_HOSTPORT
+          value: {{ .Values.app.trainingApiHostport | quote }}
+        - name: TRAINING_API_BASE_PATH
+          value: {{ .Values.app.trainingApiBasePath | default "/llm-ops/v1" | quote }}
+        # (deprecated) - name: TRAINING_API_BASE_URL
+        #   value: {{ .Values.app.trainingApiBaseUrl | default "" | quote }}
         - name: TRAINING_JOB_STATUS_SYNC_INTERVAL
           value: {{ .Values.app.trainingJobStatusSyncInterval | default 30 | quote }}
         

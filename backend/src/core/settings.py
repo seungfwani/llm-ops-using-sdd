@@ -265,7 +265,10 @@ class Settings(BaseSettings):
     #   - Example: http://llm-ops-api.llm-ops-dev.svc.cluster.local:8000/llm-ops/v1
     # Note: For local development, use host.minikube.internal (minikube) or host.docker.internal (Docker Desktop)
     #       or your local machine's IP address that is accessible from Kubernetes cluster
-    training_api_base_url: str = ""
+    # Training API 분리형 환경변수 구조(HOSTPORT+BASE_PATH 합성)
+    training_api_hostport: str = ""
+    training_api_base_path: str = ""
+    training_api_base_url: str = ""  # (deprecated/compat: 가능한 한 위 둘을 합쳐 사용)
     
     # =========================================================================
     # Training Job Status Sync Configuration
@@ -339,7 +342,12 @@ def get_settings() -> Settings:
     if settings.object_store_bucket is None:
         # training_namespace is already in format "llm-ops-{env}"
         settings.object_store_bucket = settings.training_namespace
-    
+
+    # Training API 분리형 합성 ENV 우선 처리
+    if settings.training_api_hostport and settings.training_api_base_path:
+        url = f"{settings.training_api_hostport.rstrip('/')}{settings.training_api_base_path}"
+        settings.training_api_base_url = url
+
     # If database_url is not set, construct it from individual components
     if settings.database_url is None:
         from urllib.parse import quote_plus
@@ -350,7 +358,7 @@ def get_settings() -> Settings:
             f"@{settings.db_host}:{settings.db_port}/{settings.db_name}"
         )
         settings.database_url = AnyUrl(database_url_str)
-    
+
     # If redis_url is not set, construct it from individual components
     if settings.redis_url is None:
         from urllib.parse import quote_plus
@@ -365,7 +373,7 @@ def get_settings() -> Settings:
                 f"redis://{settings.redis_host}:{settings.redis_port}/{settings.redis_database}"
             )
         settings.redis_url = AnyUrl(redis_url_str)
-    
+
     return settings
 
 

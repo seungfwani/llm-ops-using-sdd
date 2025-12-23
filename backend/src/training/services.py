@@ -229,15 +229,14 @@ class TrainingJobService:
         # If api_base_url is provided, use it as-is (should include full path like /llm-ops/v1)
         # If None, use settings value
         # If empty, try to detect local development environment and use appropriate host
-        if api_base_url is not None:
-            api_url = api_base_url.strip() if api_base_url.strip() else ""
-        else:
-            api_url = settings.training_api_base_url.strip() if settings.training_api_base_url.strip() else ""
-        
-        # If still empty, try to detect local development environment
+        # settings.training_api_base_url 만을 공식 값으로 활용 (분리형 ENV 권장)
+        api_url = settings.training_api_base_url.strip()
         if not api_url:
-            api_url = self._detect_local_api_url()
-        
+            logger.error(
+                "Training API base url (training_api_base_url) is NOT set. "
+                "환경변수 TRAINING_API_HOSTPORT, TRAINING_API_BASE_PATH 또는 백엔드 .env/helm에 올바로 반영 필요."
+            )
+            raise RuntimeError("Missing training_api_base_url")
         # Log API URL configuration
         if api_url:
             logger.info(f"Configuring API_BASE_URL for training job {job.id}: {api_url}")
@@ -250,7 +249,13 @@ class TrainingJobService:
                 f"For local development with minikube, use: http://host.minikube.internal:8000/llm-ops/v1"
             )
 
-        # Submit to Kubernetes scheduler
+        #
+# [환경변수 구조 안내]
+# TRAINING_API_HOSTPORT: 쿠버네티스 혹은 외부 서비스(예: http://llm-ops-platform-app:8000)
+# TRAINING_API_BASE_PATH: API prefix 및 버전(예: /llm-ops/v1)
+# 두 변수는 helm values.yaml, deployment.yaml, .env 등에서 분리 관리
+# settings.training_api_base_url에서 항상 자동합성된 url을 사용하세요.
+# Submit to Kubernetes scheduler
         try:
             job_name = f"training-{job.id}"
             
