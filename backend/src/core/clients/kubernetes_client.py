@@ -75,7 +75,7 @@ class KubernetesClient:
                 )
             else:
                 self._log(logging.INFO, "Loading in-cluster config")
-                k8s_config.load_incluster_config(client_configuration=cfg)
+                k8s_config.load_incluster_config(client_configuration=self.cfg)
         except Exception as e:
             self._log(logging.ERROR, f"Failed to load kubernetes config: {e}")
             raise
@@ -136,7 +136,7 @@ class KubernetesClient:
 
         # If kubeconfig is used, authentication is usually handled via kubeconfig;
         # no need to attach SA token hook.
-        if getattr(self.settings, "kubeconfig_path", None) is None:
+        if getattr(self.settings, "kubeconfig_path", None):
             return
 
         token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
