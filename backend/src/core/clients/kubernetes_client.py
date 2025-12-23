@@ -64,14 +64,14 @@ class KubernetesClient:
 
     def _initialize_client(self) -> None:
         """Initialize Configuration + ApiClient and API wrappers."""
-        cfg = client.Configuration()
+        self.cfg = client.Configuration()
 
         try:
             if getattr(self.settings, "kubeconfig_path", None):
                 self._log(logging.INFO, f"Loading kubeconfig: {self.settings.kubeconfig_path}")
                 k8s_config.load_kube_config(
                     config_file=self.settings.kubeconfig_path,
-                    client_configuration=cfg,
+                    client_configuration=self.cfg,
                 )
             else:
                 self._log(logging.INFO, "Loading in-cluster config")
@@ -84,17 +84,17 @@ class KubernetesClient:
         # (do not override what kubeconfig / incluster loader sets by default)
         kubernetes_verify_ssl = getattr(self.settings, "kubernetes_verify_ssl", None)
         if kubernetes_verify_ssl is not None:
-            cfg.verify_ssl = bool(kubernetes_verify_ssl)
-            if not cfg.verify_ssl:
+            self.cfg.verify_ssl = bool(kubernetes_verify_ssl)
+            if not self.cfg.verify_ssl:
                 import urllib3
 
                 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
         # Guard against "localhost" or empty host (means config did not apply)
-        self._log(logging.INFO, f"Kubernetes API host = {cfg.host!r}")
-        if not cfg.host or "localhost" in cfg.host:
+        self._log(logging.INFO, f"Kubernetes API host = {self.cfg.host!r}")
+        if not self.cfg.host or "localhost" in self.cfg.host:
             raise RuntimeError(
-                f"Kubernetes configuration host is invalid: {cfg.host!r} "
+                f"Kubernetes configuration host is invalid: {self.cfg.host!r} "
                 f"(kubeconfig/in-cluster config not applied)"
             )
 
@@ -103,7 +103,6 @@ class KubernetesClient:
 
         # Build ApiClient and typed APIs
         self._rebuild_clients()
-        self.cfg = cfg
 
     def _rebuild_clients(self) -> None:
         """Rebuild ApiClient and API wrappers based on current self.cfg."""
