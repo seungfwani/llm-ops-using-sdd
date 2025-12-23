@@ -65,7 +65,10 @@ class KubernetesClient:
     def _initialize_client(self) -> None:
         """Initialize Configuration + ApiClient and API wrappers."""
         self.cfg = client.Configuration()
-
+        self._log(
+            logging.INFO,
+            f"kubeconfig_path={getattr(self.settings, 'kubeconfig_path', None)!r} cfg_id={id(self.cfg)} pre_load_host={self.cfg.host!r}",
+        )
         try:
             if getattr(self.settings, "kubeconfig_path", None):
                 self._log(logging.INFO, f"Loading kubeconfig: {self.settings.kubeconfig_path}")
@@ -79,6 +82,7 @@ class KubernetesClient:
         except Exception as e:
             self._log(logging.ERROR, f"Failed to load kubernetes config: {e}")
             raise
+        self._log(logging.INFO, f"cfg_id={id(self.cfg)} post_load_host={self.cfg.host!r}")
 
         # Apply SSL options ONLY if explicitly configured
         # (do not override what kubeconfig / incluster loader sets by default)
@@ -92,7 +96,7 @@ class KubernetesClient:
 
         # Guard against "localhost" or empty host (means config did not apply)
         self._log(logging.INFO, f"Kubernetes API host = {self.cfg.host!r}")
-        if not self.cfg.host or "localhost" in self.cfg.host:
+        if not self.cfg.host or "localhost" in self.cfg.host or self.cfg.host.rstrip("/") in {"http://localhost", "http://localhost:80", "https://localhost", "https://localhost:443"}:
             raise RuntimeError(
                 f"Kubernetes configuration host is invalid: {self.cfg.host!r} "
                 f"(kubeconfig/in-cluster config not applied)"
@@ -130,27 +134,48 @@ class KubernetesClient:
         """
         Attach a refresh hook so the SA token is re-read on demand.
         This helps when service account token is rotated.
+
+        IMPORTANT:
+        - For in-cluster config, ensure the Authorization header is always:
+          `Authorization: Bearer <token>`
+        - The upstream kubernetes client may store tokens as `"bearer <token>"`.
+          We normalize to raw token + api_key_prefix="Bearer".
         """
         if self.cfg is None:
             return
 
-        # If kubeconfig is used, authentication is usually handled via kubeconfig;
-        # no need to attach SA token hook.
+        # If kubeconfig is used, authentication is handled via kubeconfig.
         if getattr(self.settings, "kubeconfig_path", None):
             return
 
         token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 
+        def _normalize_and_set_token(cfg: client.Configuration, raw: str) -> None:
+            token = raw.strip()
+            if not token:
+                return
+            # Normalize possible "bearer <token>" from upstream loaders.
+            if token.lower().startswith("bearer "):
+                token = token.split(" ", 1)[1].strip()
+            cfg.api_key["authorization"] = token
+            cfg.api_key_prefix["authorization"] = "Bearer"
+
         def refresh_api_key_hook(cfg: client.Configuration) -> None:
             try:
                 if os.path.exists(token_path):
                     with open(token_path, "r") as f:
-                        token = f.read().strip()
-                    if token:
-                        # Kubernetes python client expects "authorization" key
-                        cfg.api_key["authorization"] = token
+                        raw_token = f.read()
+                    _normalize_and_set_token(cfg, raw_token)
             except Exception as e:
                 self._log(logging.WARNING, f"token refresh hook failed: {e}")
+
+        # Also normalize whatever the loader may have put into cfg.
+        try:
+            existing = self.cfg.api_key.get("authorization")
+            if existing:
+                _normalize_and_set_token(self.cfg, existing)
+        except Exception:
+            pass
 
         # Called by ApiClient when it needs api_key and finds it empty/expired
         self.cfg.refresh_api_key_hook = refresh_api_key_hook
